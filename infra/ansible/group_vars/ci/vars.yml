@@ -1,0 +1,4 @@
+# CI VM: runners, and deployment target of the mock-ups and the Previews
+# (ADR-014; never beside the Prod). Caddy publishes 443 (deployer role).
+ufw_allowed_ports: [22, 443]
+deployer_envs: [mockup, preview]

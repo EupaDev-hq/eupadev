@@ -1,0 +1,718 @@
+# Real test of the deployer's core mode (d5, ADR-022; decisions D-E5, S4-S8)
+# — rerunnable, leaves nothing behind.
+#   ansible-playbook verify-deployer-core.yml </dev/null
+# Test image: a THROWAWAY stand-in for a core tool (files/trial-core-tool:
+# a tiny server with the `pg` driver, fake migrate.js / purge.js at the paths
+# of the core's contract), built on the CI VM from the golden run image,
+# labelled eupadev.core, signed with the tools key: v1 (good migration),
+# v2 (failing migration), v3 (v1 under another digest). It is not the core:
+# it reads the same variables.
+# 1. v1 before any registration → refused (code 2), nothing started;
+# 2. the Gate 1 registration playbook with a test entry (twice: second run
+#    changed=0), into a throwaway repository: its two personas hold exactly
+#    one role, on the Preview client only; PREVIEW_PERSONAS in the repository
+#    secrets;
+# 3. Preview v1 on the CI VM: migration then traffic; through Caddy the tool
+#    reads its table with the _app role over TLS, its OIDC client secret is
+#    accepted by Keycloak (invalid_grant on a made-up code) through
+#    Smokescreen, another host is refused; no secret in `docker inspect`;
+#    Preview database reset (note acceptance-on-preview §3.4): a row written,
+#    v1 again (same digest) → kept, v3 (new digest) → gone;
+# 4. Preview v2 (migration fails) → failure with the reason, v3 still serves
+#    (its emptied schema rebuilt by its own migration);
+# 5. Prod v1 on the tools VM, then v2 → failure, v1 still serves; a row
+#    written, v3 → kept (Prod is never reset);
+# 6. the Prod purge deletes the expired row with the _purge role; the
+#    Preview purge is refused; the daily purge unit (timer) runs green;
+# 7. both removed;
+# 8. personas against the first REAL core tool served in Prod (skipped when
+#    none): its Prod digest deployed as its Preview, the kit's `signIn`
+#    signs persona -1 in there (session row in the Preview database); on Prod
+#    the same persona gets 403 "No role for this tool" and no session row
+#    (read-only query); that Preview removed;
+# then the always block removes Keycloak clients, personas, database, roles,
+# secrets, entry, images, package, repository and throwaway badge.
+- name: Deployer core mode — Preview (CI VM) and Prod (tools VM)
+  hosts: ci
+  become: true
+  gather_facts: false
+  vars:
+    check_forge: "{{ hostvars[groups['forge'][0]] }}"
+    check_prod: "{{ groups['tools'][0] }}"
+    check_tool: check-core
+    check_entry:
+      slug: check-core
+      roles: [{ name: reader, description: "Reads (verify-deployer-core.yml)" }]
+      retentions: { RETENTION_AUDIT: "400 days", RETENTION_TRIAL: "1 days" }
+    check_dir: /run/eupadev/check-core
+    check_docker: { DOCKER_CONFIG: /run/eupadev/check-core }
+    check_package: "{{ gitea_domain }}/eupadev/check-core"
+    check_bin: /app/node_modules/@eupadev/core/bin
+    check_real: "{{ core_tools[0] }}"
+    check_kc: http://127.0.0.1:8180
+  module_defaults:
+    ansible.builtin.uri:
+      url_username: "{{ gitea_admin_user }}"
+      url_password: "{{ vault_gitea_admin_password }}"
+      force_basic_auth: true
+  tasks:
+    - name: Tests (cleanup guaranteed)
+      block:
+        # ── Test image, built and signed on the CI VM ─────────────────────
+        - name: Remove an old throwaway svc-ci badge
+          ansible.builtin.uri:
+            url: "{{ check_forge.gitea_api }}/users/svc-ci/tokens/check-core"
+            method: DELETE
+            status_code: [204, 404]
+          delegate_to: "{{ groups['forge'][0] }}"
+
+        - name: Throwaway publishing badge (svc-ci)
+          ansible.builtin.uri:
+            url: "{{ check_forge.gitea_api }}/users/svc-ci/tokens"
+            method: POST
+            body_format: json
+            body: { name: check-core, scopes: ["write:package"] }
+            status_code: 201
+          delegate_to: "{{ groups['forge'][0] }}"
+          register: check_badge
+          changed_when: false
+          no_log: true
+
+        - name: Work folder
+          ansible.builtin.file:
+            path: "{{ check_dir }}/src"
+            state: directory
+            mode: "0700"
+
+        - name: Registry login
+          ansible.builtin.command:
+            argv: [docker, login, "{{ gitea_domain }}", -u, svc-ci, --password-stdin]
+            stdin: "{{ check_badge.json.sha1 }}"
+          environment: "{{ check_docker }}"
+          changed_when: false
+          no_log: true
+
+        - name: Golden images (run, build)
+          ansible.builtin.command:
+            argv: [docker, pull, -q, "{{ item }}"]
+          loop:
+            - "{{ check_forge.gitea_org_variables.BASE_IMAGE_RUN }}"
+            - "{{ check_forge.gitea_org_variables.BASE_IMAGE_BUILD }}"
+          environment: "{{ check_docker }}"
+          changed_when: false
+
+        - name: Sources of the throwaway tool
+          ansible.builtin.copy:
+            src: trial-core-tool/
+            dest: "{{ check_dir }}/src/"
+            mode: "0644"
+
+        - name: The pg driver (pnpm of the golden build image)
+          ansible.builtin.command:
+            argv: [docker, run, --rm, --user, "0", -v, "{{ check_dir }}/src:/w", -w, /w,
+                   "{{ check_forge.gitea_org_variables.BASE_IMAGE_BUILD }}",
+                   pnpm, install, --config.node-linker=hoisted, --ignore-scripts]
+          changed_when: false
+
+        # The core's contract: bin/migrate.js and bin/purge.js under
+        # node_modules/@eupadev/core, label eupadev.core.
+        - name: Fake core folder
+          ansible.builtin.file:
+            path: "{{ check_dir }}/src/node_modules/@eupadev/core/bin"
+            state: directory
+            mode: "0755"
+
+        - name: "V1: good migration, purge"
+          ansible.builtin.copy:
+            src: "trial-core-tool/{{ item }}"
+            dest: "{{ check_dir }}/src/node_modules/@eupadev/core/bin/{{ item }}"
+            mode: "0644"
+          loop: [migrate.js, purge.js]
+
+        - name: Base container (a previous one left by an interrupted run removed)
+          ansible.builtin.shell: >-
+            docker rm -f check-core-base >/dev/null &&
+            docker create --name check-core-base {{ check_forge.gitea_org_variables.BASE_IMAGE_RUN }}
+          changed_when: false
+
+        - name: Tool files into /app
+          ansible.builtin.command:
+            argv: [docker, cp, "{{ check_dir }}/src/.", "check-core-base:/app"]
+          changed_when: false
+
+        - name: Commit v1
+          ansible.builtin.command:
+            argv: [docker, commit, --change, "LABEL eupadev.core=0.0.0-check", --change, 'CMD ["node", "index.js"]',
+                   check-core-base, "{{ check_package }}:v1"]
+          changed_when: false
+
+        - name: "V3: v1 under another digest"
+          ansible.builtin.command:
+            argv: [docker, commit, --change, "LABEL eupadev.core=0.0.0-check", --change, "LABEL check=v3", --change, 'CMD ["node", "index.js"]',
+                   check-core-base, "{{ check_package }}:v3"]
+          changed_when: false
+
+        - name: "V2: failing migration"
+          ansible.builtin.command:
+            argv: [docker, cp, "{{ check_dir }}/src/migrate-ko.js", "check-core-base:{{ check_bin }}/migrate.js"]
+          changed_when: false
+
+        - name: Commit v2
+          ansible.builtin.command:
+            argv: [docker, commit, --change, "LABEL eupadev.core=0.0.0-check", --change, 'CMD ["node", "index.js"]',
+                   check-core-base, "{{ check_package }}:v2"]
+          changed_when: false
+
+        - name: Publish
+          ansible.builtin.command:
+            argv: [docker, push, -q, "{{ check_package }}:{{ item }}"]
+          environment: "{{ check_docker }}"
+          loop: [v1, v2, v3]
+          changed_when: false
+
+        - name: Digests
+          ansible.builtin.command:
+            argv: [docker, image, inspect, --format, "{{ '{{' }}json .RepoDigests{{ '}}' }}", "{{ check_package }}:{{ item }}"]
+          loop: [v1, v2, v3]
+          register: check_digests
+          changed_when: false
+
+        - name: Images by digest
+          ansible.builtin.set_fact:
+            check_images: >-
+              {{ dict(['v1', 'v2', 'v3'] | zip(check_digests.results | map(attribute='stdout') | map('from_json')
+                 | map('select', 'search', '/eupadev/check-core@') | map('first'))) }}
+
+        - name: Signing config without services
+          ansible.builtin.command:
+            argv: [cosign, signing-config, create, --out, "{{ check_dir }}/signing-config.json"]
+          changed_when: false
+
+        - name: Sign with the tools key
+          ansible.builtin.command:
+            argv: [cosign, sign, --yes, --key, env://COSIGN_PRIVATE_KEY, --signing-config, "{{ check_dir }}/signing-config.json", "{{ item.value }}"]
+          environment:
+            DOCKER_CONFIG: "{{ check_dir }}"
+            COSIGN_PRIVATE_KEY: "{{ check_forge.vault_cosign_tools_private_key }}"
+            COSIGN_PASSWORD: "{{ check_forge.vault_cosign_tools_password }}"
+          loop: "{{ check_images | dict2items }}"
+          changed_when: false
+          no_log: true
+
+        # ── 1. Not registered at Gate 1 ────────────────────────────────────
+        - name: 1. Core image without Gate 1 entry → refused
+          ansible.builtin.command: /usr/local/sbin/eupadev-deployer
+          environment: { SSH_ORIGINAL_COMMAND: "deploy preview {{ check_tool }} 1 {{ check_images.v1 }}" }
+          register: check_unregistered
+          changed_when: false
+          failed_when: check_unregistered.rc != 2 or 'not registered at Gate 1' not in check_unregistered.stdout
+
+        - name: Nothing started
+          ansible.builtin.command:
+            argv: [docker, ps, -aq, --filter, "name=preview-{{ check_tool }}"]
+          register: check_nothing
+          changed_when: false
+          failed_when: check_nothing.stdout != ''
+
+        # ── 2. Registration (the real playbook, run by Ilan after Gate 1) ──
+        # The tool repository exists before Gate 1: PREVIEW_PERSONAS goes there.
+        - name: Throwaway tool repository (a previous one removed)
+          ansible.builtin.uri:
+            url: "{{ check_forge.gitea_api }}{{ item.url }}"
+            method: "{{ item.method }}"
+            body_format: json
+            body: { name: "{{ check_tool }}", private: true }
+            status_code: "{{ item.status }}"
+          loop:
+            - { method: DELETE, url: "/repos/eupadev/{{ check_tool }}", status: [204, 404] }
+            - { method: POST, url: /orgs/eupadev/repos, status: [201] }
+          delegate_to: "{{ groups['forge'][0] }}"
+          changed_when: false
+
+        - name: 2. Registration playbook with the test entry (twice)
+          ansible.builtin.command:
+            argv: [ansible-playbook, "{{ playbook_dir }}/register-tools.yml", -e, "{{ {'core_tools': [check_entry]} | to_json }}"]
+            chdir: "{{ playbook_dir }}"
+          loop: [1, 2]
+          delegate_to: localhost
+          become: false
+          register: check_registration
+          changed_when: false
+          failed_when: check_registration.rc != 0
+
+        - name: Second registration run changes nothing
+          ansible.builtin.assert:
+            that: check_registration.results[1].stdout | regex_findall('changed=(\d+)') | map('int') | sum == 0
+            fail_msg: "Second run changed something: {{ check_registration.results[1].stdout_lines[-5:] }}"
+
+        - name: Admin token of realm tools
+          ansible.builtin.uri:
+            url: "{{ check_kc }}/realms/tools/protocol/openid-connect/token"
+            method: POST
+            force_basic_auth: false
+            body_format: form-urlencoded
+            body:
+              grant_type: client_credentials
+              client_id: tools-config
+              client_secret: "{{ hostvars[groups['orchestrator'][0]].vault_keycloak_tools_config_secret }}"
+          delegate_to: "{{ groups['orchestrator'][0] }}"
+          register: check_kc_token
+          no_log: true
+
+        - name: Personas of the test tool
+          ansible.builtin.uri:
+            url: "{{ check_kc }}/admin/realms/tools/users?briefRepresentation=true&search={{ check_tool }}-"
+            force_basic_auth: false
+            headers: { Authorization: "Bearer {{ check_kc_token.json.access_token }}" }
+          delegate_to: "{{ groups['orchestrator'][0] }}"
+          register: check_personas
+
+        - name: Their role mappings
+          ansible.builtin.uri:
+            url: "{{ check_kc }}/admin/realms/tools/users/{{ item.id }}/role-mappings"
+            force_basic_auth: false
+            headers: { Authorization: "Bearer {{ check_kc_token.json.access_token }}" }
+          loop: "{{ check_personas.json }}"
+          loop_control:
+            label: "{{ item.username }}"
+          delegate_to: "{{ groups['orchestrator'][0] }}"
+          register: check_persona_roles
+
+        - name: Two personas, exactly one role each, on the Preview client only
+          ansible.builtin.assert:
+            that:
+              - check_personas.json | map(attribute='username') | sort == [check_tool ~ '-reader-1', check_tool ~ '-reader-2']
+              - mappings | map(attribute='clientMappings') | map('dict2items') | map('map', attribute='key') | map('list') | unique | list
+                == [[check_tool ~ '-preview']]
+              - mappings | map(attribute='clientMappings') | map(attribute=check_tool ~ '-preview') | map(attribute='mappings')
+                | map('map', attribute='name') | map('list') | unique | list == [['reader']]
+              - mappings | map(attribute='realmMappings') | map('map', attribute='name') | map('list') | unique | list == [['default-roles-tools']]
+            fail_msg: "Personas: {{ check_personas.json | map(attribute='username') | list }}, mappings {{ mappings }}"
+          vars:
+            mappings: "{{ check_persona_roles.results | map(attribute='json') | list }}"
+
+        - name: Persona passwords encrypted on the orchestrator VM
+          ansible.builtin.stat:
+            path: "/etc/eupadev/credstore.encrypted/persona-{{ check_tool }}-reader-{{ item }}"
+          loop: [1, 2]
+          delegate_to: "{{ groups['orchestrator'][0] }}"
+          register: check_persona_passwords
+          failed_when: check_persona_passwords.stat.size | default(0) == 0
+
+        - name: PREVIEW_PERSONAS in the repository secrets
+          ansible.builtin.uri:
+            url: "{{ check_forge.gitea_api }}/repos/eupadev/{{ check_tool }}/actions/secrets"
+            return_content: true
+          delegate_to: "{{ groups['forge'][0] }}"
+          register: check_repo_secrets
+          failed_when: "'PREVIEW_PERSONAS' not in check_repo_secrets.json | map(attribute='name')"
+
+        # ── 3. Preview v1 ──────────────────────────────────────────────────
+        - name: 3. Preview v1 (migration, then traffic)
+          ansible.builtin.command: /usr/local/sbin/eupadev-deployer
+          environment: { SSH_ORIGINAL_COMMAND: "deploy preview {{ check_tool }} 1 {{ check_images.v1 }}" }
+          register: check_preview
+          changed_when: true
+          failed_when: >-
+            check_preview.rc != 0 or (check_preview.stdout | from_json) !=
+            {'digest': check_images.v1.split('@')[1], 'url': 'https://' ~ check_tool ~ '.preview.' ~ base_domain, 'health': 'ok'}
+
+        - name: What the tool sees, through Caddy
+          ansible.builtin.command:
+            argv: [curl, -fsS, --max-time, "30", --resolve, "{{ check_tool }}.preview.{{ base_domain }}:443:127.0.0.1",
+                   "https://{{ check_tool }}.preview.{{ base_domain }}/check"]
+          register: check_view
+          changed_when: false
+
+        - name: Database (_app role, TLS), OIDC secret accepted via Smokescreen, other host refused
+          vars:
+            view: "{{ check_view.stdout | from_json }}"
+          ansible.builtin.assert:
+            that:
+              - view.db.role == check_tool ~ '_app'
+              - view.db.rows >= 2
+              - view.oidc == 'invalid_grant'
+              - view.other == 'refused'
+              - view.client == check_tool ~ '-preview'
+              - view.app == 'https://' ~ check_tool ~ '.preview.' ~ base_domain
+              - view.trust is regex('^[0-9.]+/[0-9]+$')
+            fail_msg: "Unexpected view of the tool: {{ check_view.stdout }}"
+
+        - name: Secret files present (else the next check proves nothing)
+          ansible.builtin.stat:
+            path: "/run/eupadev/tools/tool-{{ check_tool }}-{{ item }}"
+          loop: [oidc, db-app]
+          register: check_secrets
+          failed_when: check_secrets.stat.size | default(0) == 0
+
+        # No pipefail: grep -q exits at the first match (docker would die of SIGPIPE).
+        - name: No secret in docker inspect  # noqa: risky-shell-pipe
+          ansible.builtin.shell: >-
+            docker inspect preview-{{ check_tool }} | grep -qF -f /run/eupadev/tools/tool-{{ check_tool }}-{{ item }}
+          loop: [oidc, db-app]
+          register: check_inspect
+          changed_when: false
+          failed_when: check_inspect.rc != 1
+
+        # A sentinel row the migration never writes (year 2000).
+        - name: Preview reset — a row written
+          ansible.builtin.command:
+            argv: [docker, exec, tools-db, psql, -U, postgres, -d, "{{ check_tool }}", -v, ON_ERROR_STOP=1, -c,
+                   "INSERT INTO app.trial (created) VALUES ('2000-01-01')"]
+          changed_when: true
+
+        - name: Preview reset — same digest, then a new digest (v3)
+          ansible.builtin.command: /usr/local/sbin/eupadev-deployer
+          environment: { SSH_ORIGINAL_COMMAND: "deploy preview {{ check_tool }} 1 {{ check_images[item] }}" }
+          loop: [v1, v3]
+          register: check_reset
+          changed_when: true
+          failed_when: check_reset.rc != 0 or (check_reset.stdout | from_json).health != 'ok'
+
+        - name: Preview reset — sentinel rows and all rows after each deploy
+          ansible.builtin.command:
+            argv: [docker, exec, tools-db, psql, -U, postgres, -d, "{{ check_tool }}", -tA, -c,
+                   "SELECT count(*) FILTER (WHERE created < '2001-01-01') || ' ' || count(*) FROM app.trial"]
+          register: check_preview_rows
+          changed_when: false
+          failed_when: check_preview_rows.stdout != '0 2'
+
+        # ── 4. Failing migration on Preview ────────────────────────────────
+        - name: 4. Preview v2 (migration fails) → failure
+          ansible.builtin.command: /usr/local/sbin/eupadev-deployer
+          environment: { SSH_ORIGINAL_COMMAND: "deploy preview {{ check_tool }} 1 {{ check_images.v2 }}" }
+          register: check_ko
+          changed_when: true
+          failed_when: >-
+            check_ko.rc != 0 or (check_ko.stdout | from_json).health != 'failed'
+            or 'migration refused on purpose' not in (check_ko.stdout | from_json).reason
+
+        - name: V3 still served on Preview
+          ansible.builtin.command: /usr/local/sbin/eupadev-deployer
+          environment: { SSH_ORIGINAL_COMMAND: "served preview {{ check_tool }}" }
+          register: check_served_preview
+          changed_when: false
+          failed_when: (check_served_preview.stdout | from_json).digest != check_images.v3.split('@')[1]
+
+        - name: And still answers through Caddy
+          ansible.builtin.command:
+            argv: [curl, -fsS, --max-time, "30", --resolve, "{{ check_tool }}.preview.{{ base_domain }}:443:127.0.0.1",
+                   "https://{{ check_tool }}.preview.{{ base_domain }}/health"]
+          changed_when: false
+
+        # ── 5. Prod on the tools VM ────────────────────────────────────────
+        - name: 5. Prod v1, then v2 (migration fails)
+          ansible.builtin.command: /usr/local/sbin/eupadev-deployer
+          environment: { SSH_ORIGINAL_COMMAND: "deploy prod {{ check_tool }} {{ item.cycle }} {{ check_images[item.v] }}" }
+          loop:
+            - { v: v1, cycle: 1, health: ok }
+            - { v: v2, cycle: 2, health: failed }
+          delegate_to: "{{ check_prod }}"
+          register: check_prod_results
+          changed_when: true
+          failed_when: check_prod_results.rc != 0 or (check_prod_results.stdout | from_json).health != item.health
+
+        - name: Prod still serves v1, as the Prod client
+          ansible.builtin.command:
+            argv: [curl, -fsS, --max-time, "30", --resolve, "{{ check_tool }}.{{ base_domain }}:443:127.0.0.1",
+                   "https://{{ check_tool }}.{{ base_domain }}/check"]
+          delegate_to: "{{ check_prod }}"
+          register: check_prod_view
+          changed_when: false
+          failed_when: >-
+            (check_prod_view.stdout | from_json).client != check_tool
+            or (check_prod_view.stdout | from_json).oidc != 'invalid_grant'
+
+        - name: Served digest in Prod = v1
+          ansible.builtin.command: /usr/local/sbin/eupadev-deployer
+          environment: { SSH_ORIGINAL_COMMAND: "served prod {{ check_tool }}" }
+          delegate_to: "{{ check_prod }}"
+          register: check_served_prod
+          changed_when: false
+          failed_when: >-
+            (check_served_prod.stdout | from_json) != {'digest': check_images.v1.split('@')[1], 'cycle': 1}
+
+        - name: Prod is never reset — a row written
+          ansible.builtin.command:
+            argv: [docker, exec, tools-db, psql, -U, postgres, -d, "{{ check_tool }}", -v, ON_ERROR_STOP=1, -c,
+                   "INSERT INTO app.trial (created) VALUES ('2000-01-01')"]
+          delegate_to: "{{ check_prod }}"
+          changed_when: true
+
+        - name: Prod v3 (new digest)
+          ansible.builtin.command: /usr/local/sbin/eupadev-deployer
+          environment: { SSH_ORIGINAL_COMMAND: "deploy prod {{ check_tool }} 1 {{ check_images.v3 }}" }
+          delegate_to: "{{ check_prod }}"
+          register: check_prod_v3
+          changed_when: true
+          failed_when: check_prod_v3.rc != 0 or (check_prod_v3.stdout | from_json).health != 'ok'
+
+        - name: The row is still there in Prod
+          ansible.builtin.command:
+            argv: [docker, exec, tools-db, psql, -U, postgres, -d, "{{ check_tool }}", -tA, -c,
+                   "SELECT count(*) FROM app.trial WHERE created < '2001-01-01'"]
+          delegate_to: "{{ check_prod }}"
+          register: check_prod_rows
+          changed_when: false
+          failed_when: check_prod_rows.stdout != '1'
+
+        - name: Daily backup of the tools VM (role backup) runs green
+          ansible.builtin.systemd_service:
+            name: eupadev-backup.service
+            state: started
+          delegate_to: "{{ check_prod }}"
+
+        - name: A dump of the test tool's database exists, readable by pg_restore
+          ansible.builtin.shell: >-
+            set -o pipefail;
+            f=$(ls -1t {{ backup_dir }}/tools-{{ check_tool }}-*.dump | head -1) &&
+            docker exec -i tools-db pg_restore --list < "$f" | grep -c 'TABLE app trial'
+          args:
+            executable: /bin/bash
+          delegate_to: "{{ check_prod }}"
+          changed_when: false
+
+        # ── 6. Purge ───────────────────────────────────────────────────────
+        - name: 6. Purge in Prod (expired row deleted by the _purge role)
+          ansible.builtin.command: /usr/local/sbin/eupadev-deployer
+          environment: { SSH_ORIGINAL_COMMAND: "purge prod {{ check_tool }}" }
+          delegate_to: "{{ check_prod }}"
+          register: check_purge
+          changed_when: true
+          failed_when: >-
+            check_purge.rc != 0 or not (check_purge.stdout | from_json).done
+            or ((check_purge.stdout | from_json).output | from_json).role != check_tool ~ '_purge'
+            or ((check_purge.stdout | from_json).output | from_json).trial < 1
+
+        - name: Start time of the daily purge unit run
+          ansible.builtin.command: date +%s
+          delegate_to: "{{ check_prod }}"
+          register: check_purge_start
+          changed_when: false
+
+        # Oneshot: `systemctl start` waits for the end and fails if the unit fails.
+        - name: The daily purge unit runs green (S7)
+          ansible.builtin.systemd_service:
+            name: eupadev-purge.service
+            state: started
+          delegate_to: "{{ check_prod }}"
+
+        - name: It purged the test tool (deployer journal)
+          ansible.builtin.command:
+            argv: [journalctl, -t, eupadev-deployer, --since, "@{{ check_purge_start.stdout }}", --no-pager, -o, cat]
+          delegate_to: "{{ check_prod }}"
+          register: check_purge_journal
+          changed_when: false
+          failed_when: >-
+            ('command="purge prod ' ~ check_tool ~ '" code=0') not in check_purge_journal.stdout
+            or '"done": true' not in check_purge_journal.stdout
+
+        - name: Purge refused on Preview
+          ansible.builtin.command: /usr/local/sbin/eupadev-deployer
+          environment: { SSH_ORIGINAL_COMMAND: "purge preview {{ check_tool }}" }
+          register: check_purge_preview
+          changed_when: false
+          failed_when: check_purge_preview.rc != 2
+
+        # ── 7. Removal ─────────────────────────────────────────────────────
+        - name: 7. Removal of Preview (cycle 1) and Prod (cycle 1)
+          ansible.builtin.command: /usr/local/sbin/eupadev-deployer
+          environment: { SSH_ORIGINAL_COMMAND: "remove {{ item.env }} {{ check_tool }} 1" }
+          loop:
+            - { env: preview, host: "{{ inventory_hostname }}" }
+            - { env: prod, host: "{{ check_prod }}" }
+          delegate_to: "{{ item.host }}"
+          register: check_removal
+          changed_when: true
+          failed_when: check_removal.rc != 0 or not (check_removal.stdout | from_json).done
+
+        - name: No tool network left, database unplugged
+          ansible.builtin.command:
+            argv: [docker, inspect, --format, "{{ '{{' }}json .NetworkSettings.Networks{{ '}}' }}", tools-db]
+          loop: ["{{ inventory_hostname }}", "{{ check_prod }}"]
+          delegate_to: "{{ item }}"
+          register: check_db_networks
+          changed_when: false
+          failed_when: (check_db_networks.stdout | from_json).keys() | select('search', check_tool) | list | length > 0
+
+        # ── 8. Personas against a real core tool (Preview signs in, Prod 403) ──
+        - name: 8. What the first registered tool serves (Prod, Preview)
+          ansible.builtin.command: /usr/local/sbin/eupadev-deployer
+          environment: { SSH_ORIGINAL_COMMAND: "served {{ item.target }} {{ check_real.slug }}" }
+          loop:
+            - { target: prod, host: "{{ check_prod }}" }
+            - { target: preview, host: "{{ inventory_hostname }}" }
+          delegate_to: "{{ item.host }}"
+          register: check_real_served
+          changed_when: false
+          when: core_tools | length > 0
+
+        - name: "Real tool section ({{ check_real.slug }})"
+          vars:
+            served_prod: "{{ check_real_served.results[0].stdout | from_json }}"
+            image: "{{ gitea_domain }}/eupadev/{{ check_real.slug }}@{{ served_prod.digest }}"
+            persona: "{{ check_real.slug }}-{{ check_real.roles[0].name }}-1"
+            check_sign_in_targets:
+              - { vm: "{{ inventory_hostname }}", host: "{{ check_real.slug }}.preview.{{ base_domain }}" }
+              - { vm: "{{ check_prod }}", host: "{{ check_real.slug }}.{{ base_domain }}" }
+            # Prints statuses and the start of the last body; no cookie value, no password.
+            script: |
+              import { signIn, httpBrowser } from '@eupadev/core/kit';
+              const input = await new Promise((ok) => { let d = ''; process.stdin.on('data', (c) => { d += c; }).on('end', () => ok(d)); });
+              const steps = await signIn(httpBrowser(), process.argv[1], JSON.parse(input));
+              const f = steps.at(-1);
+              console.log(JSON.stringify({ statuses: steps.map((e) => e.status), final: f.status, text: f.text.slice(0, 200),
+                session: steps.some((e) => e.headers.getSetCookie().some((c) => c.startsWith('__Host-session=') && !/max-age=0/i.test(c))) }));
+          when: core_tools | length > 0 and served_prod != None
+          block:
+            - name: No Preview of the real tool in use (its cycle would be clobbered)
+              ansible.builtin.assert:
+                that: check_real_served.results[1].stdout == 'null'
+                fail_msg: "A Preview of {{ check_real.slug }} is in use: rerun once its cycle is over"
+
+            - name: Password of persona -1 (orchestrator VM)
+              ansible.builtin.command:
+                argv: [systemd-creds, decrypt, --newline=no, "--name=persona-{{ persona }}",
+                       "/etc/eupadev/credstore.encrypted/persona-{{ persona }}", "-"]
+              delegate_to: "{{ groups['orchestrator'][0] }}"
+              register: check_real_password
+              changed_when: false
+              no_log: true
+
+            - name: Its Keycloak subject
+              ansible.builtin.uri:
+                url: "{{ check_kc }}/admin/realms/tools/users?exact=true&username={{ persona }}"
+                force_basic_auth: false
+                headers: { Authorization: "Bearer {{ check_kc_token.json.access_token }}" }
+              delegate_to: "{{ groups['orchestrator'][0] }}"
+              register: check_subject
+
+            - name: "The Prod digest deployed as Preview (cycle {{ served_prod.cycle }})"
+              ansible.builtin.command: /usr/local/sbin/eupadev-deployer
+              environment: { SSH_ORIGINAL_COMMAND: "deploy preview {{ check_real.slug }} {{ served_prod.cycle }} {{ image }}" }
+              register: check_real_preview
+              changed_when: true
+              failed_when: check_real_preview.rc != 0 or (check_real_preview.stdout | from_json).health != 'ok'
+
+            - name: Kit signIn as the persona, on the Preview then on Prod
+              ansible.builtin.command:
+                argv: [docker, run, --rm, -i, --add-host, "{{ item.host }}:host-gateway", -v, /etc/ssl/certs:/etc/ssl/certs:ro,
+                       -e, NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt, -w, /app, --entrypoint, node, "{{ image }}",
+                       --input-type=module, -e, "{{ script }}", "https://{{ item.host }}"]
+                stdin: "{{ {'name': persona, 'password': check_real_password.stdout} | to_json }}"
+              # The loop is templated before the block's `when`: with no core tool,
+              # check_real is undefined, so the list goes through check_sign_in_targets.
+              loop: "{{ check_sign_in_targets if core_tools else [] }}"
+              loop_control:
+                label: "{{ item.host }}"
+              delegate_to: "{{ item.vm }}"
+              register: check_sign_ins
+              changed_when: false
+              no_log: true
+
+            - name: Results of the sign-ins
+              ansible.builtin.debug:
+                msg: "{{ check_sign_ins.results | map(attribute='stdout') | list }}"
+
+            - name: Session rows of the persona (Preview, then Prod; read only)
+              ansible.builtin.command:
+                argv: [docker, exec, tools-db, psql, -U, postgres, -d, "{{ check_real.slug }}", -tA, -v, ON_ERROR_STOP=1, -c,
+                       "SELECT count(*) FROM app.sessions s JOIN app.actor_identities i USING (actor_id) WHERE i.subject = '{{ check_subject.json[0].id }}'"]
+              loop: ["{{ inventory_hostname }}", "{{ check_prod }}"]
+              delegate_to: "{{ item }}"
+              register: check_sessions
+              changed_when: false
+
+            - name: Preview signs the persona in; Prod answers 403 with no session
+              vars:
+                preview: "{{ check_sign_ins.results[0].stdout | from_json }}"
+                prod: "{{ check_sign_ins.results[1].stdout | from_json }}"
+              ansible.builtin.assert:
+                that:
+                  - preview.final == 200 and preview.session
+                  - check_sessions.results[0].stdout | int >= 1
+                  - prod.final == 403 and 'No role for this tool' in prod.text and not prod.session
+                  - check_sessions.results[1].stdout | int == 0
+                fail_msg: "Preview {{ preview }}, Prod {{ prod }}, sessions {{ check_sessions.results | map(attribute='stdout') | list }}"
+
+          always:
+            - name: Real tool's Preview removed
+              ansible.builtin.command: /usr/local/sbin/eupadev-deployer
+              environment: { SSH_ORIGINAL_COMMAND: "remove preview {{ check_real.slug }} {{ served_prod.cycle }}" }
+              when: check_real_preview is defined and check_real_preview is not skipped
+              register: check_real_removal
+              changed_when: true
+              failed_when: check_real_removal.rc != 0
+
+        - name: No core tool served in Prod
+          ansible.builtin.debug:
+            msg: "SKIPPED section 8: no registered core tool served in Prod"
+          when: core_tools | length == 0 or check_real_served.results[0].stdout == 'null'
+
+      rescue:
+        - name: Diagnosis (containers, tool and Smokescreen logs, deployer journal)
+          ansible.builtin.shell: |
+            set -o pipefail
+            docker ps -a --filter name={{ check_tool }} --format '{{ '{{' }}.Names{{ '}}' }} {{ '{{' }}.Status{{ '}}' }}'
+            for c in $(docker ps -aq --filter name={{ check_tool }}); do docker logs --tail 30 "$c" 2>&1; done
+            docker logs --tail 20 deployer-smokescreen-1 2>&1
+            journalctl -t eupadev-deployer --since -15min --no-pager | tail -5
+          args:
+            executable: /bin/bash
+          loop: ["{{ inventory_hostname }}", "{{ check_prod }}"]
+          delegate_to: "{{ item }}"
+          register: check_diagnosis
+          changed_when: false
+          failed_when: false
+
+        - name: Show the diagnosis
+          ansible.builtin.debug:
+            msg: "{{ check_diagnosis.results | map(attribute='stdout_lines') | list }}"
+
+        - name: Test failed
+          ansible.builtin.fail:
+            msg: "verify-deployer-core.yml failed: see the diagnosis above"
+
+      always:
+        - name: Remove what may remain (script, every cycle of the test)
+          ansible.builtin.command: /usr/local/sbin/eupadev-deployer
+          environment: { SSH_ORIGINAL_COMMAND: "remove {{ item[0] }} {{ check_tool }} {{ item[2] }}" }
+          loop: "{{ [['preview', inventory_hostname], ['prod', check_prod]] | product([1, 2]) | map('flatten') | list }}"
+          delegate_to: "{{ item[1] }}"
+          changed_when: false
+          failed_when: false
+
+        - name: Registration of the test (clients, database, roles, secrets, entry)
+          ansible.builtin.include_tasks: tasks/remove-core-tool.yml
+          vars: { tool_slug: "{{ check_tool }}" }
+
+        - name: Test images (both VMs)
+          ansible.builtin.command:
+            argv: [docker, image, rm, -f, "{{ item.1 }}"]
+          loop: "{{ [inventory_hostname, check_prod] | product((check_images | default({})).values() | list
+                    + [check_package ~ ':v1', check_package ~ ':v2', check_package ~ ':v3']) | list }}"
+          delegate_to: "{{ item.0 }}"
+          changed_when: false
+          failed_when: false
+
+        - name: Base container
+          ansible.builtin.command:
+            argv: [docker, rm, -f, check-core-base]
+          changed_when: false
+          failed_when: false
+
+        - name: Test package, repository and throwaway badge
+          ansible.builtin.uri:
+            url: "{{ check_forge.gitea_api }}{{ item }}"
+            method: DELETE
+            status_code: [204, 404]
+          loop:
+            - /packages/eupadev/container/check-core
+            - /repos/eupadev/check-core
+            - /users/svc-ci/tokens/check-core
+          delegate_to: "{{ groups['forge'][0] }}"
+
+        - name: Work folder
+          ansible.builtin.file:
+            path: "{{ check_dir }}"
+            state: absent

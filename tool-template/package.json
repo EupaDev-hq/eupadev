@@ -1,0 +1,23 @@
+{
+  "name": "eupadev-tool",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@12.16.1",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test",
+    "verify": "sh scripts/verify.sh"
+  },
+  "dependencies": {
+    "@eupadev/core": "0.2.0"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "4.14.0",
+    "@playwright/test": "1.64.1",
+    "playwright": "1.64.1",
+    "playwright-bdd": "9.2.1"
+  }
+}

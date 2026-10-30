@@ -1,0 +1,216 @@
+# Real-conditions check of the deployment targets (ADR-014, steps E5a and
+# E5b) — rerunnable, leaves nothing behind.
+#   ansible-playbook verify-deployer-access.yml </dev/null
+# 1. On each target (CI VM, tools VM): deployment account outside the docker
+#    group, folder and keys owned by root, a single sudo rule (the script,
+#    without arguments); sudo refused for any other command or with an argument.
+# 2. From the engine (orchestrator VM), generic DNS and HTTPS: any name under
+#    preview and under the domain gets Caddy's 502, with a valid certificate
+#    (lab authorities); mockup answers its fixed page; git still points to the
+#    forge.
+# 3. From the engine, with the engine's key: a valid request goes through;
+#    shell, injection, path, space, the other VM's environment, reserved or too
+#    long name, image by tag or from another registry → refused by the script;
+#    forwardings (-R, -W), scp, sftp → refused, nothing written.
+# 4. From another VM (the forge), same key → refused by sshd (from=).
+# 5. Every call is in journald on the target (identifier eupadev-deployer).
+- name: Targets — account, keys and sudo
+  hosts: ci:tools
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Groups of the deployment account
+      ansible.builtin.command: id -nG deployment
+      register: check_groups
+      changed_when: false
+
+    - name: Outside the docker group (the Docker socket is worth root)
+      ansible.builtin.assert:
+        that: "'docker' not in check_groups.stdout.split()"
+        fail_msg: "deployment is in the groups: {{ check_groups.stdout }}"
+
+    - name: Owners of the home folder and of the keys
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop: [/home/deployment, /home/deployment/.ssh, /home/deployment/.ssh/authorized_keys]
+      register: check_owners
+
+    - name: Everything belongs to root, nothing writable by the account
+      ansible.builtin.assert:
+        that:
+          - item.stat.pw_name == 'root'
+          - not item.stat.wgrp and not item.stat.woth
+        fail_msg: "{{ item.item }}: owner {{ item.stat.pw_name }}, mode {{ item.stat.mode }}"
+      loop: "{{ check_owners.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Options of the key
+      ansible.builtin.command: cat /home/deployment/.ssh/authorized_keys
+      register: check_keys
+      changed_when: false
+
+    - name: A single key, restrict, from = the engine, forced command
+      vars:
+        check_options: >-
+          restrict,from="{{ hostvars[groups['orchestrator'][0]].ansible_host }}",command="sudo -n /usr/local/sbin/eupadev-deployer"
+      ansible.builtin.assert:
+        that:
+          - check_keys.stdout_lines | length == 1
+          - check_keys.stdout is match(check_options ~ ' ssh-ed25519 ')
+        fail_msg: "Unexpected options: {{ check_keys.stdout | regex_replace(' ssh-ed25519 .*', '') }}"
+
+    - name: Sudo rights of the account
+      ansible.builtin.command: sudo -l -U deployment
+      register: check_sudo
+      changed_when: false
+
+    - name: A single rule, the script without arguments
+      ansible.builtin.assert:
+        that:
+          - check_sudo.stdout_lines | select('search', 'NOPASSWD') | list | length == 1
+          - check_sudo.stdout is search('NOPASSWD. /usr/local/sbin/eupadev-deployer ""')
+        fail_msg: "Unexpected sudo rules: {{ check_sudo.stdout }}"
+
+    - name: Sudo refused with an argument or for another command
+      ansible.builtin.command:
+        argv: "{{ ['sudo', '-n', '-u', 'deployment', 'sudo', '-n'] + item }}"
+      loop:
+        - [/usr/local/sbin/eupadev-deployer, served]
+        - [/usr/bin/id]
+        - [/usr/bin/docker, ps]
+      register: check_sudo_refusal
+      changed_when: false
+      failed_when: check_sudo_refusal.rc == 0
+
+    - name: Start of the trials (for the journal)
+      ansible.builtin.command: date +%s
+      register: check_start
+      changed_when: false
+
+- name: From the engine — DNS, HTTPS and forced-command SSH
+  hosts: orchestrator
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Trials (cleanup guaranteed)
+      block:
+        - name: Address of git (lab DNS)
+          ansible.builtin.command: getent hosts {{ gitea_domain }}
+          register: check_git
+          changed_when: false
+
+        - name: Git still points to the forge
+          ansible.builtin.assert:
+            that: check_git.stdout.split()[0] == hostvars[groups['forge'][0]].ansible_host
+            fail_msg: "{{ gitea_domain }} → {{ check_git.stdout }}"
+
+        # Without -k: the certificate must be valid (lab authorities, lab_ca).
+        - name: HTTPS of the targets by their name
+          ansible.builtin.command:
+            argv: [curl, -sS, -o, /dev/null, -w, "%{http_code} %{remote_ip}", --max-time, "20", "https://{{ item.name }}/"]
+          loop:
+            - { name: "check-{{ 999999 | random }}.preview.{{ base_domain }}", code: "502", vm: ci }
+            - { name: "check-{{ 999999 | random }}.{{ base_domain }}", code: "502", vm: tools }
+            - { name: "mockup.{{ base_domain }}", code: "404", vm: ci }
+          register: check_https
+          changed_when: false
+          failed_when: >-
+            check_https.rc != 0
+            or check_https.stdout != item.code ~ ' ' ~ hostvars[groups[item.vm][0]].ansible_host
+
+        - name: Temporary files (engine key, SSH host keys)
+          ansible.builtin.tempfile:
+            suffix: "{{ item }}"
+          loop: [-key, -known-hosts]
+          register: check_tmp
+
+        - name: Engine key in the temporary file
+          ansible.builtin.copy:
+            dest: "{{ check_tmp.results[0].path }}"
+            content: "{{ vault_deployer_ssh_private_key }}"
+            mode: "0600"
+          no_log: true
+
+        - name: Trials towards each target
+          ansible.builtin.include_tasks: tasks/deployer-target-access.yml
+          vars:
+            check_key: "{{ check_tmp.results[0] }}"
+            check_known_hosts: "{{ check_tmp.results[1] }}"
+          loop: "{{ groups['ci'] + groups['tools'] }}"
+          loop_control:
+            loop_var: target
+      always:
+        - name: Delete the temporary files
+          ansible.builtin.file:
+            path: "{{ item.path }}"
+            state: absent
+          loop: "{{ check_tmp.results | default([]) }}"
+          loop_control:
+            label: "{{ item.path }}"
+
+- name: From another VM — the engine's key is refused (from=)
+  hosts: forge
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Trial (cleanup guaranteed)
+      block:
+        - name: Temporary file for the key
+          ansible.builtin.tempfile:
+            suffix: -key
+          register: check_forge_key
+
+        - name: Engine key in the temporary file
+          ansible.builtin.copy:
+            dest: "{{ check_forge_key.path }}"
+            content: "{{ vault_deployer_ssh_private_key }}"
+            mode: "0600"
+          no_log: true
+
+        - name: Connection refused from the forge
+          ansible.builtin.command:
+            argv:
+              - ssh
+              - -i
+              - "{{ check_forge_key.path }}"
+              - -o
+              - BatchMode=yes
+              - -o
+              - IdentitiesOnly=yes
+              - -o
+              - StrictHostKeyChecking=no
+              - -o
+              - UserKnownHostsFile=/dev/null
+              - "deployment@{{ hostvars[item].ansible_host }}"
+              - served preview check-access
+            stdin: ""
+          loop: "{{ groups['ci'] + groups['tools'] }}"
+          register: check_from
+          changed_when: false
+          failed_when: check_from.rc != 255 or check_from.stderr is not search('Permission denied')
+      always:
+        - name: Delete the key
+          ansible.builtin.file:
+            path: "{{ check_forge_key.path }}"
+            state: absent
+          when: check_forge_key.path is defined
+
+- name: Targets — every call is in journald
+  hosts: ci:tools
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Journal of the script since the start of the trials
+      ansible.builtin.command:
+        argv: [journalctl, -t, eupadev-deployer, --since, "@{{ check_start.stdout }}", --no-pager, -o, cat]
+      register: check_journal
+      changed_when: false
+
+    - name: Accepted and refused requests logged, with the caller
+      ansible.builtin.assert:
+        that:
+          - check_journal.stdout is search('caller=' ~ hostvars[groups['orchestrator'][0]].ansible_host ~ ' command="served [a-z]+ check-access" code=0')
+          - check_journal.stdout is search('command="bash" code=2')
+          - check_journal.stdout is search('command="" code=2')
+        fail_msg: "Incomplete journal:\n{{ check_journal.stdout }}"

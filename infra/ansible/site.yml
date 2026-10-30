@@ -1,0 +1,67 @@
+# Entry point: configures every machine. Can be rerun at will — what is
+# already in place is not redone.
+- name: Common base (updates, firewall)
+  hosts: all
+  become: true
+  pre_tasks:
+    # Let's Encrypt DNS-01 (group_vars/all): the Caddy image with the OVH
+    # module and the vault vault-ovh.yml; a plain Caddy would refuse acme_dns.
+    - name: Let's Encrypt needs caddy_image and the OVH credentials
+      ansible.builtin.assert:
+        that:
+          - caddy_image | length > 0
+          - vault_ovh_application_key is defined
+          - vault_ovh_application_secret is defined
+          - vault_ovh_consumer_key is defined
+        fail_msg: >-
+          caddy_tls={{ caddy_tls }}: set caddy_image (pipeline of the `caddy` repository)
+          and create group_vars/all/vault-ovh.yml, or caddy_tls: internal.
+        quiet: true
+      when: caddy_tls != 'internal'
+  roles: [base]
+
+# lab_ca, last (it restarts Docker once): with caddy_tls internal, the forge's
+# Docker trusts its own Caddy, so that the next pass can pull the platform's
+# Caddy image (caddy_image, Let's Encrypt DNS-01) from its own registry.
+- name: Forge (Gitea + PostgreSQL + Caddy)
+  hosts: forge
+  become: true
+  roles: [docker_disk, docker, gitea, gitea_org, backup, registry_cleanup, lab_ca]
+
+# deployer: Caddy of the mock-ups and Previews, access of the engine (ADR-014).
+# Tools database role (S4): database of the core tools' Previews.
+- name: CI (quality control machine, mock-ups and Previews)
+  hosts: ci
+  become: true
+  roles: [docker_disk, docker, lab_ca, runner, postgres_tools, deployer]
+
+# lab_ca: the VM's Docker and cosign trust the forge registry (engine image,
+# pulled by digest).
+- name: Orchestrator (dedicated PostgreSQL, DBOS engine, Keycloak)
+  hosts: orchestrator
+  become: true
+  roles: [docker_disk, docker, lab_ca, orchestrator, keycloak, backup]
+
+# lab_ca: the VM's Docker trusts the forge registry (agents image, pulled by
+# digest).
+- name: Agents (containers of the AI agents under gVisor; gvisor before docker)
+  hosts: agents
+  become: true
+  roles: [docker_disk, gvisor, docker, lab_ca, executor, agent_proxies]
+
+# lab_ca: the VM's Docker pulls the tool images from the forge registry
+# (step E5d).
+# Tools database role (S4): database of the core tools in Prod; backup
+# role: daily pg_dump of each tool database.
+- name: Tools (Prod of the generated tools)
+  hosts: tools
+  become: true
+  roles: [docker_disk, docker, lab_ca, postgres_tools, deployer, backup]
+
+# After the targets' Caddys: their authorities (lab) for whoever queries them
+# over HTTPS — the engine, and each target for its own health check.
+- name: Trust in the authorities of the deployment targets (lab)
+  hosts: ci:orchestrator:tools
+  become: true
+  roles:
+    - { role: lab_ca, lab_ca_targets: true }

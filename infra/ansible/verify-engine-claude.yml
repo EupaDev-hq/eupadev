@@ -1,0 +1,273 @@
+# First real Claude Code on the agents VM (docs/reflexions/2026-10-15-note-e4-claude-reel.md)
+# — can be rerun, leaves nothing behind.
+#   ansible-playbook verify-engine-claude.yml -e ai_call=true   (PAID CALL, cap 1 $)
+# Without -e ai_call=true, it stops before anything (guard, as verify-agents.yml).
+# The ENGINE'S CODE (ClaudeCodeEngine.execute, orchestrator/scripts/trial-claude.ts),
+# run as root on the agents VM (it drives Docker, like the future launcher):
+# cosign signature of the image, hardened container under runsc on the task's
+# internal network, real Claude Code behind the AI proxy (named by its IP, fake
+# key), commit fetched as a bundle and pushed to agent/<tool>/1/builder.
+# Then the admin checks against the forge (branch, author, file) and the VM (no
+# task container, network or volume left).
+#
+# Prerequisites: verify-image-agent.yml green (agents_image of group_vars/agents, signed), verify-agents.yml
+# green (AI proxy with the real key).
+- name: Real Claude Code through the engine, on the agents VM
+  hosts: agents
+  become: true
+  gather_facts: false
+  vars:
+    ai_call: false
+    tool: check-engine-claude
+    model: claude-haiku-5-5
+    branch: "agent/{{ tool }}/1/builder"
+    check_forge: "{{ groups['forge'][0] }}"
+    forge_api: "{{ hostvars[check_forge].gitea_api }}"
+    forge_org: "{{ hostvars[check_forge].gitea_org }}"
+    # Same Node as the engine (orchestrator/Dockerfile) and verify-agents.yml,
+    # copied from the image by digest: nothing new to download.
+    image_node: node:22.23.4-trixie-slim@sha256:8eb619e402eaede1748a3c8173bffab391592812e85136452f781741c7242ddf
+    cosign_defaults: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/roles/orchestrator/defaults/main.yml') | from_yaml }}"
+    docker_config: /run/eupadev/trial-registry-claude
+    src: "{{ playbook_dir }}/../../orchestrator"
+    # No report: full JSON output and stderr of Claude Code (no secret, fake key), fetched here.
+    local_log: /tmp/check-engine-claude-log.txt
+  module_defaults:
+    ansible.builtin.uri:
+      url_username: "{{ gitea_admin_user }}"
+      url_password: "{{ vault_gitea_admin_password }}"
+      force_basic_auth: true
+      body_format: json
+      return_content: true
+  tasks:
+    - name: Guard — paid call only on request
+      ansible.builtin.assert:
+        that: ai_call | bool
+        fail_msg: "Paid call (cap 1 $): run again with -e ai_call=true"
+        quiet: true
+
+    - name: Trial (cleanup guaranteed)
+      block:
+        - name: Delete the trial repository of an earlier run
+          ansible.builtin.uri:
+            url: "{{ forge_api }}/repos/{{ forge_org }}/{{ tool }}"
+            method: DELETE
+            status_code: [204, 404]
+          delegate_to: "{{ check_forge }}"
+
+        - name: Remove old tokens (interrupted run)
+          ansible.builtin.uri:
+            url: "{{ forge_api }}/users/{{ item }}/tokens/check-engine-claude"
+            method: DELETE
+            status_code: [204, 404]
+          loop: [svc-agent, svc-deployment]
+          delegate_to: "{{ check_forge }}"
+
+        - name: Create the trial repository (README on main)
+          ansible.builtin.uri:
+            url: "{{ forge_api }}/orgs/{{ forge_org }}/repos"
+            method: POST
+            body: { name: "{{ tool }}", auto_init: true, default_branch: main, private: true }
+            status_code: 201
+          delegate_to: "{{ check_forge }}"
+
+        - name: Read the teams of the organisation
+          ansible.builtin.uri:
+            url: "{{ forge_api }}/orgs/{{ forge_org }}/teams?limit=50"
+          register: teams
+          delegate_to: "{{ check_forge }}"
+
+        # As the orchestrator does (GiteaForge): the agents team only has the repositories assigned to it.
+        - name: Assign the repository to the agents team
+          ansible.builtin.uri:
+            url: "{{ forge_api }}/teams/{{ (teams.json | selectattr('name', 'equalto', 'agents') | first).id }}/repos/{{ forge_org }}/{{ tool }}"
+            method: PUT
+            status_code: 204
+          delegate_to: "{{ check_forge }}"
+
+        - name: Temporary tokens (svc-agent for Git, svc-deployment for the registry)
+          ansible.builtin.uri:
+            url: "{{ forge_api }}/users/{{ item.user }}/tokens"
+            method: POST
+            body: { name: check-engine-claude, scopes: "{{ item.scopes }}" }
+            status_code: 201
+          loop:
+            - { user: svc-agent, scopes: [write:repository] }
+            - { user: svc-deployment, scopes: [read:package] }
+          register: tokens
+          delegate_to: "{{ check_forge }}"
+          no_log: true
+
+        - name: Temporary trial directory (root 0700, executable)
+          ansible.builtin.tempfile:
+            state: directory
+            suffix: -trial-claude
+          register: trial_dir
+
+        - name: Source directories
+          ansible.builtin.file:
+            path: "{{ trial_dir.path }}/{{ item }}"
+            state: directory
+            mode: "0700"
+          loop: [src/external, src/agent-engine, scripts, bin]
+
+        - name: Copy the engine, the trial script, the report schema and the public key
+          ansible.builtin.copy:
+            src: "{{ item.0 }}"
+            dest: "{{ trial_dir.path }}/{{ item.1 }}"
+            mode: "0400"
+          loop:
+            - ["{{ src }}/src/external/contracts.ts", src/external/contracts.ts]
+            - ["{{ src }}/src/external/claude-engine.ts", src/external/claude-engine.ts]
+            - ["{{ src }}/src/agent-engine/forbidden-paths.ts", src/agent-engine/forbidden-paths.ts]
+            - ["{{ src }}/src/text.ts", src/text.ts]
+            - ["{{ src }}/scripts/trial-claude.ts", scripts/trial-claude.ts]
+            - ["{{ playbook_dir }}/../../tool-template/agents/report.schema.json", report.schema.json]
+            - ["{{ playbook_dir }}/../../images/engine/cosign.pub", cosign.pub]
+
+        - name: Module file (ESM)
+          ansible.builtin.copy:
+            dest: "{{ trial_dir.path }}/package.json"
+            content: '{"type": "module"}'
+            mode: "0400"
+
+        - name: Token of svc-agent (read through AGENT_FORGE_TOKEN_FILE)
+          ansible.builtin.copy:
+            dest: "{{ trial_dir.path }}/agent-token"
+            content: "{{ tokens.results[0].json.sha1 }}\n"
+            mode: "0400"
+          no_log: true
+
+        - name: Copy node from its image (by digest)
+          ansible.builtin.shell:
+            cmd: |
+              set -eu
+              c=$(docker create {{ image_node }})
+              docker cp "$c:/usr/local/bin/node" {{ trial_dir.path }}/bin/node
+              docker rm "$c" >/dev/null
+          changed_when: false
+
+        - name: Install cosign (sha256 sum checked, as in verify-image-agent.yml)
+          ansible.builtin.get_url:
+            url: "https://github.com/sigstore/cosign/releases/download/{{ cosign_defaults.orchestrator_cosign_version }}/cosign-linux-amd64"
+            dest: "{{ trial_dir.path }}/bin/cosign"
+            checksum: "sha256:{{ cosign_defaults.orchestrator_cosign_sha256 }}"
+            mode: "0700"
+          changed_when: false
+
+        - name: Registry login directory (memory)
+          ansible.builtin.file:
+            path: "{{ docker_config }}"
+            state: directory
+            mode: "0700"
+
+        - name: Log in to the forge registry (image and signature)
+          ansible.builtin.command:
+            argv: [docker, login, "{{ gitea_domain }}", -u, svc-deployment, --password-stdin]
+            stdin: "{{ tokens.results[1].json.sha1 }}"
+          environment: { DOCKER_CONFIG: "{{ docker_config }}" }
+          changed_when: false
+          no_log: true
+
+        - name: The engine runs the task with the real Claude Code (paid)
+          ansible.builtin.command:
+            argv: ["{{ trial_dir.path }}/bin/node", "{{ trial_dir.path }}/scripts/trial-claude.ts", "{{ tool }}", "{{ model }}"]
+            chdir: "{{ trial_dir.path }}"
+          environment:
+            PATH: "{{ trial_dir.path }}/bin:/usr/local/bin:/usr/bin:/bin"
+            DOCKER_CONFIG: "{{ docker_config }}"
+            FORGE_URL: "https://{{ gitea_domain }}"
+            AGENT_FORGE_TOKEN_FILE: "{{ trial_dir.path }}/agent-token"
+            AGENT_IMAGE: "{{ agents_image }}"
+            AGENT_COSIGN_PUB: "{{ trial_dir.path }}/cosign.pub"
+            AGENT_AI_PROXY: agents-ai-proxy-1:8080
+            AGENT_PROXIES: agents-smokescreen-1
+            REPORT_SCHEMA_PATH: "{{ trial_dir.path }}/report.schema.json"
+            AGENT_LOG: "{{ trial_dir.path }}/log.txt"
+          register: trial
+          changed_when: true
+          failed_when: false
+
+        - name: Fetch the Claude Code diagnosis (only if the task ended without a report)
+          ansible.builtin.fetch:
+            src: "{{ trial_dir.path }}/log.txt"
+            dest: "{{ local_log }}"
+            flat: true
+            fail_on_missing: false
+
+        - name: Engine result
+          ansible.builtin.debug:
+            msg: "rc={{ trial.rc }} {{ trial.stdout }} {{ trial.stderr | default('') }}"
+
+        - name: The engine returned a report, with cost and tokens, under the cap
+          vars:
+            output: "{{ trial.stdout | from_json }}"
+          ansible.builtin.assert:
+            that:
+              - trial.rc == 0
+              - output.error is none
+              - output.cost_usd is number and 0 < output.cost_usd <= 1
+              - output.tokens.input > 0 and output.tokens.output > 0
+              - output.tree_hash is string
+            success_msg: "OK — status {{ output.status }}, {{ output.cost_usd }} $, {{ output.tokens }}, {{ output.duration_s }} s"
+            fail_msg: "FAILED — rc={{ trial.rc }}: {{ trial.stdout }} {{ trial.stderr }}"
+            quiet: true
+
+        # The forge's truth, read by the admin.
+        - name: Read the task's branch
+          ansible.builtin.uri:
+            url: "{{ forge_api }}/repos/{{ forge_org }}/{{ tool }}/branches/{{ branch | urlencode | replace('/', '%2F') }}"
+          register: branch_read
+          delegate_to: "{{ check_forge }}"
+
+        - name: Read api/hello.txt on the branch
+          ansible.builtin.uri:
+            url: "{{ forge_api }}/repos/{{ forge_org }}/{{ tool }}/raw/api/hello.txt?ref={{ branch | urlencode | replace('/', '%2F') }}"
+          register: file_read
+          delegate_to: "{{ check_forge }}"
+
+        - name: Task leftovers on the VM (containers, networks, volumes)
+          ansible.builtin.shell:
+            cmd: |
+              set -eu
+              f="--filter label=eupadev.task -q"
+              docker ps -a $f; docker network ls $f; docker volume ls $f
+          register: leftovers
+          changed_when: false
+
+        - name: Agent commit pushed by the launcher, expected file, nothing left
+          ansible.builtin.assert:
+            that:
+              - branch_read.json.commit.author.name == 'agent-builder'
+              - file_read.content | trim == 'hello'
+              - leftovers.stdout | trim == ''
+            success_msg: "OK — {{ branch }}: commit {{ branch_read.json.commit.id[:8] }} by agent-builder, api/hello.txt = hello; nothing left"
+            fail_msg: "FAILED — author {{ branch_read.json.commit.author.name }}, file {{ file_read.content | trim }}, leftovers {{ leftovers.stdout_lines }}"
+            quiet: true
+
+      always:
+        - name: Remove the temporary directory (node, cosign, token included)
+          ansible.builtin.file:
+            path: "{{ trial_dir.path }}"
+            state: absent
+          when: trial_dir.path is defined
+
+        - name: Remove the registry login
+          ansible.builtin.file:
+            path: "{{ docker_config }}"
+            state: absent
+
+        - name: Delete the temporary tokens
+          ansible.builtin.uri:
+            url: "{{ forge_api }}/users/{{ item }}/tokens/check-engine-claude"
+            method: DELETE
+            status_code: [204, 404]
+          loop: [svc-agent, svc-deployment]
+          delegate_to: "{{ check_forge }}"
+
+        - name: Delete the trial repository
+          ansible.builtin.uri:
+            url: "{{ forge_api }}/repos/{{ forge_org }}/{{ tool }}"
+            method: DELETE
+            status_code: [204, 404]
+          delegate_to: "{{ check_forge }}"

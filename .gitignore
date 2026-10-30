@@ -1,0 +1,3 @@
+# Isolated working copies of the agents (Claude Code)
+.claude/worktrees/
+__pycache__/

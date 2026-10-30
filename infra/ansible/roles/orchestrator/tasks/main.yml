@@ -1,0 +1,122 @@
+# Orchestrator VM (ROADMAP §8.13, §8.16 M1-M3): its dedicated PostgreSQL
+# database, then the engine (migrate + engine) when an image is set.
+- name: Orchestrator folder (root access only)
+  ansible.builtin.file:
+    path: /opt/eupadev/orchestrator
+    state: directory
+    mode: "0750"
+
+# E5d: host keys of the deployment targets for the engine's known_hosts
+# (StrictHostKeyChecking=yes), read through Ansible's own verified connection.
+- name: Host keys of the deployer's targets
+  ansible.builtin.slurp:
+    src: /etc/ssh/ssh_host_ed25519_key.pub
+  delegate_to: "{{ item }}"
+  loop: "{{ groups['ci'] + groups['tools'] }}"
+  register: orchestrator_target_keys
+
+- name: The known_hosts file of the deployer
+  ansible.builtin.set_fact:
+    orchestrator_known_hosts: "{% for r in orchestrator_target_keys.results %}{{ hostvars[r.item].ansible_host ~ ' '
+      ~ (r.content | b64decode).split()[:2] | join(' ') }}\n{% endfor %}"
+
+- name: Durable token of svc-orchestrator (real forge)
+  ansible.builtin.include_tasks: forge-token.yml
+
+# Secrets encrypted on the VM, decrypted in memory at boot (§8.16 M1).
+- name: Secrets of the orchestrator (systemd-creds)
+  ansible.builtin.include_tasks: systemd-creds.yml
+
+- name: Copy the Compose file
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../compose/orchestrator/compose.yml"
+    dest: /opt/eupadev/orchestrator/compose.yml
+    mode: "0640"
+
+# No secret left in this file (it used to hold the database password).
+- name: Put the non-secret variables beside the Compose file
+  ansible.builtin.template:
+    src: orchestrator-variables.j2
+    dest: /opt/eupadev/orchestrator/.env
+    mode: "0640"
+
+# Image pulled by digest and signature checked BEFORE any start (ADR-005).
+- name: Engine image (download, signature)
+  ansible.builtin.include_tasks: image.yml
+  when: orchestrator_image | length > 0
+
+# TLS of the database, access rules and port filter (before the start).
+- name: Database over verified TLS
+  ansible.builtin.include_tasks: db-tls.yml
+
+# --force-recreate after a secret change: a container keeps the file mounted
+# at its creation, not the one the service has just made again.
+- name: Start or update the database, wait until it is healthy
+  ansible.builtin.command:
+    argv: >-
+      {{ ['docker', 'compose', 'up', '-d', '--wait', '--wait-timeout', '180']
+         + (['--force-recreate'] if orchestrator_recreate else []) + ['db'] }}
+    chdir: /opt/eupadev/orchestrator
+  register: orchestrator_compose_db
+  changed_when: orchestrator_compose_db.stderr is search('Created|Recreated|Started|Pulled')
+
+# Certificate renewed or rules changed, database not recreated: PostgreSQL
+# rereads certificates and pg_hba on SIGHUP (PostgreSQL documentation),
+# without cutting the connections.
+- name: Make PostgreSQL reread its certificate and access rules
+  ansible.builtin.command:
+    argv: [docker, compose, kill, -s, HUP, db]
+    chdir: /opt/eupadev/orchestrator
+  when: orchestrator_db_reread and not orchestrator_compose_db.changed
+  changed_when: true
+
+# Step 6: accounts orch_owner (migrations) and orch_engine (engine), created
+# by the orchestrator's SQL file (idempotent, replayed on every pass).
+# Passwords passed through psql's standard input (\set), never as a command
+# argument (readable by any user of the VM in `ps`).
+# The password is applied again on every pass (always right); "changed" is
+# shown only when the accounts are created. A rotation also changes the
+# encrypted secrets (connection URL), so it recreates migrate and engine.
+# Doubled apostrophes: psql's quoting rule.
+- name: Create or update the PostgreSQL accounts of the orchestrator
+  ansible.builtin.command:
+    argv: [docker, compose, exec, -T, db, psql, -U, orchestrator, -d, orchestrator, -v, ON_ERROR_STOP=1, -f, "-"]
+    chdir: /opt/eupadev/orchestrator
+    stdin: |
+      \set owner_password '{{ vault_orch_owner_password | replace("'", "''") }}'
+      \set engine_password '{{ vault_orch_engine_password | replace("'", "''") }}'
+      {{ lookup('ansible.builtin.file', playbook_dir ~ '/../../orchestrator/sql/roles.sql') }}
+  register: orchestrator_accounts
+  changed_when: orchestrator_accounts.stdout is search('CREATE ROLE')
+  no_log: true
+
+# Emergency stop level 2 or 3 (emergency-stop.yml): the engine stays stopped,
+# even when this recipe is replayed; resumption: emergency-stop.yml -e level=0.
+- name: Is an emergency stop in progress?
+  ansible.builtin.stat:
+    path: /opt/eupadev/orchestrator/EMERGENCY-STOP
+  register: orchestrator_stop
+
+# migrate is started again on every pass (Compose restarts a finished one-off
+# service): only db, mailpit (lab, started with the engine) and engine count
+# as a change. `up` stops the old engine before starting the new one (D23:
+# never two at once).
+- name: Migrate the database then start or update the engine
+  ansible.builtin.command:
+    argv: >-
+      {{ ['docker', 'compose', 'up', '-d', '--wait', '--wait-timeout', '300']
+         + (['--force-recreate'] if orchestrator_recreate else []) + ['migrate', 'engine'] }}
+    chdir: /opt/eupadev/orchestrator
+  register: orchestrator_compose_engine
+  changed_when: orchestrator_compose_engine.stderr is search('(db|mailpit|engine)-1\s+(Created|Recreated|Started)')
+  when:
+    - orchestrator_image | length > 0
+    - not orchestrator_stop.stat.exists
+
+- name: Report that the engine is not started
+  ansible.builtin.debug:
+    msg: "Engine NOT started: {{ orchestrator_stop_reason if orchestrator_stop.stat.exists else orchestrator_empty_reason }}."
+  vars:
+    orchestrator_stop_reason: "emergency stop in progress (resumption: emergency-stop.yml -e level=0 -e confirm=yes)"
+    orchestrator_empty_reason: "orchestrator_image empty (group_vars/orchestrator/vars.yml)"
+  when: orchestrator_image | length == 0 or orchestrator_stop.stat.exists

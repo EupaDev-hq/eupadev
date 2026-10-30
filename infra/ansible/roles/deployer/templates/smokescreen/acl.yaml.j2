@@ -1,0 +1,11 @@
+# Managed by Ansible (deployer role) — egress allowlist of the core tools
+# (S6, ADR-022). Tools present no client certificate: rule "default"
+# (allow_missing_role, config.yaml). "enforce": any other name is refused.
+version: v1
+services: []
+default:
+  name: tools
+  project: eupadev
+  action: enforce
+  allowed_domains:
+    - {{ deployer_idp_host }}

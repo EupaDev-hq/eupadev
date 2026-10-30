@@ -1,0 +1,336 @@
+# The forge receives the web traffic (Caddy) on top of the SSH administration.
+ufw_allowed_ports: [22, 80, 443]
+
+# OVH credentials of the forge's Caddy: environment of the container, from
+# the .env of the Compose (root only, where the forge's secrets already are).
+caddy_ovh:
+  application_key: "{env.OVH_APPLICATION_KEY}"
+  application_secret: "{env.OVH_APPLICATION_SECRET}"
+  consumer_key: "{env.OVH_CONSUMER_KEY}"
+
+# Gitea's API as seen from the forge VM (local service door, see compose).
+gitea_api: http://127.0.0.1:3000/api/v1
+gitea_org: eupadev
+
+# One team per role, one robot account per team (ROADMAP §8.4).
+# units_map: rights per part of the repository (code, pull requests, image
+# store...). What is not listed is not accessible.
+# all_repos: the team has access to every repository of the organisation,
+# present and future. Never for the agents: they only access the tool
+# repositories the orchestrator assigns to them, never the platform
+# repositories (template, golden images), otherwise an agent would change the
+# kit of every future tool.
+gitea_service_accounts:
+  - user: svc-agent
+    team: agents
+    description: AI agents — write on their branches, never on main
+    can_create_org_repo: false
+    units_map: { repo.code: write, repo.pulls: write }
+    all_repos: false
+  - user: svc-orchestrator
+    team: orchestrator
+    description: Orchestrator — creates the repositories, merges into main after review
+    can_create_org_repo: true
+    # repo.actions (ROADMAP M6): the watcher reads the CI runs (E4) and
+    # starts the Preview pipeline (E5); never the commit statuses.
+    units_map: { repo.code: write, repo.pulls: write, repo.actions: write }
+    all_repos: true
+  - user: svc-ci
+    team: ci
+    description: CI — publishes the candidate images to the registry
+    can_create_org_repo: false
+    units_map: { repo.code: read, repo.packages: write }
+    all_repos: true
+  - user: svc-deployment
+    team: deployment
+    description: Deployment — reads the registry, nothing else
+    can_create_org_repo: false
+    units_map: { repo.packages: read }
+    all_repos: true
+
+# Owner of the core package (ADR-023). Gitea grants package writes per OWNER,
+# never per package: in `eupadev`, any robot with package write (svc-ci,
+# whose badge every tool pipeline holds) could publish @eupadev/core. The
+# core therefore lives in its own organisation, readable by any signed-in
+# account (limited), where svc-core is the only member with package write.
+# svc-core is in no team of `eupadev`. Its badge lives in the secrets of
+# the `core` repository only (gitea_platform_repos[].badges). Name fixed by
+# convention `<org>-core` (pipelines derive it from their repository).
+gitea_core_org:
+  org: "{{ gitea_org }}-core"
+  visibility: limited
+  user: svc-core
+  team: publication
+  description: Core — publishes @eupadev/core to the npm registry
+  units_map: { repo.packages: write }
+
+# Human accounts of the forge (no administration): the human path of the
+# approved exceptions (docs/reflexions/2026-10-13-note-exceptions.md). Random
+# initial password, never stored: the person sets it themselves
+# (gitea admin user change-password), later through Keycloak.
+# Same shape as gitea_service_accounts (one team per entry): the team
+# "humans" writes in every repository, without administration. What its
+# members can do on main is set by gitea_branch_protections.
+gitea_human_accounts:
+  - user: ilan
+    team: humans
+    description: Humans — path of the approved exceptions (branches exception/**)
+    can_create_org_repo: false
+    units_map: { repo.code: write, repo.pulls: write }
+    all_repos: true
+
+# Memberships on top of "one account, one team": svc-orchestrator is a
+# member of the agents team so that it can assign to it a tool it has just
+# generated (Gitea 28 requires being a member of the team); it gains no right
+# there (its team already writes in every repository).
+gitea_additional_members:
+  - { user: svc-orchestrator, team: agents }
+
+# Files that neither an agent nor the orchestrator changes: pipelines,
+# instructions, configuration of Claude Code and pnpm, files that Git or an
+# editor interpret, exception files that no scanner option closes
+# (.gitleaksignore, .semgrepignore), dated Trivy exceptions, exceptions
+# registry (.gitea/exceptions.txt) and the image build (Dockerfile,
+# .dockerignore: the image comes from the fixed Dockerfile .gitea/image/, A-R0),
+# vendor/ and node_modules/ (dependencies come from the registry, G4). Only
+# a human changes them, through a PR.
+# SAME LIST as the launcher and the agents' managed settings
+# (orchestrator/src/agent-engine/forbidden-paths.ts, giteaPatterns; checked by
+# orchestrator/tests/forbidden-paths.test.ts): root and subdirectories,
+# one line per pattern, joined by ";" (Gitea's format).
+gitea_protected_files_list:
+  - ".claude/**"
+  - "**/.claude/**"
+  - ".gitea/**"
+  - "**/.gitea/**"
+  - ".github/**"
+  - "**/.github/**"
+  - "agents/**"
+  - "**/agents/**"
+  - ".opengrep/**"
+  - "**/.opengrep/**"
+  - ".git/**"
+  - "**/.git/**"
+  - ".husky/**"
+  - "**/.husky/**"
+  - ".vscode/**"
+  - "**/.vscode/**"
+  - ".idea/**"
+  - "**/.idea/**"
+  - ".devcontainer/**"
+  - "**/.devcontainer/**"
+  - "vendor/**"
+  - "**/vendor/**"
+  - "node_modules/**"
+  - "**/node_modules/**"
+  - "AGENTS.md"
+  - "**/AGENTS.md"
+  - "AGENTS.fr.md"
+  - "**/AGENTS.fr.md"
+  - "CLAUDE.md"
+  - "**/CLAUDE.md"
+  - "CLAUDE.local.md"
+  - "**/CLAUDE.local.md"
+  - ".mcp.json"
+  - "**/.mcp.json"
+  - ".npmrc"
+  - "**/.npmrc"
+  - ".pnpmfile.cjs"
+  - "**/.pnpmfile.cjs"
+  - ".pnpmfile.mjs"
+  - "**/.pnpmfile.mjs"
+  - "pnpm-workspace.yaml"
+  - "**/pnpm-workspace.yaml"
+  - ".gitmodules"
+  - "**/.gitmodules"
+  - ".gitattributes"
+  - "**/.gitattributes"
+  - ".devcontainer.json"
+  - "**/.devcontainer.json"
+  - ".gitleaksignore"
+  - "**/.gitleaksignore"
+  - ".semgrepignore"
+  - "**/.semgrepignore"
+  - ".trivyignore.yaml"
+  - "**/.trivyignore.yaml"
+  - "Dockerfile"
+  - "**/Dockerfile"
+  - ".dockerignore"
+  - "**/.dockerignore"
+gitea_protected_files: "{{ gitea_protected_files_list | join(';') }}"
+
+# Branch protections of the template, copied into each tool at its
+# generation (protected_branch, Gitea 28; checked by verify-forge.yml).
+#   main         : only svc-orchestrator pushes there. A protected file only
+#                  reaches it through a PR merged by ilan or forgeadmin
+#                  (bypass); an admin of the repository does not bypass.
+#   agent/**     : the agents push there, but Gitea refuses any push that
+#                  changes a protected file ("poisoned pipeline").
+#   exception/** : human path — only ilan and forgeadmin push there (exceptions
+#                  registry, synchronisation of the template).
+#   **           : any other branch — only svc-orchestrator pushes there, with
+#                  no protected file (otherwise a branch outside agent/** would
+#                  carry a pipeline that targets the "image" runner).
+#   The order matters: the first rule that matches applies; priority
+#   sets it (1 = examined first).
+#   forgeadmin is the emergency admin: it can already change everything
+#   through the administration API, naming it gives it nothing more.
+gitea_branch_protections:
+  - rule_name: main
+    priority: 1
+    enable_push: true
+    enable_push_whitelist: true
+    push_whitelist_usernames: [svc-orchestrator]
+    enable_merge_whitelist: true
+    merge_whitelist_usernames: [svc-orchestrator, ilan, "{{ gitea_admin_user }}"]
+    protected_file_patterns: "{{ gitea_protected_files }}"
+    enable_bypass_allowlist: true
+    bypass_allowlist_usernames: [ilan, "{{ gitea_admin_user }}"]
+    block_admin_merge_override: true
+  - rule_name: "agent/**"
+    priority: 2
+    enable_push: true
+    protected_file_patterns: "{{ gitea_protected_files }}"
+  - rule_name: "exception/**"
+    priority: 3
+    enable_push: true
+    enable_push_whitelist: true
+    push_whitelist_usernames: [ilan, "{{ gitea_admin_user }}"]
+  - rule_name: "**"
+    priority: 4
+    enable_push: true
+    enable_push_whitelist: true
+    push_whitelist_usernames: [svc-orchestrator]
+    protected_file_patterns: "{{ gitea_protected_files }}"
+
+# CI badges, stored in the organisation's secrets (never on disk). Write
+# only to publish on main; read for everything else (e.g. downloading the
+# golden image on an agent branch).
+gitea_ci_tokens:
+  - { secret: REGISTRY_TOKEN, user: svc-ci, name: ci-registry, scopes: ["write:package"] }
+  - { secret: REGISTRY_READ_TOKEN, user: svc-deployment, name: ci-registry-read, scopes: ["read:package"] }
+
+# Platform repositories, synchronised with a EupaDev directory.
+gitea_platform_repos:
+  - { name: tool-template, src: tool-template, template: true, description: "Template repository duplicated for each new tool" }
+  - { name: base-image, src: images/base-node, template: false, description: "Golden images of the tools and of the CI (built every week)" }
+  # Engine: images/engine at the root (pipeline, public key), plus the build
+  # context of orchestrator/Dockerfile copied at its original path (extra) —
+  # exactly the allow-list of its .dockerignore.
+  # secrets: secrets of the REPOSITORY (not of the organisation: no tool
+  # repository sees the engine's signing key), set before the first push.
+  - name: engine
+    src: images/engine
+    extra:
+      - orchestrator/Dockerfile
+      - orchestrator/Dockerfile.dockerignore
+      - orchestrator/package.json
+      - orchestrator/pnpm-lock.yaml
+      - orchestrator/migrations
+      - orchestrator/src
+      - orchestrator/lang
+      - orchestrator/web
+      - tool-template/agents
+      - tool-template/AGENTS.md
+      - tool-template/.claude/rules
+      - examples/requests/README.md
+      - examples/requests/openapi.yaml
+      - examples/requests/api
+      - examples/requests/db
+      - examples/requests/web
+      - examples/requests/tests
+    secrets: [COSIGN_PRIVATE_KEY, COSIGN_PASSWORD]
+    template: false
+    description: "Image of the EupaDev engine (built, scanned, signed by cosign)"
+  # Image of the AI agents: Claude Code downloaded by the CI of THIS forge
+  # (never published by EupaDev, ADR-013), signed by the installation's
+  # cosign key: same repository secrets as `engine`, public key copied at
+  # its original path (images/engine/cosign.pub).
+  - name: agent
+    src: images/agent
+    extra: [images/engine/cosign.pub]
+    secrets: [COSIGN_PRIVATE_KEY, COSIGN_PASSWORD]
+    template: false
+    description: "Image of the AI agents (pinned Claude Code version, built, scanned, signed by cosign)"
+  # Keycloak (identity, docs/reflexions/2026-10-15-note-keycloak-labo.md):
+  # official image built for PostgreSQL, signed by the same key as `engine`
+  # and `agent` (repository secrets, public key at its original path).
+  - name: keycloak
+    src: images/keycloak
+    extra: [images/engine/cosign.pub]
+    secrets: [COSIGN_PRIVATE_KEY, COSIGN_PASSWORD]
+    template: false
+    description: "Keycloak image of the platform (built for PostgreSQL, scanned, signed by cosign)"
+  # Caddy with the OVH DNS module (Let's Encrypt DNS-01, images/caddy): same
+  # signing key and public key as `engine`.
+  - name: caddy
+    src: images/caddy
+    extra: [images/engine/cosign.pub]
+    secrets: [COSIGN_PRIVATE_KEY, COSIGN_PASSWORD]
+    template: false
+    description: "Caddy image of the platform (OVH DNS module, scanned, signed by cosign)"
+  # Core of the tools (@eupadev/core), published to the forge's npm
+  # registry (docs/reflexions/2026-10-22-note-socle-registry.md): pipeline in
+  # images/core, core/ recopied at its original path, file by file and
+  # folder by folder (never the controller's node_modules/). badges: robot
+  # badges created by Ansible and stored in the secrets of THIS repository
+  # (same fields as gitea_ci_tokens); publication badge of svc-core.
+  - name: core
+    badges:
+      - { secret: CORE_PUBLISH_TOKEN, user: svc-core, name: core-publication, scopes: ["write:package"] }
+    src: images/core
+    extra:
+      - core/package.json
+      - core/pnpm-lock.yaml
+      - core/pnpm-workspace.yaml
+      - core/README.md
+      - core/tsconfig.json
+      - core/tsconfig.web.json
+      - core/bin
+      - core/src
+      - core/kit
+      - core/web
+      - core/sql
+      - core/migrations
+      - core/tests
+    template: false
+    description: "Core of the tools (@eupadev/core): tested, then published to the forge npm registry"
+
+# Values of the repository secrets (gitea_platform_repos[].secrets), read
+# from the vault group_vars/forge/vault-cosign.yml (init-vault.sh).
+gitea_repo_secrets:
+  COSIGN_PRIVATE_KEY: "{{ vault_cosign_private_key }}"
+  COSIGN_PASSWORD: "{{ vault_cosign_password }}"
+
+# Secrets of the ORGANISATION (seen by all its repositories, hence by each
+# generated tool): signing key of the tools' images (ADR-014, decision no. 5),
+# read from the vault group_vars/forge/vault-cosign-tools.yml (init-vault.sh).
+# Distinct from the key of the engine and the agents (REPOSITORY secrets
+# above): a signature made by a tool's CI is never accepted for a platform
+# image. Used only by the signing step of check.yml, on main. Created if they
+# are missing; rotation: see init-vault.sh.
+gitea_org_secrets:
+  COSIGN_TOOLS_PRIVATE_KEY: "{{ vault_cosign_tools_private_key }}"
+  COSIGN_TOOLS_PASSWORD: "{{ vault_cosign_tools_password }}"
+
+# CI variables of the organisation, read by the tools' pipelines.
+gitea_org_variables:
+  PREVIEW_DOMAIN: "{{ base_domain }}"
+  BASE_IMAGE_BUILD: "{{ gitea_domain }}/{{ gitea_org }}/base-node:build-24"
+  BASE_IMAGE_RUN: "{{ gitea_domain }}/{{ gitea_org }}/base-node:run-24"
+  # CI golden image: image of the jobs that run the agents' code.
+  CI_IMAGE: "{{ gitea_domain }}/{{ gitea_org }}/base-node:ci-24"
+
+# Registry cleanup (registry-cleanup.yml, timer of the role
+# registry_cleanup): images always kept, with their signature.
+registry_in_service:
+  - "{{ hostvars[groups['orchestrator'][0]].orchestrator_image }}"
+  - "{{ hostvars[groups['orchestrator'][0]].keycloak_image }}"
+  - "{{ hostvars[groups['agents'][0]].agents_image }}"
+registry_movable:
+  - "{{ gitea_org_variables.BASE_IMAGE_BUILD }}"
+  - "{{ gitea_org_variables.BASE_IMAGE_RUN }}"
+  - "{{ gitea_org_variables.CI_IMAGE }}"
+# 4 backups on the forge (Ilan's decision, 2026-10-18): each archive
+# holds the image registry (≈ 5 GiB), 7 filled the Docker disk.
+backup_keep: 4

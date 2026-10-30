@@ -1,0 +1,4 @@
+# Additional runtimes of the Docker daemon ("runtimes" key of daemon.json).
+# Empty everywhere except on the agents VM (gVisor, group_vars/agents). The
+# default runtime stays runc: an added runtime is used only with --runtime=<name>.
+docker_runtimes: {}

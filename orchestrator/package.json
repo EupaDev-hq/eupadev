@@ -1,0 +1,43 @@
+{
+  "name": "@eupadev/orchestrator",
+  "version": "0.1.0",
+  "private": true,
+  "description": "EupaDev orchestrator — verifiable state machine, PostgreSQL schema, DBOS workflows W1/W2 and fake agent engine",
+  "license": "Apache-2.0",
+  "type": "module",
+  "packageManager": "pnpm@12.16.1",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --test tests/config.test.ts tests/auth.test.ts tests/instructions.test.ts tests/forbidden-paths.test.ts tests/fixed-image.test.ts tests/claude-output.test.ts tests/engine-core.test.ts tests/gitea-forge.test.ts tests/ssh-deployer.test.ts tests/machine.test.ts tests/feature-coverage.test.ts tests/stagnation.test.ts tests/a-r6.test.ts tests/i18n.test.ts",
+    "test:db": "node --test tests/db.test.ts tests/engine.test.ts tests/robustness.test.ts tests/replacement.test.ts tests/monitoring.test.ts tests/service.test.ts tests/mails.test.ts tests/claude-engine.test.ts tests/roles.test.ts",
+    "test:resume": "node --test tests/resume.test.ts",
+    "test:bdd": "cucumber-js",
+    "test:web": "node --test tests/web.test.ts",
+    "test:mutations": "node tests/mutations/launch.ts",
+    "test:all": "pnpm typecheck && pnpm test && pnpm test:db && pnpm test:resume && pnpm test:bdd && pnpm test:web",
+    "migrate": "node src/migrate.ts",
+    "start": "node src/main.ts",
+    "generate": "node scripts/generate-mermaid.ts && node scripts/generate-claude-check.ts"
+  },
+  "dependencies": {
+    "@dbos-inc/dbos-sdk": "5.3.0",
+    "ajv": "8.20.0",
+    "jose": "6.2.12",
+    "node-pg-migrate": "9.0.0",
+    "nodemailer": "10.1.4",
+    "openid-client": "6.8.8",
+    "pg": "8.23.1"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "4.14.0",
+    "@cucumber/cucumber": "13.3.0",
+    "@types/node": "^22.20.5",
+    "@types/pg": "^8.23.1",
+    "deep-chat": "2.5.1",
+    "playwright": "1.64.1",
+    "typescript": "7.0.2"
+  }
+}

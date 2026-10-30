@@ -1,0 +1,138 @@
+# Code analysis rules (Opengrep) — starter set.
+# Each rule turns a rule of .claude/rules/security.md into an automatic
+# check: the prompt guides the agent, this check verifies (ROADMAP §8.11).
+# ponytail: starter set deliberately short and mechanical (few false
+# positives); the 18 categories of security.md will be turned into rules here
+# as the rules are rewritten, in the "known error" format.
+rules:
+  - id: innerhtml-variable-text
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      innerHTML/outerHTML/insertAdjacentHTML with a non-literal text: XSS
+      risk. Use textContent, or pass the WHOLE value through escapeHtml()
+      (text) or DOMPurify.sanitize() (rich HTML) (security.md, XSS).
+    patterns:
+      - pattern-either:
+          - pattern: $EL.innerHTML = $X
+          - pattern: $EL.outerHTML = $X
+          - pattern: $EL.insertAdjacentHTML($POS, $X)
+      - pattern-not: $EL.innerHTML = "..."
+      - pattern-not: $EL.outerHTML = "..."
+      - pattern-not: $EL.insertAdjacentHTML($POS, "...")
+      # Value fully escaped or sanitised: allowed (the stack's practice).
+      - pattern-not: $EL.innerHTML = escapeHtml(...)
+      - pattern-not: $EL.outerHTML = escapeHtml(...)
+      - pattern-not: $EL.insertAdjacentHTML($POS, escapeHtml(...))
+      - pattern-not: $EL.innerHTML = DOMPurify.sanitize(...)
+      - pattern-not: $EL.outerHTML = DOMPurify.sanitize(...)
+      - pattern-not: $EL.insertAdjacentHTML($POS, DOMPurify.sanitize(...))
+
+  - id: dynamic-eval-or-function
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      eval() or new Function() runs text as code: forbidden
+      (security.md, injection).
+    pattern-either:
+      - pattern: eval(...)
+      - pattern: new Function(...)
+
+  - id: non-cryptographic-random
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      Math.random() is predictable: never use it for an identifier, a token
+      or a secret. Use crypto.randomUUID() for an identifier,
+      crypto.randomBytes(32) for a token, a secret or a nonce
+      (security.md, cryptographic identifiers).
+    pattern: Math.random()
+
+  # The receiver must come from child_process (require or import, with or
+  # without the node: prefix): a bare $X.exec(...) also matches
+  # RegExp.prototype.exec, which is not a system command. Technique:
+  # pattern-inside binds the name to the module before the call
+  # (https://semgrep.dev/docs/writing-rules/rule-syntax, same syntax in
+  # Opengrep). Limit: a module object passed through another variable or a
+  # renamed import (exec as run) escapes the rule.
+  # Test cases: tests/opengrep/starter-rules.js in the EupaDev repository.
+  - id: system-command-variable-text
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      System command built from variable text: command injection risk. Use
+      execFile/spawn with a list of arguments, without a shell.
+    patterns:
+      - pattern-either:
+          - pattern: require($MOD).$FN($CMD, ...)
+          - patterns:
+              - pattern-either:
+                  - pattern-inside: |
+                      $CP = require($MOD)
+                      ...
+                  - pattern-inside: |
+                      import $CP from $MOD
+                      ...
+                  - pattern-inside: |
+                      import * as $CP from $MOD
+                      ...
+              - pattern: $CP.$FN($CMD, ...)
+          - patterns:
+              - pattern-either:
+                  - pattern-inside: |
+                      const {..., $FN, ...} = require($MOD)
+                      ...
+                  - pattern-inside: |
+                      import {..., $FN, ...} from $MOD
+                      ...
+              - pattern: $FN($CMD, ...)
+      - metavariable-regex:
+          metavariable: $MOD
+          regex: ^["'`]?(node:)?child_process["'`]?$
+      - metavariable-regex:
+          metavariable: $FN
+          regex: ^(exec|execSync)$
+      - pattern-not: require($MOD).$FN("...", ...)
+      - pattern-not: $CP.$FN("...", ...)
+      - pattern-not: $FN("...", ...)
+
+  # The tools share a domain (<tool>.<domain>) with their Previews: a cookie
+  # without the __Host- prefix can be overwritten from a neighbouring
+  # subdomain ("cookie tossing", EupaDev's ADR-014). The value is written
+  # in place (text or template literal `...`) to stay checkable: variable or
+  # array refused. Limit: a header name passed through a variable escapes the
+  # rule; the SEC-COOKIE test remains the safety net. cookieStore.set({…})
+  # (object form) is refused: write cookieStore.set('__Host-name', value).
+  # Test cases: tests/opengrep/starter-rules.js in the EupaDev repository.
+  - id: cookie-no-host-prefix
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      Set-Cookie: the cookie name starts with __Host- (with Secure and
+      Path=/), and the Domain attribute is forbidden (security.md, sessions).
+      Write the value in place, one call per cookie (res.appendHeader), for
+      example `__Host-session=${id}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${duration}`.
+      In the browser: document.cookie = `__Host-name=…; Secure; Path=/` or
+      cookieStore.set('__Host-name', value).
+    patterns:
+      - pattern-either:
+          - patterns:
+              - pattern-either:
+                  - pattern: $R.setHeader($H, $V)
+                  - pattern: $R.appendHeader($H, $V)
+                  - pattern: $R.set($H, $V)
+                  - pattern: $R.append($H, $V)
+                  - pattern: |
+                      {..., $H: $V, ...}
+              - metavariable-regex:
+                  metavariable: $H
+                  regex: (?i)^["'`]?set-cookie["'`]?$
+          # In the browser (web/): a cookie set in JavaScript escapes the
+          # removal of Domain by the Previews' Caddy (ADR-015).
+          - pattern: document.cookie = $V
+          - pattern: cookieStore.set($V, ...)
+      - metavariable-regex:
+          metavariable: $V
+          # Anchored at the start (like any metavariable-regex): name without
+          # __Host-, or a Domain attribute anywhere in the value.
+          regex: ^(?:(?!["'`]__Host-)|[\s\S]*;\s*(?i:domain)\s*=)

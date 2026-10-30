@@ -1,0 +1,92 @@
+# PostgreSQL of the core tools on a deployment target VM (S4, ADR-022,
+# note 2026-10-21-note-e5-refresh.md "d5"). Databases, roles and secrets of
+# each tool: register-tools.yml (Gate 1 entry, D-E5).
+- name: Tools database folder
+  ansible.builtin.file:
+    path: /opt/eupadev/tools-db
+    state: directory
+    mode: "0755"
+
+- name: Tools database Compose file
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../compose/tools-db/compose.yml"
+    dest: /opt/eupadev/tools-db/compose.yml
+    mode: "0644"
+
+# Same authority as the engine's base (role db_pki): the tools check the
+# server name `tools-db` against its ca.crt (DATABASE_CA_FILE).
+- name: Tools database server certificate
+  ansible.builtin.include_role:
+    name: db_pki
+  vars:
+    db_pki_dir: /opt/eupadev/tools-db/tls
+    db_pki_name: server
+    db_pki_cn: tools-db
+    db_pki_san: ["DNS:tools-db"]
+    db_pki_usage: serverAuth
+    db_pki_uid: 70
+
+- name: Tools database access rules (pg_hba)
+  ansible.builtin.template:
+    src: pg_hba.conf.j2
+    dest: /opt/eupadev/tools-db/tls/pg_hba.conf
+    owner: "70"
+    group: "70"
+    mode: "0644"
+  register: postgres_tools_hba
+
+- name: Start the tools database
+  ansible.builtin.command:
+    cmd: docker compose up -d --wait
+    chdir: /opt/eupadev/tools-db
+  register: postgres_tools_up
+  changed_when: postgres_tools_up.stderr is search('Created|Recreated|Started|Pulled')
+
+# Certificate or rules changed on a running server: reread (SIGHUP).
+- name: Make PostgreSQL reread certificate and rules
+  ansible.builtin.command:
+    cmd: docker compose kill -s HUP db
+    chdir: /opt/eupadev/tools-db
+  when: (db_pki_change or postgres_tools_hba.changed) and not postgres_tools_up.changed
+  changed_when: true
+
+# A recreated container has lost the tool networks the deployer plugged it
+# into (networks of core tools carry the label eupadev.core).
+- name: Core tool networks  # noqa: no-handler
+  ansible.builtin.command: docker network ls -q --filter label=eupadev.core
+  register: postgres_tools_networks
+  changed_when: false
+  when: postgres_tools_up.changed
+
+- name: Plug the database back into the core tool networks  # noqa: no-handler
+  ansible.builtin.command:
+    argv: [docker, network, connect, "{{ item }}", tools-db]
+  loop: "{{ postgres_tools_networks.stdout_lines | default([]) }}"
+  register: postgres_tools_reconnected
+  changed_when: true
+  failed_when: postgres_tools_reconnected.rc != 0 and 'already exists' not in postgres_tools_reconnected.stderr
+  when: postgres_tools_up.changed
+
+# Tool secrets (systemd-creds, written by register-tools.yml) decrypted
+# into /run at each boot, before Docker restarts the tools.
+- name: Tool secrets decryption script
+  ansible.builtin.copy:
+    src: eupadev-tools-secrets
+    dest: /usr/local/sbin/eupadev-tools-secrets
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Tool secrets decryption unit
+  ansible.builtin.template:
+    src: eupadev-tools-secrets.service.j2
+    dest: /etc/systemd/system/eupadev-tools-secrets.service
+    mode: "0644"
+  register: postgres_tools_unit
+
+- name: Enable the tool secrets unit
+  ansible.builtin.systemd_service:
+    name: eupadev-tools-secrets.service
+    enabled: true
+    daemon_reload: "{{ postgres_tools_unit.changed }}"
+    state: started

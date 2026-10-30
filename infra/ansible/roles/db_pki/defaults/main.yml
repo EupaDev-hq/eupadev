@@ -1,0 +1,13 @@
+# Certificate issued by the authority of the orchestrator database (vault
+# group_vars/all/vault-db-pki.yml, init-vault.sh). Parameters of a call:
+#   db_pki_dir      folder of the certificate (created, root, 0755)
+#   db_pki_name     prefix of the files (<name>.key, <name>.crt)
+#   db_pki_cn       Common Name (PostgreSQL role for a client)
+#   db_pki_san      subjectAltName list (DNS:…, IP:…), [] for a client
+#   db_pki_usage    serverAuth or clientAuth
+#   db_pki_uid      owner of the key (user of the container)
+db_pki_san: []
+# Lifetime of a leaf certificate; issued again when it expires in less than
+# db_pki_renew (a pass of site.yml, every night at the latest by the slot).
+db_pki_duration: "+397d"
+db_pki_renew: "+30d"

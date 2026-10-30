@@ -1,0 +1,22 @@
+# Access token for the engine API (I0, ADR-017): client credentials of a LAB service account
+# (check-requester / check-admin, created by the keycloak role in step B; absent at a client), obtained from
+# the token endpoint internal to the VM. Lifetime 5 min (D8): asked again before each call to the API.
+# Variables: engine_hat (requester | admin) → engine_token.
+- name: "Access token by client credentials, hat {{ engine_hat }}"
+  ansible.builtin.uri:
+    url: "{{ keycloak_internal_token_url }}"
+    method: POST
+    headers: {}
+    body_format: form-urlencoded
+    body:
+      grant_type: client_credentials
+      client_id: "check-{{ engine_hat }}"
+      client_secret: "{{ vault_keycloak_check_admin_secret if engine_hat == 'admin' else vault_keycloak_check_requester_secret }}"
+    return_content: true
+  register: engine_token_response
+  no_log: true
+
+- name: Keep the token
+  ansible.builtin.set_fact:
+    engine_token: "{{ engine_token_response.json.access_token }}"
+  no_log: true

@@ -1,0 +1,161 @@
+# CI of the engine (M4, ROADMAP §8.15): types and tests of orchestrator/ on every
+# push and PR that touches it; mutation campaign every week (and by hand),
+# whose count can only go up (ratchet compared with the reference read on
+# main). The database tests start their own throwaway PostgreSQL with Docker
+# (image named by digest, tests/helpers/): Docker is present on the
+# ubuntu-24.04 runners.
+name: Engine — types, tests, mutations
+
+on:
+  push:
+    paths: ["orchestrator/**", "tool-template/**", "examples/requests/**", ".github/workflows/engine.yml"]
+  pull_request:
+    paths: ["orchestrator/**", "tool-template/**", "examples/requests/**", ".github/workflows/engine.yml"]
+  schedule:
+    - cron: "17 3 * * 1" # Monday 03:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+
+jobs:
+  tests:
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        # explicit bash = -eo pipefail.
+        shell: bash
+        working-directory: orchestrator
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Same Node as the engine image (orchestrator/Dockerfile).
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22.23.4
+
+      # pnpm of packageManager (12.16.1) through corepack, like the golden image.
+      - name: Pinned pnpm
+        run: |
+          npm install -g corepack@0.36.0
+          corepack enable
+          pnpm --version
+
+      - name: Terminal tool (scripts/eupadev.py)
+        run: python3 -B scripts/test_eupadev.py
+
+      - run: pnpm install --frozen-lockfile
+
+      # Real cosign for the signature check of the agent image
+      # (tests/claude-engine.test.ts, ADR-013): official binary, sha256 sum
+      # checked, same version as the forge (images/agent/.gitea/workflows/publish.yml).
+      - name: Pinned cosign
+        run: |
+          curl -fsSLo "$RUNNER_TEMP/cosign" "https://github.com/sigstore/cosign/releases/download/v3.1.3/cosign-linux-amd64"
+          echo "4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71  $RUNNER_TEMP/cosign" | sha256sum -c -
+          chmod 0755 "$RUNNER_TEMP/cosign"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+
+      - name: Types
+        run: pnpm typecheck
+
+      # No database: state machine, transition coverage, anti-loop.
+      - name: Tests
+        run: pnpm test
+
+      # Ratchet: removing a mutation (or lowering the reference) from a
+      # branch is refused; main's reference is out of the branch's reach.
+      - name: The ratchet refuses a decrease
+        run: |
+          set +e
+          node tests/mutations/ratchet.ts --killed 0 tests/mutations/reference.json
+          code=$?
+          set -e
+          test "$code" -eq 1
+      - name: Mutation ratchet (main's reference)
+        run: |
+          refs=(tests/mutations/reference.json)
+          git fetch --quiet --depth=1 origin main
+          # main keeps the French path (orchestrateur/) until the English switch is merged: read it there,
+          # and fail if neither exists, so that the ratchet is never silently off.
+          if git show FETCH_HEAD:orchestrator/tests/mutations/reference.json > "$RUNNER_TEMP/reference-main.json" \
+            || git show FETCH_HEAD:orchestrateur/tests/mutations/reference.json > "$RUNNER_TEMP/reference-main.json"; then
+            refs+=("$RUNNER_TEMP/reference-main.json")
+          else
+            echo "::error::reference.json not found on main (orchestrator/ nor orchestrateur/): the ratchet cannot compare"
+            exit 1
+          fi
+          node tests/mutations/ratchet.ts "${refs[@]}"
+
+      - name: Database tests (throwaway PostgreSQL)
+        run: pnpm test:db
+      - name: Resume after a crash
+        run: pnpm test:resume
+      # Chat steps 3 and 4 (ADR-024): the requester's page in a real Chromium (tests/web.test.ts, features/chat.feature).
+      - name: Chromium (Playwright)
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Gherkin scenarios (Cucumber)
+        run: pnpm test:bdd
+      - name: Requester's web page (Playwright)
+        run: pnpm test:web
+
+  mutations:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    defaults:
+      run:
+        # explicit bash = -eo pipefail: a failure of the campaign is not hidden by "| tee".
+        shell: bash
+        working-directory: orchestrator
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22.23.4
+      - name: Pinned pnpm
+        run: |
+          npm install -g corepack@0.36.0
+          corepack enable
+          pnpm --version
+      - run: pnpm install --frozen-lockfile
+
+      # Real cosign for the signature check of the agent image
+      # (tests/claude-engine.test.ts, ADR-013): official binary, sha256 sum
+      # checked, same version as the forge (images/agent/.gitea/workflows/publish.yml).
+      - name: Pinned cosign
+        run: |
+          curl -fsSLo "$RUNNER_TEMP/cosign" "https://github.com/sigstore/cosign/releases/download/v3.1.3/cosign-linux-amd64"
+          echo "4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71  $RUNNER_TEMP/cosign" | sha256sum -c -
+          chmod 0755 "$RUNNER_TEMP/cosign"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+
+      # The WEB-… mutations run the Playwright test (tests/web.test.ts).
+      - name: Chromium (Playwright)
+        run: pnpm exec playwright install --with-deps chromium
+
+      # Already fails if a mutation survives, is killed for another reason or
+      # no longer applies (launch.ts).
+      - name: Mutation campaign
+        run: pnpm test:mutations 2>&1 | tee "$RUNNER_TEMP/mutations.log"
+
+      - name: Ratchet of the killed mutations (main's reference)
+        run: |
+          refs=(tests/mutations/reference.json)
+          git fetch --quiet --depth=1 origin main
+          # main keeps the French path (orchestrateur/) until the English switch is merged: read it there,
+          # and fail if neither exists, so that the ratchet is never silently off.
+          if git show FETCH_HEAD:orchestrator/tests/mutations/reference.json > "$RUNNER_TEMP/reference-main.json" \
+            || git show FETCH_HEAD:orchestrateur/tests/mutations/reference.json > "$RUNNER_TEMP/reference-main.json"; then
+            refs+=("$RUNNER_TEMP/reference-main.json")
+          else
+            echo "::error::reference.json not found on main (orchestrator/ nor orchestrateur/): the ratchet cannot compare"
+            exit 1
+          fi
+          killed="$(sed -n 's#^\([0-9]*\)/[0-9]* mutations killed.*#\1#p' "$RUNNER_TEMP/mutations.log")"
+          node tests/mutations/ratchet.ts --killed "$killed" "${refs[@]}"

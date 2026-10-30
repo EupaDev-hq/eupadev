@@ -1,0 +1,213 @@
+# Creates (if needed) a platform repository in the organisation and
+# synchronises it with a EupaDev directory: the content is copied as is,
+# a commit is pushed only if there is a difference. Called for each entry of
+# gitea_platform_repos.
+- name: "Does the platform repository exist? {{ gitea_org_repo.name }}"
+  ansible.builtin.uri:
+    url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ gitea_org_repo.name }}"
+    url_username: "{{ gitea_admin_user }}"
+    url_password: "{{ vault_gitea_admin_password }}"
+    force_basic_auth: true
+    status_code: [200, 404]
+  register: gitea_org_repo_exists
+
+- name: "Create the repository (empty): {{ gitea_org_repo.name }}"
+  ansible.builtin.uri:
+    url: "{{ gitea_api }}/orgs/{{ gitea_org }}/repos"
+    method: POST
+    url_username: "{{ gitea_admin_user }}"
+    url_password: "{{ vault_gitea_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      name: "{{ gitea_org_repo.name }}"
+      description: "{{ gitea_org_repo.description }}"
+      private: true
+      template: "{{ gitea_org_repo.template }}"
+      default_branch: main
+    status_code: 201
+  when: gitea_org_repo_exists.status == 404
+  changed_when: true
+
+# Secrets of the repository itself (e.g. signing key of the engine): set before
+# the push, otherwise the first pipeline would start without them. Created only
+# if they are missing (Gitea never reads them back); rotation = delete the
+# secret in Gitea, then run again.
+# badges: robot badges (same fields as gitea_ci_tokens) created by Ansible and
+# stored in this repository's secrets only (e.g. core publication, ADR-022).
+- name: "Secrets of the repository: {{ gitea_org_repo.name }}"
+  when: (gitea_org_repo.secrets | default([]) + gitea_org_repo.badges | default([])) | length > 0
+  module_defaults:
+    ansible.builtin.uri:
+      url_username: "{{ gitea_admin_user }}"
+      url_password: "{{ vault_gitea_admin_password }}"
+      force_basic_auth: true
+  block:
+    - name: "List the secrets of the repository: {{ gitea_org_repo.name }}"
+      ansible.builtin.uri:
+        url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ gitea_org_repo.name }}/actions/secrets"
+        return_content: true
+      register: gitea_org_repo_secrets
+
+    - name: "Create the missing secrets: {{ gitea_org_repo.name }}"
+      ansible.builtin.uri:
+        url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ gitea_org_repo.name }}/actions/secrets/{{ item }}"
+        method: PUT
+        body_format: json
+        body: { data: "{{ gitea_repo_secrets[item] }}" }
+        status_code: [201, 204]
+      loop: "{{ gitea_org_repo.secrets | default([]) }}"
+      when: item not in (gitea_org_repo_secrets.json | map(attribute='name'))
+      changed_when: true
+      no_log: true
+
+    - name: "Create the missing badges of the repository: {{ gitea_org_repo.name }}"
+      ansible.builtin.include_tasks: badge-ci.yml
+      vars:
+        gitea_org_badge_secrets: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ gitea_org_repo.name }}/actions/secrets"
+      loop: "{{ gitea_org_repo.badges | default([]) }}"
+      loop_control: { loop_var: gitea_org_badge, label: "{{ gitea_org_badge.secret }}" }
+      when: gitea_org_badge.secret not in (gitea_org_repo_secrets.json | map(attribute='name'))
+
+- name: "Synchronise the content: {{ gitea_org_repo.name }}"
+  vars:
+    gitea_org_tpl_dir: "/opt/eupadev/sync-{{ gitea_org_repo.name }}"
+    gitea_org_auth_header: "Authorization: Basic {{ (gitea_admin_user ~ ':' ~ vault_gitea_admin_password) | b64encode }}"
+    # Repository just created, or left empty: no main to protect yet.
+    gitea_org_empty: "{{ gitea_org_repo_exists.status == 404 or (gitea_org_repo_exists.json.empty | default(false)) }}"
+  block:
+    # Credentials passed in an HTTP header, never in the repository URL
+    # (a URL with credentials would stay in clear in the Git config).
+    - name: "Fetch the repository and empty its working copy: {{ gitea_org_repo.name }}"
+      ansible.builtin.shell:  # noqa: command-instead-of-module — the git module cannot pass the credential in an HTTP header
+        cmd: >-
+          rm -rf {{ gitea_org_tpl_dir }} &&
+          git -c http.extraHeader="{{ gitea_org_auth_header }}"
+          clone -q http://127.0.0.1:3000/{{ gitea_org }}/{{ gitea_org_repo.name }}.git {{ gitea_org_tpl_dir }} &&
+          cd {{ gitea_org_tpl_dir }} && git symbolic-ref HEAD refs/heads/main &&
+          git rm -rq --ignore-unmatch .
+      no_log: true
+      changed_when: false
+
+    - name: "Copy the EupaDev directory: {{ gitea_org_repo.src }}"
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../{{ gitea_org_repo.src }}/"
+        dest: "{{ gitea_org_tpl_dir }}/"
+        mode: preserve
+      changed_when: false
+
+    # EupaDev files or directories copied at their original path
+    # (e.g. build context of the engine, built from the root).
+    - name: "Copy the additional paths: {{ gitea_org_repo.name }}"
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../{{ item }}"
+        dest: "{{ gitea_org_tpl_dir }}/{{ item | dirname }}/"
+        mode: preserve
+      loop: "{{ gitea_org_repo.extra | default([]) }}"
+      changed_when: false
+
+    - name: "Prepare the commit of any differences: {{ gitea_org_repo.name }}"
+      ansible.builtin.shell:  # noqa: command-instead-of-module — the git module cannot commit
+        chdir: "{{ gitea_org_tpl_dir }}"
+        cmd: >-
+          git add -A &&
+          if git diff --cached --quiet; then echo NO_CHANGE; else
+          git -c user.name=EupaDev -c user.email={{ gitea_admin_email }}
+          commit -q -m "Synchronised from EupaDev ({{ gitea_org_repo.src }})"; fi
+      register: gitea_org_tpl_commit
+      changed_when: "'NO_CHANGE' not in gitea_org_tpl_commit.stdout"
+
+    # Empty repository (first run) or repository without protections (golden
+    # images): pushed directly by the admin.
+    - name: "Push directly: {{ gitea_org_repo.name }}"
+      ansible.builtin.command:  # noqa: command-instead-of-module — HTTP header (see above)
+        chdir: "{{ gitea_org_tpl_dir }}"
+        argv: [git, -c, "http.extraHeader={{ gitea_org_auth_header }}", push, -q,
+               "http://127.0.0.1:3000/{{ gitea_org }}/{{ gitea_org_repo.name }}.git", "HEAD:main"]
+      when:
+        - "'NO_CHANGE' not in gitea_org_tpl_commit.stdout"
+        - not gitea_org_repo.template or gitea_org_empty
+      no_log: true
+      changed_when: true
+
+    # Template: it carries the branch protections of each tool, which the
+    # orchestrator copies at generation (native option protected_branch,
+    # Gitea 28) — a tool never exists without them. Set before the
+    # synchronisation by PR, which needs the exception/** rule.
+    - name: "Branch protections of the template: {{ gitea_org_repo.name }}"
+      ansible.builtin.include_tasks: protections-template.yml
+      when: gitea_org_repo.template
+
+    # Protected template: its protected files (.gitea/…) reach main only
+    # through a PR merged by a bypass account — the same human path as the
+    # exceptions (branch exception/**, merge by the admin).
+    - name: "Synchronise through a PR: {{ gitea_org_repo.name }}"
+      when:
+        - "'NO_CHANGE' not in gitea_org_tpl_commit.stdout"
+        - gitea_org_repo.template
+        - not gitea_org_empty
+      module_defaults:
+        ansible.builtin.uri:
+          url_username: "{{ gitea_admin_user }}"
+          url_password: "{{ vault_gitea_admin_password }}"
+          force_basic_auth: true
+          body_format: json
+          return_content: true
+      vars:
+        gitea_org_sync_branch: exception/sync-platform
+      block:
+        # The branch is never deleted (Gitea refuses to delete a protected
+        # branch): each synchronisation starts from main, so the next push
+        # moves the branch forward without rewriting its history.
+        - name: "Push the synchronisation branch: {{ gitea_org_repo.name }}"
+          ansible.builtin.command:  # noqa: command-instead-of-module — HTTP header (see above)
+            chdir: "{{ gitea_org_tpl_dir }}"
+            argv: [git, -c, "http.extraHeader={{ gitea_org_auth_header }}", push, -q,
+                   "http://127.0.0.1:3000/{{ gitea_org }}/{{ gitea_org_repo.name }}.git",
+                   "HEAD:refs/heads/{{ gitea_org_sync_branch }}"]
+          no_log: true
+          changed_when: true
+
+        - name: "Synchronisation PR already open? {{ gitea_org_repo.name }}"
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ gitea_org_repo.name }}/pulls?state=open&limit=50"
+          register: gitea_org_prs
+
+        - name: "Open the synchronisation PR: {{ gitea_org_repo.name }}"
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ gitea_org_repo.name }}/pulls"
+            method: POST
+            body:
+              head: "{{ gitea_org_sync_branch }}"
+              base: main
+              title: "Synchronised from EupaDev ({{ gitea_org_repo.src }})"
+            status_code: 201
+          register: gitea_org_new_pr
+          when: gitea_org_prs.json | selectattr('head.ref', 'equalto', gitea_org_sync_branch) | list | length == 0
+          changed_when: true
+
+        # Gitea computes mergeability in the background: retry.
+        - name: "Merge the PR (admin bypass): {{ gitea_org_repo.name }}"
+          vars:
+            gitea_org_pr_number: >-
+              {{ gitea_org_new_pr.json.number if gitea_org_new_pr is not skipped
+                 else (gitea_org_prs.json | selectattr('head.ref', 'equalto', gitea_org_sync_branch) | first).number }}
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ gitea_org_repo.name }}/pulls/{{ gitea_org_pr_number }}/merge"
+            method: POST
+            # force_merge: the bypass is applied only on request (Gitea 28).
+            body: { Do: merge, force_merge: true }
+            status_code: [200, 405]
+          register: gitea_org_merge
+          until: gitea_org_merge.status == 200
+          retries: 10
+          delay: 3
+          changed_when: true
+
+  always:
+    - name: "Delete the working copy: {{ gitea_org_repo.name }}"
+      ansible.builtin.file:
+        path: "/opt/eupadev/sync-{{ gitea_org_repo.name }}"
+        state: absent
+      # Temporary copy recreated on every run: not a real change.
+      changed_when: false

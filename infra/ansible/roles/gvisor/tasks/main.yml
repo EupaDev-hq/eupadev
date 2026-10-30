@@ -1,0 +1,37 @@
+# gVisor (Apache 2.0): user-space application kernel for the agents'
+# containers (ROADMAP §8.16 L2). systrap platform: no hardware
+# virtualisation needed in the VM (gvisor.dev, "Platforms").
+# Must run BEFORE the docker role: the package, when it finds an
+# /etc/docker/daemon.json, rewrites it itself (`runsc install` in its
+# postinst); installed before Docker, it does not touch it, and the docker
+# role declares the runtime (docker_runtimes, group_vars/agents).
+- name: Signing key of the gVisor repository (sha256 checked)
+  ansible.builtin.get_url:
+    url: https://gvisor.dev/archive.key
+    dest: /etc/apt/keyrings/gvisor.asc
+    checksum: "sha256:{{ gvisor_key_sha256 }}"
+    mode: "0644"
+
+- name: Official APT repository of gVisor, dated channel (pinned version)
+  ansible.builtin.deb822_repository:
+    name: gvisor
+    types: deb
+    uris: https://storage.googleapis.com/gvisor/releases
+    suites: "{{ gvisor_version }}"
+    components: main
+    signed_by: /etc/apt/keyrings/gvisor.asc
+
+- name: Installed version of runsc
+  ansible.builtin.command:
+    cmd: dpkg-query -W -f=${Version} runsc
+  register: gvisor_installed
+  changed_when: false
+  failed_when: false
+
+# Package list refreshed only when the expected version is missing (otherwise
+# "update_cache" would count as a change on every pass).
+- name: Install runsc (pinned version)
+  ansible.builtin.apt:
+    name: "runsc={{ gvisor_version }}.0"
+    update_cache: true
+  when: gvisor_installed.stdout != gvisor_version ~ '.0'

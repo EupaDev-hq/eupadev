@@ -1,0 +1,5 @@
+# Weekly slot (systemd OnCalendar, UTC): Sunday 01:30, one hour before the
+# backup (02:30, which then copies an already lighter registry), away from
+# the golden images (Monday 04:00) and from the maintenance reboots
+# (03:15-04:15). Rationale: docs/reflexions/2026-10-18-note-nettoyage-registre.md.
+registry_cleanup_hour: "Sun *-*-* 01:30:00 UTC"

@@ -1,0 +1,7 @@
+# Dated Trivy exceptions (same format and 30-day limit as the tools'
+# .trivyignore.yaml, tool-template/.gitea/checks/guard-rails.sh). After
+# expired_at, Trivy reports the vulnerability again: the pipeline turns red.
+vulnerabilities:
+  - id: CVE-2026-102554
+    expired_at: 2026-11-28
+    statement: "Guava 33.6.0 bundled in Keycloak 26.8.1, fixed in 33.7.2; no Keycloak release ships it yet. Remove when one does. Decided by Ilan 2026-10-29."

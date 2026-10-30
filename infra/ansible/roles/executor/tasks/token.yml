@@ -1,0 +1,61 @@
+# A robot token for the executor, described by the loop item of main.yml: the
+# svc-agent one (clone, bundle, push of the agent branches; registry read:
+# agent image and its signature); the core's read badge (deployment robot,
+# read:package, ADR-023), given only to the fetch container. Gitea never shows
+# a token again: the one already encrypted on the VM is kept while the forge
+# accepts it; otherwise (missing, revoked, emergency stop level 3) it is
+# created again. Never shown, never on disk in clear.
+- name: Read the token already encrypted on the VM
+  ansible.builtin.command:
+    argv: [systemd-creds, decrypt, --newline=no, "--name={{ executor_token_item.cred }}",
+           "/etc/eupadev/credstore.encrypted/{{ executor_token_item.cred }}", "-"]
+  register: executor_token_read
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+# Call covered by the token's scopes (read:package); /user would need
+# read:user, which it does not have (403 → token created again on every pass).
+- name: Does the forge accept this token?
+  ansible.builtin.uri:
+    url: "{{ hostvars[groups['forge'][0]].gitea_api }}/packages/eupadev?limit=1"
+    headers:
+      Authorization: "token {{ executor_token_read.stdout }}"
+    status_code: [200, 401, 403]
+  delegate_to: "{{ groups['forge'][0] }}"
+  register: executor_token_trial
+  when: executor_token_read.rc == 0
+  no_log: true
+
+- name: Create a new token (missing or refused)
+  when: executor_token_read.rc != 0 or executor_token_trial.status != 200
+  module_defaults:
+    ansible.builtin.uri:
+      url_username: "{{ gitea_admin_user }}"
+      url_password: "{{ vault_gitea_admin_password }}"
+      force_basic_auth: true
+  block:
+    - name: Remove the executor's old token
+      ansible.builtin.uri:
+        url: "{{ hostvars[groups['forge'][0]].gitea_api }}/users/{{ executor_token_item.user }}/tokens/{{ executor_token_item.name }}"
+        method: DELETE
+        status_code: [204, 404]
+      delegate_to: "{{ groups['forge'][0] }}"
+
+    - name: Create the executor's token
+      ansible.builtin.uri:
+        url: "{{ hostvars[groups['forge'][0]].gitea_api }}/users/{{ executor_token_item.user }}/tokens"
+        method: POST
+        body_format: json
+        body: { name: "{{ executor_token_item.name }}", scopes: "{{ executor_token_item.scopes }}" }
+        status_code: 201
+      delegate_to: "{{ groups['forge'][0] }}"
+      register: executor_token_created
+      no_log: true
+
+- name: Remember the executor's token
+  ansible.builtin.set_fact:
+    executor_tokens: >-
+      {{ executor_tokens | default({}) | combine({executor_token_item.cred:
+         executor_token_created.json.sha1 if executor_token_created.json is defined else executor_token_read.stdout}) }}
+  no_log: true

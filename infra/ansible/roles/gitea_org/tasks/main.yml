@@ -1,0 +1,228 @@
+# Organisation, robot accounts, teams, template and CI variables.
+# Everything goes through Gitea's API, with the admin account, from the forge VM.
+# Each element is read first: created only if it is missing (rerunnable).
+- name: Organisation and accounts of the forge
+  module_defaults:
+    ansible.builtin.uri:
+      url_username: "{{ gitea_admin_user }}"
+      url_password: "{{ vault_gitea_admin_password }}"
+      force_basic_auth: true
+      body_format: json
+      return_content: true
+  block:
+    - name: Does the organisation exist?
+      ansible.builtin.uri:
+        url: "{{ gitea_api }}/orgs/{{ gitea_org }}"
+        status_code: [200, 404]
+      register: gitea_org_existing
+
+    - name: Create the organisation (private)
+      ansible.builtin.uri:
+        url: "{{ gitea_api }}/orgs"
+        method: POST
+        body: { username: "{{ gitea_org }}", visibility: private }
+        status_code: 201
+      when: gitea_org_existing.status == 404
+      changed_when: true
+
+    # Prerequisite of the forge adapter (E2): right after generating a tool,
+    # svc-orchestrator (still admin of the repository) assigns it to the agents
+    # team, then removes its own administration. Gitea 28 allows that to a
+    # repository admin only if the organisation permits it.
+    - name: Allow a repository admin to manage the teams' access
+      ansible.builtin.uri:
+        url: "{{ gitea_api }}/orgs/{{ gitea_org }}"
+        method: PATCH
+        body: { repo_admin_change_team_access: true }
+        status_code: 200
+      when: gitea_org_existing.status == 404 or not (gitea_org_existing.json.repo_admin_change_team_access | default(false))
+      changed_when: true
+
+    - name: Do the robot accounts exist?
+      ansible.builtin.uri:
+        url: "{{ gitea_api }}/users/{{ item.user }}"
+        status_code: [200, 404]
+      # svc-core (gitea_core_org) is a robot too, but in no team of gitea_org.
+      loop: "{{ gitea_service_accounts + [gitea_core_org] }}"
+      register: gitea_org_robots
+
+    # Random throwaway password: a robot never signs in with a password,
+    # only with a token created for its use.
+    - name: Create the missing robot accounts
+      ansible.builtin.uri:
+        url: "{{ gitea_api }}/admin/users"
+        method: POST
+        body:
+          username: "{{ item.item.user }}"
+          email: "{{ item.item.user }}@{{ base_domain }}"
+          password: "{{ lookup('ansible.builtin.password', '/dev/null', length=40, chars=['ascii_letters', 'digits']) }}"
+          must_change_password: false
+          visibility: private
+        status_code: 201
+      loop: "{{ gitea_org_robots.results }}"
+      loop_control: { label: "{{ item.item.user }}" }
+      when: item.status == 404
+      changed_when: true
+      no_log: true
+
+    # Human accounts (gitea_human_accounts): no administration right; a random
+    # initial password never stored: the person sets their own with
+    # `gitea admin user change-password` (later: sign-in through Keycloak).
+    - name: Do the human accounts exist?
+      ansible.builtin.uri:
+        url: "{{ gitea_api }}/users/{{ item }}"
+        status_code: [200, 404]
+      loop: "{{ gitea_human_accounts | map(attribute='user') }}"
+      register: gitea_org_humans
+
+    - name: Create the missing human accounts
+      ansible.builtin.uri:
+        url: "{{ gitea_api }}/admin/users"
+        method: POST
+        body:
+          username: "{{ item.item }}"
+          email: "{{ item.item }}@{{ base_domain }}"
+          password: "{{ lookup('ansible.builtin.password', '/dev/null', length=40, chars=['ascii_letters', 'digits']) }}"
+          # false: Gitea refuses the tokens of an account that must change its
+          # password; it stays random and unknown to everyone.
+          must_change_password: false
+          visibility: private
+        status_code: 201
+      loop: "{{ gitea_org_humans.results }}"
+      loop_control: { label: "{{ item.item }}" }
+      when: item.status == 404
+      changed_when: true
+      no_log: true
+
+    # Gitea 28: a robot account (Bot type) signs in only with a token — neither
+    # password nor web session. The API has no conversion: administration
+    # command, only for an account created just now or still of type User
+    # (rerunnable without change).
+    - name: Convert the service accounts into robots
+      ansible.builtin.command:
+        cmd: docker compose exec -T gitea gitea admin user change-type -u {{ item.item.user }} --user-type Bot
+        chdir: /opt/eupadev/forge
+      loop: "{{ gitea_org_robots.results }}"
+      loop_control: { label: "{{ item.item.user }}" }
+      when: item.status == 404 or item.json.type != 'Bot'
+      changed_when: true
+
+    - name: List the organisation's teams
+      ansible.builtin.uri:
+        url: "{{ gitea_api }}/orgs/{{ gitea_org }}/teams?limit=50"
+      register: gitea_org_teams
+
+    - name: Create the missing teams (rights of the role)
+      ansible.builtin.uri:
+        url: "{{ gitea_api }}/orgs/{{ gitea_org }}/teams"
+        method: POST
+        body:
+          name: "{{ item.team }}"
+          description: "{{ item.description }}"
+          includes_all_repositories: "{{ item.all_repos }}"
+          can_create_org_repo: "{{ item.can_create_org_repo }}"
+          units_map: "{{ item.units_map }}"
+        status_code: 201
+      loop: "{{ gitea_service_accounts + gitea_human_accounts }}"
+      loop_control: { label: "{{ item.team }}" }
+      when: item.team not in (gitea_org_teams.json | map(attribute='name'))
+      changed_when: true
+
+    - name: Read the teams again (ids)
+      ansible.builtin.uri:
+        url: "{{ gitea_api }}/orgs/{{ gitea_org }}/teams?limit=50"
+      register: gitea_org_teams
+
+    # Gitea 28.1 (routers/api/v1/org/team.go, EditTeam): `includes_all_repositories`
+    # is applied alone. Above all not `permission: none` (workaround of the Gitea
+    # 1.27 trap): without `units_map`, assignTeamPermissionUnits answers 400
+    # "no permission specified". The rights per unit: next task.
+    - name: Align the "all repositories" access of the existing teams
+      ansible.builtin.uri:
+        url: "{{ gitea_api }}/teams/{{ gitea_org_team.id }}"
+        method: PATCH
+        body: { name: "{{ item.team }}", includes_all_repositories: "{{ item.all_repos }}" }
+        status_code: 200
+      loop: "{{ gitea_service_accounts + gitea_human_accounts }}"
+      loop_control: { label: "{{ item.team }}" }
+      vars:
+        gitea_org_team: "{{ gitea_org_teams.json | selectattr('name', 'equalto', item.team) | first }}"
+      when: gitea_org_team.includes_all_repositories != item.all_repos
+      changed_when: true
+
+    # Rights per unit of an existing team (repo.actions added, M6): Gitea 28
+    # replaces every unit with `units_map` (assignTeamPermissionUnits) and
+    # returns them as they are when read: direct comparison.
+    - name: Align the rights per unit of the existing teams
+      ansible.builtin.uri:
+        url: "{{ gitea_api }}/teams/{{ gitea_org_team.id }}"
+        method: PATCH
+        body: { name: "{{ item.team }}", units_map: "{{ item.units_map }}" }
+        status_code: 200
+      loop: "{{ gitea_service_accounts + gitea_human_accounts }}"
+      loop_control: { label: "{{ item.team }}" }
+      vars:
+        gitea_org_team: "{{ gitea_org_teams.json | selectattr('name', 'equalto', item.team) | first }}"
+      when: gitea_org_team.units_map | default({}, true) != item.units_map
+      changed_when: true
+
+    - name: Put each account in its team
+      ansible.builtin.uri:
+        url: "{{ gitea_api }}/teams/{{ (gitea_org_teams.json | selectattr('name', 'equalto', item.team) | first).id }}/members/{{ item.user }}"
+        method: PUT
+        status_code: 204
+      loop: "{{ gitea_service_accounts + gitea_human_accounts + gitea_additional_members }}"
+      loop_control: { label: "{{ item.user }} → {{ item.team }}" }
+      changed_when: false
+
+    # CI badges (gitea_ci_tokens): stored in the organisation's secrets, never
+    # on disk; created only if they are missing.
+    - name: List the organisation's secrets
+      ansible.builtin.uri:
+        url: "{{ gitea_api }}/orgs/{{ gitea_org }}/actions/secrets"
+      register: gitea_org_existing_secrets
+
+    - name: Create the missing CI badges
+      ansible.builtin.include_tasks: badge-ci.yml
+      loop: "{{ gitea_ci_tokens }}"
+      loop_control: { loop_var: gitea_org_badge, label: "{{ gitea_org_badge.secret }}" }
+      when: gitea_org_badge.secret not in (gitea_org_existing_secrets.json | map(attribute='name'))
+
+    # Fixed organisation secrets (gitea_org_secrets: cosign key of the tools).
+    # Created only if they are missing (Gitea never reads them back); rotation =
+    # delete the secret in Gitea, then run again.
+    - name: Create the missing organisation secrets
+      ansible.builtin.uri:
+        url: "{{ gitea_api }}/orgs/{{ gitea_org }}/actions/secrets/{{ item.key }}"
+        method: PUT
+        body: { data: "{{ item.value }}" }
+        status_code: [201, 204]
+      loop: "{{ gitea_org_secrets | dict2items }}"
+      loop_control: { label: "{{ item.key }}" }
+      when: item.key not in (gitea_org_existing_secrets.json | map(attribute='name'))
+      changed_when: true
+      no_log: true
+
+    # Owner of the core package, apart from gitea_org (ADR-023).
+    - name: Core organisation
+      ansible.builtin.include_tasks: core-org.yml
+
+# CI variables of the organisation (gitea_org_variables).
+- name: CI variables of the organisation
+  ansible.builtin.include_tasks: variable-org.yml
+  loop: "{{ gitea_org_variables | dict2items }}"
+  loop_control: { loop_var: gitea_org_var, label: "{{ gitea_org_var.key }}" }
+
+# Platform repositories (template, golden image…): created if needed and
+# synchronised with their EupaDev directory on every run.
+- name: Platform repositories
+  ansible.builtin.include_tasks: platform-repo.yml
+  loop: "{{ gitea_platform_repos }}"
+  loop_control: { loop_var: gitea_org_repo, label: "{{ gitea_org_repo.name }}" }
+
+# When "all repositories" is removed, Gitea keeps the links already made:
+# the platform repositories are therefore removed explicitly from those teams.
+- name: Platform repositories out of the teams without "all repositories"
+  ansible.builtin.include_tasks: remove-team-repo.yml
+  loop: "{{ gitea_service_accounts | rejectattr('all_repos') | product(gitea_platform_repos) | list }}"
+  loop_control: { loop_var: gitea_org_pair, label: "{{ gitea_org_pair[1].name }} ↛ {{ gitea_org_pair[0].team }}" }

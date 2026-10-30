@@ -1,0 +1,41 @@
+# Enforces the ADR format rule (docs/adr/026-*.md, which supersedes
+# 011-*.md): an ADR that is no longer "proposed" changes neither its title
+# nor its body, typos included; no ADR is deleted; supersessions are
+# crossed; a "proposed" ADR has no date and declares "check"; the
+# registry of ROADMAP.md (between the markers adr-registry:start / end) is
+# the one generated from docs/adr/. Proposals older than 30 days are
+# reported separately, by adr-proposals.yml (scheduled), without blocking
+# any PR.
+name: ADR immutability and registry
+
+on:
+  push:
+    paths: ["docs/adr/**", "ROADMAP.md", ".github/scripts/*adr*", ".github/workflows/adr*.yml"]
+  pull_request:
+    paths: ["docs/adr/**", "ROADMAP.md", ".github/scripts/*adr*", ".github/workflows/adr*.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  adr:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      # Full history: the check compares with the base commit.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: The check itself works
+        run: python3 .github/scripts/test_verify_adr.py
+
+      # Base: the PR's, else the push's "before". On a new branch, the
+      # fork point from main. On main without a known "before" (force-push,
+      # rewritten history): red, nothing to compare with. Red AFTER the
+      # push: without branch protection, nothing prevents the push itself.
+      - name: ADRs compared with the base commit, registry up to date
+        env:
+          BASE_PR: ${{ github.event.pull_request.base.sha }}
+          BEFORE: ${{ github.event.before }}
+        run: python3 .github/scripts/verify-adr.py --base-ci --new-product-name EupaDev

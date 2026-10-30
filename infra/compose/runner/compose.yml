@@ -1,0 +1,42 @@
+# The quality-control machine: two Gitea Runners wait for work from Gitea
+# and start each job in a throwaway container.
+#   standard — secrets, tests, analysis: the agents' code is RUN there,
+#              so its jobs have NO access to the VM's Docker
+#              (docker_host "-" in standard/config.yaml).
+#   image    — building, scanning and publishing the images: its jobs
+#              drive the VM's Docker; the agents' code is only built there
+#              (docker build) and started in an isolated container.
+#
+# Each runner drives the VM's Docker itself (mounted socket) to create the
+# jobs' containers: that is the equivalent of root rights on THIS VM,
+# hence a dedicated VM, separate from the forge.
+# Configuration: <runner>/config.yaml and the environment file placed beside it by Ansible.
+name: runner
+
+x-runner: &runner
+  image: gitea/runner:5.2.2@sha256:054a025c80003397dccb08d4462c6b0ef8b63bedf651555e54440392e94878c6
+  restart: unless-stopped
+  environment:
+    CONFIG_FILE: /config.yaml
+  # Address of the forge (useful as long as the domain is not in the DNS).
+  extra_hosts:
+    - "${GITEA_DOMAIN:?missing}:${FORGE_IP:?missing}"
+  mem_limit: 512m
+
+services:
+  standard:
+    <<: *runner
+    volumes:
+      - ./standard/config.yaml:/config.yaml:ro
+      - ./standard/data:/data
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Trusted authorities of the VM (including the forge's in the lab).
+      - /etc/ssl/certs:/etc/ssl/certs:ro
+
+  image:
+    <<: *runner
+    volumes:
+      - ./image/config.yaml:/config.yaml:ro
+      - ./image/data:/data
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /etc/ssl/certs:/etc/ssl/certs:ro

@@ -1,0 +1,66 @@
+# Proxies of the agent containers (ROADMAP §8.16 L3-L4): Smokescreen (egress) and
+# AI proxy (Caddy, Anthropic key). See infra/compose/agents/compose.yml.
+- name: Folder of the agents stack
+  ansible.builtin.file:
+    path: /opt/eupadev/agents
+    state: directory
+    mode: "0755"
+
+# Anthropic key of the AI proxy: decrypted by eupadev-secrets.service, put
+# in place by the executor role (played before: a single unit holds the
+# secrets of the VM, list agents_secrets); orchestrator_recreate comes from it.
+
+- name: Download Smokescreen (pinned version and sha256)
+  ansible.builtin.get_url:
+    url: "https://github.com/stripe/smokescreen/releases/download/{{ agent_proxies_smk_version }}/{{ agent_proxies_smk_name }}.tar.gz"
+    dest: "/opt/eupadev/agents/{{ agent_proxies_smk_name }}.tar.gz"
+    checksum: "sha256:{{ agent_proxies_smk_sha256 }}"
+    mode: "0644"
+
+- name: Extract the Smokescreen binary
+  ansible.builtin.unarchive:
+    src: "/opt/eupadev/agents/{{ agent_proxies_smk_name }}.tar.gz"
+    dest: /opt/eupadev/agents
+    remote_src: true
+    include: ["{{ agent_proxies_smk_name }}/smokescreen"]
+    creates: "/opt/eupadev/agents/{{ agent_proxies_smk_name }}/smokescreen"
+  register: agent_proxies_binary
+
+# Files readable by everyone: the proxies run as a non-root user (65532) and
+# nothing here is secret.
+- name: Copy the Compose file and the configuration of the proxies
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../compose/agents/"
+    dest: /opt/eupadev/agents/
+    mode: u=rwX,go=rX
+  register: agent_proxies_compose
+
+- name: Variables of the agents stack (nothing secret)
+  ansible.builtin.copy:
+    dest: /opt/eupadev/agents/.env
+    content: |
+      SMOKESCREEN_BIN=/opt/eupadev/agents/{{ agent_proxies_smk_name }}/smokescreen
+    mode: "0644"
+  register: agent_proxies_env
+
+# Smokescreen does not reload its ACL live, and a container keeps the old
+# mounted secret file: recreated when a file or a secret changes.
+- name: Start the proxies
+  ansible.builtin.command:
+    cmd: >-
+      docker compose up -d --wait --remove-orphans
+      {{ '--force-recreate' if (agent_proxies_binary.changed or agent_proxies_compose.changed
+         or agent_proxies_env.changed or orchestrator_recreate) else '' }}
+    chdir: /opt/eupadev/agents
+  register: agent_proxies_up
+  changed_when: agent_proxies_up.stderr is search('Created|Recreated|Started|Pulled|Removed')
+
+# Old shared network "agents" (two agents could see each other on it),
+# replaced by an internal network per task: `up` does not remove a network
+# that is no longer declared.
+- name: Remove the old shared agents network
+  ansible.builtin.command:
+    cmd: docker network rm agents
+  register: agent_proxies_old_network
+  changed_when: agent_proxies_old_network.rc == 0
+  failed_when: agent_proxies_old_network.rc != 0 and 'not found' not in agent_proxies_old_network.stderr

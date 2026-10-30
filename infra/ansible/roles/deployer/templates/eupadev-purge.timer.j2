@@ -1,0 +1,11 @@
+# Managed by Ansible (role deployer).
+[Unit]
+Description=EupaDev: daily purge of the core tools
+
+[Timer]
+OnCalendar={{ deployer_purge_hour }}
+# VM off at that time: the purge runs at the next boot.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

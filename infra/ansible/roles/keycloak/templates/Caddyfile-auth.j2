@@ -1,0 +1,35 @@
+# Written by Ansible (role keycloak): do not edit on the VM.
+# Keycloak's only public door (D12): the realms eupadev and tools (sign-in,
+# tokens, discovery, JWKS, account console) and the static resources of the
+# pages. Everything else (/admin, /realms/master, /metrics, /health…): 404.
+# Caddy sets X-Forwarded-For/Proto/Host itself (the values received from the
+# client are replaced); Keycloak trusts them only from Caddy's address.
+# caddy_tls != internal: Let's Encrypt by DNS-01 at OVH (group_vars/all
+# caddy_acme_global), credentials read from the Compose secrets.
+{
+	admin off
+{% if caddy_tls != 'internal' %}
+{{ caddy_acme_global | indent('\t', first=true) }}
+{% endif %}
+}
+
+{{ keycloak_domain }} {
+	tls {{ caddy_tls }}
+	@public path /realms/eupadev/* /realms/tools/* /resources/*
+	handle @public {
+		reverse_proxy keycloak:8080
+	}
+	handle {
+		respond 404
+	}
+}
+
+# Chat step 6: the requesters' page and its API, served by the engine (note
+# 2026-10-25 §3). TLS and HSTS here; the engine's own headers (CSP) and its
+# Host guard are untouched (Caddy forwards the client's Host).
+{{ chat_domain }} {
+	tls {{ caddy_tls }}
+	# No includeSubDomains: it would pin every tool and lab name under this domain to HTTPS from one page.
+	header Strict-Transport-Security "max-age=31536000"
+	reverse_proxy engine:8080
+}

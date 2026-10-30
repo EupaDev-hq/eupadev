@@ -1,0 +1,36 @@
+# Gate 1 entries of the tools built on the core (S8, D-E5): written here by
+# Ilan after approving Gate 1, never in the tool repository (agent-writable)
+# nor passed by the engine. Then, from infra/ansible:
+#   ansible-playbook register-tools.yml </dev/null
+# creates for each tool: two Keycloak clients in realm tools (<slug> for
+# Prod, <slug>-preview) with the tool roles, a database and its three roles
+# on the PostgreSQL of the CI VM (Preview) and of the tools VM (Prod), their
+# secrets (systemd-creds) and /etc/eupadev/tools/<slug>.json (client,
+# retentions) read by eupadev-deployer. Who gets which role stays a human
+# act in Keycloak (groups or users).
+#
+# Entry:
+#   - slug: requests                 # the tool repository name (deployer rules)
+#     roles:                         # client roles, from the scope (Gate 1)
+#       - { name: reader, description: "Reads the requests" }
+#     retentions:                    # RETENTION_<X> read by bin/purge.js; no default
+#       RETENTION_AUDIT: "400 days"
+#       RETENTION_REQUESTS: "3 years"
+# None on the rebuilt lab: the registration of cycle 41's tool died with the old
+# forge (English switch, note Q4).
+core_tools: []
+
+# Durations accepted for a retention: PostgreSQL interval, a positive count
+# and one unit (bin/purge.js casts it with ::interval). Same pattern in
+# eupadev-deployer.
+core_tools_duration: '^[1-9][0-9]{0,5} (minutes|hours|days|months|years)$'
+
+# Test personas of each tool (note 2026-10-26-note-acceptance-on-preview.md
+# §3.1), created by the registration playbook: two per role, `<slug>-<role>-<n>`,
+# that single role on the Preview client only. Derived, never edited.
+core_tools_personas: >-
+  {%- set l = [] -%}
+  {%- for o in core_tools -%}{%- for r in o.roles -%}{%- for n in ['1', '2'] -%}
+    {%- set _ = l.append({'slug': o.slug, 'role': r.name, 'name': o.slug ~ '-' ~ r.name ~ '-' ~ n}) -%}
+  {%- endfor -%}{%- endfor -%}{%- endfor -%}
+  {{ l }}

@@ -1,0 +1,7 @@
+{
+  "name": "agpl-trial",
+  "version": "1.0.0",
+  "description": "Trial dependency of verify-template (licence scenario): forbidden licence",
+  "license": "AGPL-3.0-only",
+  "main": "index.js"
+}

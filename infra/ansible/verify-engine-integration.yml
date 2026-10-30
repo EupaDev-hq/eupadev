@@ -1,0 +1,292 @@
+# Real test of step E3 ("engine for real" note §2, E3 note) — can be rerun.
+#   ansible-playbook verify-engine-integration.yml
+# The ENGINE'S CODE (orchestrator/src/external/{gitea-forge,pushing-engine}.ts,
+# run by orchestrator/scripts/trial-integration.ts), from the orchestrator VM,
+# through https://<gitea_domain>:
+#   1. creates one tool per variant (svc-orchestrator token, as in E2);
+#   2. pushing fake: each code role (tests, builder) pushes its file set to
+#      agent/<tool>/<cycle>/<role> with the svc-agent token;
+#   2a. variant conflict: svc-orchestrator pushes web/common.js to main (like
+#      the squash of an earlier round), which the builder's branch also creates;
+#   3. integrates (local Git, branch integration/<cycle>/1, push without force)
+#      and merges (diff check, PR, squash by svc-orchestrator);
+#   4. replays 3 (resumption): same result, nothing more.
+# Then the admin checks the real effect in the forge, and everything is
+# cleaned up (trial repositories, two temporary tokens, files), even if a
+# check fails.
+#
+# The trial runs in the ENGINE IMAGE (orchestrator_image, already pulled and
+# verified on the VM by the orchestrator role): only it contains git. The
+# engine in service is not touched (one engine at a time, D23).
+#
+# Prerequisites: those of verify-engine-forge.yml (svc-orchestrator member of
+# the agents team, repo_admin_change_team_access, lab authority on the
+# orchestrator VM) and an engine image that contains git (E3 Dockerfile:
+# rebuilt by the CI of the engine repository, then engine-digest.yml and
+# site.yml).
+#
+# Expected (one repository per variant, file set chosen by the end of the slug):
+#   normal       → integration ok, merge ok: the 3 files in main, PR merged by
+#                  svc-orchestrator; role branches written by svc-agent;
+#   faulty       → ok, ok: the eval() is in main (red CI: E4);
+#   out-of-scope → ok, out_of_scope [tests/acceptance/stolen-…, builder]:
+#                  main unchanged, no PR;
+#   conflict     → the builder's branch conflicts with main (ADR-021):
+#                  conflict [web/common.js], the roles' files missing from
+#                  main, no integration branch.
+- name: E3 — pushing fake, integration and merge on the real forge
+  hosts: forge
+  become: true
+  vars:
+    cycle: 1
+    variants:
+      - { slug: check-engine-e3, file_set: normal }
+      - { slug: check-engine-e3-faulty, file_set: faulty }
+      - { slug: check-engine-e3-out-of-scope, file_set: out-of-scope }
+      - { slug: check-engine-e3-conflict, file_set: conflict }
+    token_name: "check-engine-e3-{{ ansible_date_time.epoch }}"
+    orchestrator: "{{ groups['orchestrator'][0] }}"
+    engine_image: "{{ hostvars[orchestrator].orchestrator_image }}"
+    # Directory in memory (tmpfs /run) on the orchestrator VM.
+    trial_dir: /run/eupadev-check-e3
+    trial_src: "{{ playbook_dir }}/../../orchestrator"
+    lab_ca_crt: /usr/local/share/ca-certificates/eupadev-lab.crt
+  module_defaults:
+    ansible.builtin.uri:
+      url_username: "{{ gitea_admin_user }}"
+      url_password: "{{ vault_gitea_admin_password }}"
+      force_basic_auth: true
+      body_format: json
+      return_content: true
+  tasks:
+    - name: Checks
+      block:
+        # An earlier trial that was interrupted must not skew anything.
+        - name: Delete the trial repositories of an earlier run
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ item.slug }}"
+            method: DELETE
+            status_code: [204, 404]
+          loop: "{{ variants }}"
+          loop_control: { label: "{{ item.slug }}" }
+
+        - name: The engine image is on the orchestrator VM and contains git
+          ansible.builtin.command:
+            argv: [docker, run, --rm, --network, none, --entrypoint, git, "{{ engine_image }}", --version]
+          delegate_to: "{{ orchestrator }}"
+          register: git_image
+          changed_when: false
+          failed_when: false
+
+        - name: Prerequisite — git in the engine image
+          ansible.builtin.assert:
+            that: git_image.rc == 0
+            success_msg: "OK — {{ git_image.stdout }} in {{ engine_image }}"
+            fail_msg: >-
+              MISSING PREREQUISITE — the engine image has no git or is not on the VM ({{ git_image.stderr | default('') }}):
+              rebuild the image (CI of the engine repository), then engine-digest.yml and site.yml.
+            quiet: true
+
+        - name: Is the lab authority on the orchestrator VM?
+          ansible.builtin.stat:
+            path: "{{ lab_ca_crt }}"
+          delegate_to: "{{ orchestrator }}"
+          register: lab_ca
+
+        - name: Prerequisite — the orchestrator VM trusts the forge (lab)
+          ansible.builtin.assert:
+            that: caddy_tls != 'internal' or lab_ca.stat.exists
+            fail_msg: "MISSING PREREQUISITE — role lab_ca missing on the orchestrator VM ({{ lab_ca_crt }})"
+            quiet: true
+
+        # Same scopes as the robots in service (verify-forge.yml).
+        - name: Temporary tokens of svc-orchestrator and svc-agent
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/users/{{ item.user }}/tokens"
+            method: POST
+            body: { name: "{{ token_name }}", scopes: "{{ item.scopes }}" }
+            status_code: 201
+          loop:
+            - { user: svc-orchestrator, scopes: [write:repository, write:organization] }
+            - { user: svc-agent, scopes: [write:repository] }
+          register: tokens
+          no_log: true
+
+        - name: Trial directories (memory, orchestrator VM)
+          ansible.builtin.file:
+            path: "{{ trial_dir }}/{{ item }}"
+            state: directory
+            owner: "1000"
+            mode: "0700"
+          loop: ["", src/external, scripts]
+          delegate_to: "{{ orchestrator }}"
+
+        # Only the tokens are secret: 0400, owner = the node user of the container.
+        - name: Write the tokens (read through FORGE_TOKEN_FILE and AGENT_TOKEN_FILE)
+          ansible.builtin.copy:
+            dest: "{{ trial_dir }}/{{ item.0 }}"
+            content: "{{ item.1.json.sha1 }}\n"
+            owner: "1000"
+            mode: "0400"
+          loop: "{{ ['orchestrator-token', 'agent-token'] | zip(tokens.results) | list }}"
+          delegate_to: "{{ orchestrator }}"
+          no_log: true
+
+        - name: Copy the forge adapter, the pushing fake and the trial script
+          ansible.builtin.copy:
+            src: "{{ trial_src }}/{{ item }}"
+            dest: "{{ trial_dir }}/{{ item }}"
+            owner: "1000"
+            mode: "0400"
+          loop:
+            - src/external/contracts.ts
+            - src/external/fakes.ts
+            - src/external/gitea-forge.ts
+            - src/external/pushing-engine.ts
+            - scripts/trial-integration.ts
+          delegate_to: "{{ orchestrator }}"
+
+        - name: Module file (ESM)
+          ansible.builtin.copy:
+            dest: "{{ trial_dir }}/package.json"
+            content: '{"type": "module"}'
+            owner: "1000"
+            mode: "0400"
+          delegate_to: "{{ orchestrator }}"
+
+        # Host network: /etc/hosts of the VM (lab_ca); read-only container (Git
+        # clones in /tmp in memory), without privilege. The tokens are never
+        # passed as arguments. One variant after the other.
+        - name: The engine creates the tool, the roles push, then integration and merge (twice)
+          ansible.builtin.command:
+            argv: >-
+              {{ ['docker', 'run', '--rm', '--network', 'host', '--read-only', '--tmpfs', '/tmp', '--cap-drop', 'ALL',
+                  '--security-opt', 'no-new-privileges:true', '--user', '1000', '--entrypoint', 'node',
+                  '-v', trial_dir ~ ':/trial:ro',
+                  '-e', 'FORGE_URL=https://' ~ gitea_domain,
+                  '-e', 'FORGE_TOKEN_FILE=/trial/orchestrator-token', '-e', 'AGENT_TOKEN_FILE=/trial/agent-token']
+                 + (['-v', lab_ca_crt ~ ':/lab-ca.crt:ro', '-e', 'NODE_EXTRA_CA_CERTS=/lab-ca.crt', '-e', 'GIT_SSL_CAINFO=/lab-ca.crt']
+                    if lab_ca.stat.exists else [])
+                 + [engine_image, '/trial/scripts/trial-integration.ts', item.slug, cycle | string] }}
+          loop: "{{ variants }}"
+          loop_control: { label: "{{ item.slug }}" }
+          delegate_to: "{{ orchestrator }}"
+          register: trials
+          changed_when: true
+          failed_when: false
+
+        - name: Each trial runs to the end
+          ansible.builtin.assert:
+            that: item.rc == 0
+            success_msg: "OK — {{ item.item.file_set }}: {{ item.stdout }}"
+            fail_msg: "FAILED — {{ item.item.file_set }} (rc={{ item.rc }}): {{ item.stderr }}"
+            quiet: true
+          loop: "{{ trials.results }}"
+          loop_control: { label: "{{ item.item.slug }}" }
+
+        - name: Keep the engine's results
+          ansible.builtin.set_fact:
+            engine_results: "{{ dict(variants | map(attribute='file_set') | zip(trials.results | map(attribute='stdout') | map('from_json'))) }}"
+
+        - name: Engine results as expected, and identical once replayed
+          vars:
+            r: "{{ engine_results[item.file_set] }}"
+            expected_merge: >-
+              {{ {'result': 'ok'} if item.file_set in ['normal', 'faulty']
+                 else ({'result': 'out_of_scope', 'files': [{'file': 'tests/acceptance/stolen-e3-' ~ cycle ~ '-builder.js', 'role': 'builder'}]}
+                       if item.file_set == 'out-of-scope' else {}) }}
+            expected_integration: >-
+              {{ {'result': 'conflict', 'files': ['web/common.js']} if item.file_set == 'conflict' else {'result': 'ok'} }}
+          ansible.builtin.assert:
+            that:
+              - r.set == item.file_set
+              - r.integration == expected_integration
+              # A `none` rendered by a template becomes the string "None" (ansible-core 2.16): conflict tested on its own.
+              - (r.merge is none) == (item.file_set == 'conflict')
+              - item.file_set == 'conflict' or r.merge == expected_merge
+              - r.resume.integration == r.integration
+              - r.resume.merge == r.merge
+            success_msg: >-
+              OK — {{ item.file_set }}: integration {{ r.integration.result }},
+              merge {{ r.merge.result | default('not attempted') }}, identical resumption
+            fail_msg: >-
+              FAILED — {{ item.file_set }}: integration {{ r.integration }} (expected {{ expected_integration }}),
+              merge {{ r.merge }} (expected {{ expected_merge }}), resumption {{ r.resume }}
+            quiet: true
+          loop: "{{ variants }}"
+          loop_control: { label: "{{ item.file_set }}" }
+
+        - name: Read, in main of each tool, the builder's file (admin)
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ item.slug }}/raw/api/lib/trial-e3-{{ cycle }}-builder.js?ref=main"
+            status_code: [200, 404]
+          loop: "{{ variants }}"
+          loop_control: { label: "{{ item.slug }}" }
+          register: in_main
+
+        - name: Read the integration branch and the PR of each tool (admin)
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ item.0.slug }}/{{ item.1 }}"
+            status_code: [200, 404]
+          loop: "{{ variants | product(['branches/integration/' ~ cycle ~ '/1', 'pulls/main/integration/' ~ cycle ~ '/1']) | list }}"
+          loop_control: { label: "{{ item.0.slug }} {{ item.1 }}" }
+          register: read_back
+
+        - name: Real effect in the forge — main, integration branch, PR merged by svc-orchestrator
+          vars:
+            main: "{{ in_main.results[i].status }}"
+            branch: "{{ read_back.results[2 * i].status }}"
+            pr: "{{ read_back.results[2 * i + 1] }}"
+            merged: "{{ item.file_set in ['normal', 'faulty'] }}"
+          ansible.builtin.assert:
+            that:
+              - (main | int == 200) == (merged | bool)
+              - (branch | int == 200) == (item.file_set != 'conflict')
+              - (pr.status == 200) == (merged | bool)
+              - not (merged | bool) or (pr.json.merged and pr.json.merged_by.login == 'svc-orchestrator')
+              - item.file_set != 'faulty' or 'eval(' in in_main.results[i].content
+            success_msg: >-
+              OK — {{ item.file_set }}: builder's file {{ 'in' if main | int == 200 else 'missing from' }} main,
+              integration branch {{ 'present' if branch | int == 200 else 'missing' }},
+              PR {{ ('merged by ' ~ pr.json.merged_by.login) if pr.status == 200 else 'missing' }}
+            fail_msg: >-
+              FAILED — {{ item.file_set }}: main {{ main }}, integration branch {{ branch }},
+              PR {{ pr.status }} {{ pr.json.merged_by.login | default('') if pr.status == 200 else '' }}
+            quiet: true
+          loop: "{{ variants }}"
+          loop_control: { label: "{{ item.file_set }}", index_var: i }
+
+        - name: Read the three expected files in main of the normal tool (admin)
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ variants[0].slug }}/contents/{{ item }}?ref=main"
+          loop: "{{ engine_results.normal.files.values() | flatten }}"
+
+        # Pushed with the svc-agent token only (the fake has no other);
+        # Gitea does not record pushes in its audit log.
+        - name: Both role branches of the normal tool exist (admin)
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ variants[0].slug }}/branches/agent/{{ variants[0].slug }}/{{ cycle }}/{{ item }}"
+          loop: [tests, builder]
+
+      always:
+        - name: Delete the temporary tokens
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/users/{{ item }}/tokens/{{ token_name }}"
+            method: DELETE
+            status_code: [204, 404]
+          loop: [svc-orchestrator, svc-agent]
+
+        # Only the admin deletes a repository (the engine never deletes anything).
+        - name: Delete the trial repositories
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ item.slug }}"
+            method: DELETE
+            status_code: [204, 404]
+          loop: "{{ variants }}"
+          loop_control: { label: "{{ item.slug }}" }
+
+        - name: Delete the trial files (tokens included)
+          ansible.builtin.file:
+            path: "{{ trial_dir }}"
+            state: absent
+          delegate_to: "{{ orchestrator }}"

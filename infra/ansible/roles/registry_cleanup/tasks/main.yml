@@ -1,0 +1,90 @@
+# Weekly cleanup of the forge's image registry, in apply mode: same script
+# and same kept images as registry-cleanup.yml (group_vars/forge:
+# registry_in_service, registry_movable).
+# Template unit eupadev-registry-cleanup@<parameters>.service: the timer
+# starts the "registry" instance; verify-forge.yml starts the "trial"
+# instance (trial package only).
+# Parameters without secret (0644); password root only (0600), handed to
+# the script by LoadCredential=; the script runs under a throwaway account
+# (DynamicUser=). Result: journalctl -u 'eupadev-registry-cleanup@*';
+# failure: systemctl --failed.
+- name: Install the registry cleanup script
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/files/registry-cleanup.py"
+    dest: /usr/local/sbin/eupadev-registry-cleanup
+    mode: "0755"
+
+- name: Directory of the cleanup parameters
+  ansible.builtin.file:
+    path: /etc/eupadev-registry-cleanup
+    state: directory
+    mode: "0755"
+
+- name: Password of the API (root only)
+  ansible.builtin.copy:
+    dest: /etc/eupadev-registry-cleanup/password
+    content: "{{ vault_gitea_admin_password }}"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: Parameters of the weekly cleanup (no secret)
+  ansible.builtin.copy:
+    dest: /etc/eupadev-registry-cleanup/registry.json
+    content: "{{ registry_cleanup_settings | to_nice_json }}\n"
+    mode: "0644"
+  vars:
+    registry_cleanup_settings:
+      root: http://127.0.0.1:3000
+      org: "{{ gitea_org }}"
+      user: "{{ gitea_admin_user }}"
+      in_service: "{{ registry_in_service }}"
+      movable_tags: "{{ registry_movable }}"
+      apply: true
+
+- name: Unit and timer of the cleanup
+  ansible.builtin.copy:
+    dest: "/etc/systemd/system/{{ item.name }}"
+    content: "{{ item.content }}"
+    mode: "0644"
+  loop:
+    - name: eupadev-registry-cleanup@.service
+      content: |
+        # Managed by Ansible (role registry_cleanup).
+        [Unit]
+        Description=Cleanup of the forge's image registry (%i)
+        After=docker.service
+
+        [Service]
+        Type=oneshot
+        DynamicUser=yes
+        LoadCredential=password:/etc/eupadev-registry-cleanup/password
+        StandardInput=file:/etc/eupadev-registry-cleanup/%i.json
+        StandardOutput=journal
+        ExecStart=/usr/bin/python3 -I /usr/local/sbin/eupadev-registry-cleanup
+        # Finished before the 02:30 backup (Gitea stopped).
+        TimeoutStartSec=45min
+    - name: eupadev-registry-cleanup.timer
+      content: |
+        # Managed by Ansible (role registry_cleanup).
+        [Unit]
+        Description=Weekly cleanup of the forge's image registry
+
+        [Timer]
+        OnCalendar={{ registry_cleanup_hour }}
+        Unit=eupadev-registry-cleanup@registry.service
+        # No Persistent: a missed week waits for the next one (at boot,
+        # Gitea does not answer yet).
+
+        [Install]
+        WantedBy=timers.target
+  loop_control: { label: "{{ item.name }}" }
+  register: registry_cleanup_units
+
+- name: Weekly timer active
+  ansible.builtin.systemd_service:
+    name: eupadev-registry-cleanup.timer
+    enabled: true
+    state: "{{ 'restarted' if registry_cleanup_units is changed else 'started' }}"
+    daemon_reload: "{{ registry_cleanup_units is changed }}"

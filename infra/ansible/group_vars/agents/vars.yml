@@ -1,0 +1,48 @@
+# Agents VM: containers of the AI agents (ROADMAP §8.16 L1-L4).
+
+# gVisor declared to Docker under the name "runsc", systrap platform written
+# explicitly (it is already gVisor's default). Never the default runtime:
+# each agent container asks for it with --runtime=runsc.
+docker_runtimes:
+  runsc:
+    path: /usr/bin/runsc
+    runtimeArgs: ["--platform=systrap"]
+
+# Secrets of the agents VM (§8.16 M1, same mechanism as the orchestrator:
+# systemd-creds, decrypted in memory into /run/eupadev/secrets by
+# eupadev-secrets.service, mounted as Compose secrets). uid = user of the
+# container that reads it: 65532 = AI proxy (Caddy, compose/agents).
+# Vault: group_vars/agents/vault-ai.yml (init-vault.sh, ANTHROPIC_KEY_FILE).
+#   1000  = executor (node of the engine image): database URL (TLS + client
+#           certificate), svc-agent token (executor/token.yml), and registry
+#           login (same token) for docker and cosign.
+# Database over verified TLS, client certificate (tls/ folder of the executor's Compose).
+executor_tls_url: "sslmode=verify-full&sslrootcert=/tls/ca.crt&sslcert=/tls/client.crt&sslkey=/tls/client.key"
+agents_secrets:
+  - name: anthropic_api_key
+    uid: 65532
+    value: "{{ vault_anthropic_api_key }}"
+  - name: executor_database_url
+    uid: 1000
+    value: >-
+      postgresql://orch_engine:{{ hostvars[groups['orchestrator'][0]].vault_orch_engine_password | urlencode }}@{{
+      hostvars[groups['orchestrator'][0]].ansible_host }}:5432/orchestrator?{{ executor_tls_url }}
+  - name: executor_forge_token
+    uid: 1000
+    value: "{{ executor_token }}"
+  # Core read badge (deployment robot, read:package, ADR-023): the executor
+  # hands it to the fetch container on its stdin, never to an agent.
+  - name: executor_core_token
+    uid: 1000
+    value: "{{ executor_tokens.executor_core_token }}"
+  - name: executor_docker_config
+    uid: 1000
+    # Leading newline (valid JSON): otherwise Ansible turns a text that starts
+    # with "{" back into a dictionary, then written in Python syntax (a file
+    # docker and cosign cannot read, encrypted again on every pass).
+    value: "{{ '\n' ~ ({'auths': {gitea_domain: {'auth': ('svc-agent:' ~ executor_token) | b64encode}}} | to_json) }}"
+
+# Agent image, BY DIGEST (registry/eupadev/agent@sha256:…): the one checked
+# by verify-image-agent.yml (line "Agent image digest: …" of the pipeline of
+# the `agent` repository). Read by the engine (AGENT_IMAGE).
+agents_image: "git.eupadev.org/eupadev/agent@sha256:9c7e4ee5f7e6e0e5125030ab1a14ec666809a34110f046b3d4c6f916c67264db"

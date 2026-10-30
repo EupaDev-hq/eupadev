@@ -1,0 +1,146 @@
+# Engine image, or Keycloak's (keycloak role, same signing key, with
+# orchestrator_image = keycloak_image) (ROADMAP §8.16 M2-M3, ADR-005): pulled BY DIGEST from
+# the forge's registry and its cosign signature checked with the versioned
+# public key (images/engine/cosign.pub) BEFORE any deployment. A missing or
+# wrong signature stops the recipe: nothing is started.
+# Done only when the image is missing on the VM (a digest names an immutable
+# content: already checked at download), or on request
+# (orchestrator_verify_signature, used by verify-engine.yml).
+- name: Is the image named by digest?
+  ansible.builtin.assert:
+    that: orchestrator_image is match('^[^@\s]+/[a-z0-9-]+@sha256:[0-9a-f]{64}$')
+    fail_msg: "the image must be <registry>/…/<name>@sha256:<64 hex> (got: {{ orchestrator_image }})"
+    quiet: true
+
+- name: Install cosign (official binary, sha256 sum checked)
+  ansible.builtin.get_url:
+    url: "https://github.com/sigstore/cosign/releases/download/{{ orchestrator_cosign_version }}/cosign-linux-amd64"
+    dest: /usr/local/bin/cosign
+    checksum: "sha256:{{ orchestrator_cosign_sha256 }}"
+    mode: "0755"
+
+- name: Public signing key of the engine
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../images/engine/cosign.pub"
+    dest: /etc/eupadev/cosign-engine.pub
+    mode: "0644"
+
+- name: Is the image already on the VM?
+  ansible.builtin.command:
+    argv: [docker, image, inspect, --format, "{{ '{{' }}.Id{{ '}}' }}", "{{ orchestrator_image }}"]
+  register: orchestrator_local_image
+  changed_when: false
+  failed_when: false
+
+# Reading the private registry: throwaway read badge of svc-deployment,
+# created for this pass then deleted (never stored on the VM). The Docker
+# login lives in /run (memory), never in /root/.docker.
+- name: Download the image and check its signature
+  when: orchestrator_local_image.rc != 0 or (orchestrator_verify_signature | default(false) | bool)
+  vars:
+    orchestrator_forge: "{{ hostvars[groups['forge'][0]] }}"
+    orchestrator_docker_config: /run/eupadev/registry
+  module_defaults:
+    ansible.builtin.uri:
+      url_username: "{{ gitea_admin_user }}"
+      url_password: "{{ vault_gitea_admin_password }}"
+      force_basic_auth: true
+  block:
+    - name: Remove an old throwaway badge (interrupted pass)
+      ansible.builtin.uri:
+        url: "{{ orchestrator_forge.gitea_api }}/users/svc-deployment/tokens/engine-deployment"
+        method: DELETE
+        status_code: [204, 404]
+      delegate_to: "{{ groups['forge'][0] }}"
+
+    - name: Create the throwaway registry read badge
+      ansible.builtin.uri:
+        url: "{{ orchestrator_forge.gitea_api }}/users/svc-deployment/tokens"
+        method: POST
+        body_format: json
+        body: { name: engine-deployment, scopes: ["read:package"] }
+        status_code: 201
+      delegate_to: "{{ groups['forge'][0] }}"
+      register: orchestrator_badge
+      # Throwaway, deleted at the end of the block: not a lasting change.
+      changed_when: false
+      no_log: true
+
+    - name: Registry login folder (memory)
+      ansible.builtin.file:
+        path: "{{ orchestrator_docker_config }}"
+        state: directory
+        mode: "0700"
+
+    - name: Log in to the forge's registry
+      ansible.builtin.command:
+        argv: [docker, login, "{{ gitea_domain }}", -u, svc-deployment, --password-stdin]
+        stdin: "{{ orchestrator_badge.json.sha1 }}"
+      environment: { DOCKER_CONFIG: "{{ orchestrator_docker_config }}" }
+      changed_when: false
+      no_log: true
+
+    - name: Download the image by its digest
+      ansible.builtin.command:
+        argv: [docker, pull, -q, "{{ orchestrator_image }}"]
+      environment: { DOCKER_CONFIG: "{{ orchestrator_docker_config }}" }
+      changed_when: orchestrator_local_image.rc != 0
+
+    # Key, no transparency log: the signature was made without Rekor (empty
+    # signing configuration, pipeline of the engine repository).
+    - name: Check the cosign signature (failure = no deployment)
+      ansible.builtin.command:
+        argv: [cosign, verify, --key, /etc/eupadev/cosign-engine.pub, --insecure-ignore-tlog=true,
+               "{{ orchestrator_image }}"]
+      environment: { DOCKER_CONFIG: "{{ orchestrator_docker_config }}" }
+      register: orchestrator_signature
+      changed_when: false
+
+    # verify-engine.yml only: the check is not void, another key (throwaway,
+    # in memory) is indeed refused.
+    - name: Counter-check of the signature
+      when: orchestrator_counter_check | default(false) | bool
+      block:
+        - name: Create a throwaway key
+          ansible.builtin.command:
+            argv: [cosign, generate-key-pair, --output-key-prefix, "{{ orchestrator_docker_config }}/other"]
+            stdin: ""
+          environment: { COSIGN_PASSWORD: "" }
+          changed_when: false
+
+        - name: Another key is refused
+          ansible.builtin.command:
+            argv: [cosign, verify, --key, "{{ orchestrator_docker_config }}/other.pub", --insecure-ignore-tlog=true,
+                   "{{ orchestrator_image }}"]
+          environment: { DOCKER_CONFIG: "{{ orchestrator_docker_config }}" }
+          register: orchestrator_other_key
+          changed_when: false
+          failed_when: orchestrator_other_key.rc == 0 or orchestrator_other_key.stderr is not search('failed to verify signature')
+
+  rescue:
+    - name: Remove the unchecked image
+      ansible.builtin.command:
+        argv: [docker, image, rm, "{{ orchestrator_image }}"]
+      when: orchestrator_local_image.rc != 0
+      changed_when: true
+      failed_when: false
+
+    - name: Stop here
+      ansible.builtin.fail:
+        msg: >-
+          Image not deployed: download or signature failed
+          ({{ ansible_failed_result.stderr | default(ansible_failed_result.msg | default('?')) }}).
+
+  always:
+    - name: Forget the registry login
+      ansible.builtin.file:
+        path: "{{ orchestrator_docker_config }}"
+        state: absent
+      changed_when: false
+
+    - name: Delete the throwaway badge
+      ansible.builtin.uri:
+        url: "{{ orchestrator_forge.gitea_api }}/users/svc-deployment/tokens/engine-deployment"
+        method: DELETE
+        status_code: [204, 404]
+      delegate_to: "{{ groups['forge'][0] }}"

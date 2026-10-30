@@ -1,0 +1,91 @@
+# Agents VM: the DBOS executor (agent-tasks queue, EUPADEV_ROLE=executor)
+# — note docs/reflexions/2026-10-15-note-lanceur-service.md. It launches the agent containers
+# through the VM's Docker socket (= root on the VM: risk accepted in L1,
+# dedicated VM), talks to the orchestrator database over TLS with a client
+# certificate, and pushes the agent branches with svc-agent's token.
+# Played BEFORE agent_proxies: it holds the secrets of the whole VM (a single
+# eupadev-secrets.service unit), the AI proxy's key among them.
+- name: Executor folder (root access only)
+  ansible.builtin.file:
+    path: /opt/eupadev/executor
+    state: directory
+    mode: "0750"
+
+- name: Database client certificate
+  ansible.builtin.include_role:
+    name: db_pki
+  vars:
+    db_pki_dir: /opt/eupadev/executor/tls
+    db_pki_name: client
+    db_pki_cn: orch_engine
+    db_pki_usage: clientAuth
+    db_pki_uid: 1000
+
+- name: Executor tokens (svc-agent; core read badge)
+  ansible.builtin.include_tasks: token.yml
+  loop:
+    - { cred: executor_forge_token, user: svc-agent, name: executor, scopes: ["write:repository", "read:package"] }
+    - { cred: executor_core_token, user: svc-deployment, name: executor-core, scopes: ["read:package"] }
+  loop_control: { loop_var: executor_token_item, label: "{{ executor_token_item.cred }}" }
+
+- name: Remember svc-agent's token (secrets of the agents VM)
+  ansible.builtin.set_fact:
+    executor_token: "{{ executor_tokens.executor_forge_token }}"
+  no_log: true
+
+# Same tasks as the orchestrator's secrets (systemd-creds), with the list of
+# this VM (group_vars/agents: AI key, database, token, registry).
+- name: Secrets of the agents VM (systemd-creds)
+  ansible.builtin.include_role:
+    name: orchestrator
+    tasks_from: systemd-creds
+  vars:
+    orchestrator_secrets: "{{ agents_secrets }}"
+
+- name: Public signing key of the platform images (agents)
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../images/engine/cosign.pub"
+    dest: /opt/eupadev/executor/cosign.pub
+    mode: "0644"
+
+# Same image as the pilot, pulled by digest and signature checked before any
+# start (ADR-005), by the tasks of the orchestrator role.
+- name: Engine image (download, signature)
+  ansible.builtin.include_role:
+    name: orchestrator
+    tasks_from: image
+  vars:
+    orchestrator_image: "{{ executor_image }}"
+
+- name: The VM's docker group (socket access for the container's user)
+  ansible.builtin.getent:
+    database: group
+    key: docker
+
+- name: Copy the Compose file
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../compose/executor/compose.yml"
+    dest: /opt/eupadev/executor/compose.yml
+    mode: "0640"
+  register: executor_compose
+
+- name: Put the non-secret variables beside the Compose file
+  ansible.builtin.template:
+    src: executor-variables.j2
+    dest: /opt/eupadev/executor/.env
+    mode: "0640"
+  register: executor_env
+
+# Emergency stop level 2 or 3 (emergency-stop.yml): the executor stays stopped.
+- name: Is an emergency stop in progress?
+  ansible.builtin.stat:
+    path: /opt/eupadev/executor/EMERGENCY-STOP
+  register: executor_stop
+
+# Client certificate renewed: the container keeps the files read at start
+# (pool connections) → recreated, as for a secret.
+- name: Start or update the executor
+  ansible.builtin.include_tasks: start.yml
+  when: not executor_stop.stat.exists
+  vars:
+    executor_force: "{{ orchestrator_recreate or db_pki_change }}"

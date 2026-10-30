@@ -1,0 +1,468 @@
+# Real-conditions check of the engine in service (E0, "engine for real"
+# note §2) — can be rerun.
+#   ansible-playbook verify-engine.yml
+#   ansible-playbook verify-engine.yml -e restart_vm=true
+#     → also restarts the orchestrator VM and checks that the engine comes
+#       back on its own, healthy (secrets decrypted again, ≈ 2 min).
+# Checks:
+#   1. the image is named by digest and its cosign signature is verified (and
+#      another key refused);
+#   2. the secrets are in memory only (/run, tmpfs, right owner, 0400),
+#      absent in clear from the disk and from the containers' configuration;
+#   3. the local API: /health 200, 403 without X-EupaDev, 401 without a
+#      token (I0), listens on 127.0.0.1 only (and unreachable from the forge);
+#   4. a request through the API, on behalf of the service account
+#      check-requester (Keycloak token, tasks/engine-token.yml; replayed with
+#      the same Idempotency-Key: same answer, a single cycle), driven as a
+#      human up to end_success — feedback by check-requester, decisions by
+#      check-admin; `docker kill` of the engine during Gate 1 then restart:
+#      resumed in the same state, nothing done twice; a 2nd engine is refused (D23).
+# Cleanup (always): a cycle left open is cancelled (nothing is deleted from
+# the database, by design), engine restarted. The test cycles stay in the
+# history under the slug check-e0-<timestamp>.
+- name: Check the orchestrator's engine
+  hosts: orchestrator
+  become: true
+  vars:
+    engine_api: http://127.0.0.1:8080
+    restart_vm: false
+    psql: [docker, compose, exec, -T, db, psql, -U, orchestrator, -d, orchestrator, -tAc]
+  module_defaults:
+    ansible.builtin.uri:
+      headers: { X-EupaDev: "1" }
+      return_content: true
+    ansible.builtin.command:
+      chdir: /opt/eupadev/orchestrator
+  tasks:
+    - name: Is an engine image named?
+      ansible.builtin.assert:
+        that: orchestrator_image | length > 0
+        fail_msg: "orchestrator_image empty (group_vars/orchestrator/vars.yml): the engine is not deployed."
+        quiet: true
+
+    - name: Is an emergency stop in progress?
+      ansible.builtin.stat:
+        path: /opt/eupadev/orchestrator/EMERGENCY-STOP
+      register: emergency_stop
+
+    - name: No emergency stop in progress
+      ansible.builtin.assert:
+        that: not emergency_stop.stat.exists
+        fail_msg: "Emergency stop in progress: resume first (emergency-stop.yml -e level=0 -e confirm=yes)."
+        quiet: true
+
+    - name: Unique name of the test tool
+      ansible.builtin.set_fact:
+        engine_slug: "check-e0-{{ lookup('ansible.builtin.pipe', 'date -u +%Y%m%d%H%M%S') }}"
+
+    - name: Engine checks
+      block:
+        # ---------- 1. Image and signature ----------
+        - name: "1. Image signature verified (and another key refused)"
+          ansible.builtin.include_role:
+            name: orchestrator
+            tasks_from: image.yml
+          vars:
+            orchestrator_verify_signature: true
+            orchestrator_counter_check: true
+
+        - name: Image of the engine container
+          ansible.builtin.command:
+            argv: [docker, compose, ps, --format, "{{ '{{' }}.Image{{ '}}' }}", engine]
+          register: engine_image_ref
+          changed_when: false
+
+        - name: "1. The engine runs the verified image, by digest"
+          ansible.builtin.assert:
+            that: engine_image_ref.stdout | trim == orchestrator_image
+            success_msg: "OK — {{ orchestrator_image }}"
+            fail_msg: "FAILED — the container runs \"{{ engine_image_ref.stdout }}\""
+
+        # ---------- 2. Secrets ----------
+        - name: Read the secrets service and the type of the directory
+          ansible.builtin.command:
+            argv:
+              - sh
+              - -c
+              - >-
+                systemctl is-active eupadev-secrets.service;
+                findmnt -no FSTYPE --target /run/eupadev/secrets; stat -c '%a %u' /run/eupadev/secrets
+          register: secrets_state
+          changed_when: false
+
+        - name: "2. Service active, secrets on tmpfs, directory 0700 root"
+          ansible.builtin.assert:
+            that: secrets_state.stdout_lines == ['active', 'tmpfs', '700 0']
+            success_msg: "OK — eupadev-secrets active, /run/eupadev/secrets in memory"
+            fail_msg: "FAILED — {{ secrets_state.stdout_lines }}"
+
+        - name: Read the owner and mode of each decrypted secret
+          ansible.builtin.command:
+            argv: >-
+              {{ ['stat', '-c', '%n %u %a']
+                 + (orchestrator_secrets | map(attribute='name') | map('regex_replace', '^', '/run/eupadev/secrets/') | list) }}
+          register: secret_files
+          changed_when: false
+
+        - name: "2. Each secret belongs to the user of its container, 0400"
+          ansible.builtin.assert:
+            that: secret_files.stdout_lines == expected
+            success_msg: "OK — {{ expected | length }} secrets, right owners and modes"
+            fail_msg: "FAILED — {{ secret_files.stdout_lines }} (expected {{ expected }})"
+          vars:
+            expected: >-
+              {{ orchestrator_secrets | map(attribute='name') | map('regex_replace', '^', '/run/eupadev/secrets/')
+                 | zip(orchestrator_secrets | map(attribute='uid') | map('string'))
+                 | map('join', ' ') | map('regex_replace', '$', ' 400') | list }}
+
+        # The passwords themselves, searched as they are. Control: they are
+        # indeed found in /run (otherwise the search would prove nothing).
+        - name: Search the passwords in clear (control /run, then disk)
+          ansible.builtin.command:
+            argv: [grep, -rlsF, -f, "-", /run/eupadev/secrets, /opt/eupadev, /etc, /root, /home, /tmp, /var/tmp,
+                   /var/log, /var/lib/docker/containers]
+            stdin: "{{ [vault_orch_db_password, vault_orch_engine_password, vault_orch_owner_password] | join('\n') }}"
+          register: secrets_search
+          changed_when: false
+          failed_when: false
+          no_log: true
+
+        - name: Keep only the names of the files found
+          ansible.builtin.set_fact:
+            secrets_found: "{{ secrets_search.stdout_lines }}"
+
+        - name: "2. Passwords only in /run (no .env, disk, docker inspect or logs)"
+          ansible.builtin.assert:
+            that:
+              - secrets_found | select('match', '/run/eupadev/secrets/') | list | length == 3
+              - secrets_found | reject('match', '/run/eupadev/secrets/') | list | length == 0
+            success_msg: "OK — passwords in memory only"
+            fail_msg: "FAILED — files holding a password: {{ secrets_found }}"
+
+        # ---------- 3. Local API ----------
+        - name: "3. /health answers 200 (engine healthy, not paused)"
+          ansible.builtin.uri:
+            url: "{{ engine_api }}/health"
+          register: health
+          failed_when: "health.status != 200 or health.json.status != 'ok' or health.json.pause_agents"
+
+        - name: "3. Without X-EupaDev: 403"
+          ansible.builtin.uri:
+            url: "{{ engine_api }}/health"
+            headers: {}
+            status_code: 403
+
+        - name: "3. Without a token: 401 (I0)"
+          ansible.builtin.uri:
+            url: "{{ engine_api }}/requests/1"
+            status_code: 401
+          register: no_token
+          failed_when: "no_token.status != 401 or 'Bearer' not in (no_token.www_authenticate | default(''))"
+
+        - name: Read the listening addresses of the API port
+          ansible.builtin.command:
+            argv: [ss, -Hltn, "sport = :8080"]
+          register: listening
+          changed_when: false
+
+        - name: "3. The API listens on 127.0.0.1 only"
+          ansible.builtin.assert:
+            that:
+              - listening.stdout_lines | length > 0
+              - listening.stdout_lines | map('split') | map(attribute=3) | reject('equalto', '127.0.0.1:8080') | list | length == 0
+            success_msg: "OK — 127.0.0.1:8080 only"
+            fail_msg: "FAILED — {{ listening.stdout_lines }}"
+
+        # ---------- 4. A cycle through the API ----------
+        - name: Requester token
+          ansible.builtin.include_tasks: tasks/engine-token.yml
+          vars: { engine_hat: requester }
+
+        - name: "4. New request through the API"
+          ansible.builtin.uri:
+            url: "{{ engine_api }}/requests"
+            method: POST
+            headers: { X-EupaDev: "1", Authorization: "Bearer {{ engine_token }}", Idempotency-Key: "{{ engine_slug }}" }
+            body_format: json
+            body: { type: creation, name: "Check E0", slug: "{{ engine_slug }}", owner_service: lab, need: "Lab check: track lent gear" }
+            status_code: 201
+          register: request
+
+        - name: Keep the cycle
+          ansible.builtin.set_fact:
+            engine_cycle: "{{ request.json.cycle_id }}"
+
+        - name: "4. Same request, same Idempotency-Key"
+          ansible.builtin.uri:
+            url: "{{ engine_api }}/requests"
+            method: POST
+            headers: { X-EupaDev: "1", Authorization: "Bearer {{ engine_token }}", Idempotency-Key: "{{ engine_slug }}" }
+            body_format: json
+            body: { type: creation, name: "Check E0", slug: "{{ engine_slug }}", owner_service: lab, need: "Lab check: track lent gear" }
+            status_code: 201
+          register: replay
+
+        - name: Count the cycles of the test tool
+          ansible.builtin.command:
+            argv: "{{ psql + [sql] }}"
+          vars:
+            sql: "select count(*) from cycles c join tools o on o.id = c.tool_id where o.slug = '{{ engine_slug }}'"
+          register: nb_cycles
+          changed_when: false
+
+        - name: "4. Replay: same answer, a single cycle"
+          ansible.builtin.assert:
+            that: [replay.json == request.json, nb_cycles.stdout | trim == '1']
+            success_msg: "OK — cycle {{ engine_cycle }}, replay without duplicate"
+            fail_msg: "FAILED — {{ request.json }} / {{ replay.json }}, {{ nb_cycles.stdout }} cycle(s)"
+
+        - name: "4. Requester's feedback on the mock-up"
+          ansible.builtin.include_tasks: tasks/engine-step.yml
+          vars:
+            engine_state: waiting_scoping_feedback
+            engine_message: { type: scoping_feedback, outcome: satisfied }
+
+        - name: Requester token
+          ansible.builtin.include_tasks: tasks/engine-token.yml
+          vars: { engine_hat: requester }
+
+        - name: Wait for Gate 1
+          ansible.builtin.uri:
+            url: "{{ engine_api }}/requests/{{ engine_cycle }}"
+            headers: { X-EupaDev: "1", Authorization: "Bearer {{ engine_token }}" }
+          register: gate_state
+          until: gate_state.status == 200 and gate_state.json.state == 'gate_1'
+          retries: 90
+          delay: 2
+
+        - name: Count tasks and transitions before the hard stop
+          ansible.builtin.command:
+            argv: "{{ psql + [sql] }}"
+          vars:
+            sql: >-
+              select (select count(*) from tasks where cycle_id = {{ engine_cycle | int }}) || ' '
+              || (select count(*) from tool_history where cycle_id = {{ engine_cycle | int }})
+          register: before_kill
+          changed_when: false
+
+        - name: "4. Hard stop of the engine during Gate 1 (docker kill)"
+          ansible.builtin.command:
+            argv: [docker, compose, kill, engine]
+          changed_when: true
+
+        - name: Restart the same container
+          ansible.builtin.command:
+            argv: [docker, compose, start, engine]
+          changed_when: true
+
+        - name: Wait until the engine is healthy again
+          ansible.builtin.uri:
+            url: "{{ engine_api }}/health"
+          register: resume_health
+          until: resume_health.status == 200
+          retries: 60
+          delay: 3
+
+        - name: Requester token
+          ansible.builtin.include_tasks: tasks/engine-token.yml
+          vars: { engine_hat: requester }
+
+        - name: Read the cycle again after the resumption
+          ansible.builtin.uri:
+            url: "{{ engine_api }}/requests/{{ engine_cycle }}"
+            headers: { X-EupaDev: "1", Authorization: "Bearer {{ engine_token }}" }
+          register: after_kill
+
+        - name: Count tasks and transitions again
+          ansible.builtin.command:
+            argv: "{{ psql + [sql] }}"
+          vars:
+            sql: >-
+              select (select count(*) from tasks where cycle_id = {{ engine_cycle | int }}) || ' '
+              || (select count(*) from tool_history where cycle_id = {{ engine_cycle | int }})
+          register: after_account
+          changed_when: false
+
+        - name: "4. Resumption: still at Gate 1, workflow pending, nothing done twice"
+          ansible.builtin.assert:
+            that:
+              - after_kill.json.state == 'gate_1'
+              - after_kill.json.workflow == 'PENDING'
+              - after_account.stdout | trim == before_kill.stdout | trim
+            success_msg: "OK — resumed without duplicate (tasks and transitions: {{ before_kill.stdout | trim }})"
+            fail_msg: "FAILED — {{ after_kill.json }}; before {{ before_kill.stdout }}, after {{ after_account.stdout }}"
+
+        # D23: the database refuses a 2nd engine (lock held by the first one).
+        - name: Start a 2nd engine beside the first one
+          ansible.builtin.command:
+            argv: [docker, compose, run, --rm, --no-deps, -T, engine]
+          register: second_engine
+          changed_when: false
+          failed_when: second_engine.rc == 0 or (second_engine.stdout ~ second_engine.stderr) is not search('another EupaDev engine already runs')
+
+        - name: "4. Gate 1 decision, feedback on the Preview, Gate 2 decision"
+          ansible.builtin.include_tasks: tasks/engine-step.yml
+          loop:
+            - { state: gate_1, message: { type: decision, gate: gate_1, outcome: approved } }
+            - { state: waiting_preview_feedback, message: { type: preview_feedback, outcome: satisfied } }
+            - { state: gate_2, message: { type: decision, gate: gate_2, outcome: approved } }
+          loop_control: { label: "{{ item.state }}" }
+          vars:
+            engine_state: "{{ item.state }}"
+            engine_message: "{{ item.message }}"
+
+        - name: Requester token
+          ansible.builtin.include_tasks: tasks/engine-token.yml
+          vars: { engine_hat: requester }
+
+        - name: Wait for the end of the cycle
+          ansible.builtin.uri:
+            url: "{{ engine_api }}/requests/{{ engine_cycle }}"
+            headers: { X-EupaDev: "1", Authorization: "Bearer {{ engine_token }}" }
+          register: cycle_end
+          until: cycle_end.status == 200 and cycle_end.json.finished_at is not none
+          retries: 90
+          delay: 2
+
+        - name: Count decisions and passages through the gates
+          ansible.builtin.command:
+            argv: "{{ psql + [sql] }}"
+          vars:
+            sql: >-
+              select (select count(*) from approvals where cycle_id = {{ engine_cycle | int }}) || ' '
+              || (select count(*) from tool_history where cycle_id = {{ engine_cycle | int }} and state = 'gate_1') || ' '
+              || (select count(*) from tool_history where cycle_id = {{ engine_cycle | int }} and state = 'gate_2')
+          register: final
+          changed_when: false
+
+        # I0: both decisions carry the actor check-admin under the admin hat, the feedback comes from check-requester.
+        - name: Read who decided and who judged the mock-up
+          ansible.builtin.command:
+            argv: "{{ psql + [sql] }}"
+          vars:
+            sql: >-
+              select string_agg(distinct role, ',') from approvals where cycle_id = {{ engine_cycle | int }}
+          register: hats
+          changed_when: false
+
+        - name: "4. The cycle ends in end_success, one decision per gate, a single Gate 1, decisions under the admin hat"
+          ansible.builtin.assert:
+            that: [cycle_end.json.state == 'end_success', final.stdout | trim == '2 1 1', hats.stdout | trim == 'admin']
+            success_msg: "OK — cycle {{ engine_cycle }}: end_success"
+            fail_msg: "FAILED — state {{ cycle_end.json.state }}, decisions/gate_1/gate_2 = {{ final.stdout }}"
+
+        # docs/reflexions/2026-10-15-note-lanceur-service.md: W1 at the pilot (orchestrator
+        # VM), each agent task (W2) at the executor of the agents VM.
+        - name: Read who ran the cycle and its tasks (DBOS)
+          ansible.builtin.command:
+            argv: "{{ psql + [sql] }}"
+          vars:
+            sql: >-
+              select (select executor_id from dbos.workflow_status where workflow_uuid = 'cycle-{{ engine_cycle | int }}')
+              || ' ' || coalesce((select string_agg(distinct w.executor_id, ',') from dbos.workflow_status w
+                 join tasks t on w.workflow_uuid = 'task-' || t.id where t.cycle_id = {{ engine_cycle | int }}), 'none')
+          register: executors
+          changed_when: false
+
+        - name: "4. Cycle run by the pilot, agent tasks by the executor of the agents VM"
+          ansible.builtin.assert:
+            that: executors.stdout | trim == 'local agent-executor'
+            success_msg: "OK — pilot / executor: {{ executors.stdout | trim }}"
+            fail_msg: "FAILED — executors (cycle, tasks): {{ executors.stdout }}"
+
+      rescue:
+        - name: Engine log (diagnosis)
+          ansible.builtin.command:
+            argv: [docker, compose, logs, --no-color, --tail, "80", migrate, engine]
+          register: engine_log
+          changed_when: false
+          failed_when: false
+
+        - name: Show the log
+          ansible.builtin.debug:
+            var: engine_log.stdout_lines
+
+        - name: Check failed
+          ansible.builtin.fail:
+            msg: "verify-engine failed: {{ ansible_failed_task.name }} — see the log above."
+
+      always:
+        - name: The engine runs (restarted if it was killed)
+          ansible.builtin.command:
+            argv: [docker, compose, up, -d, --wait, --wait-timeout, "300", engine]
+          changed_when: false
+          failed_when: false
+
+        - name: Admin token (cleanup)
+          ansible.builtin.include_tasks: tasks/engine-token.yml
+          vars: { engine_hat: admin }
+          when: engine_cycle is defined
+
+        - name: Read the final state of the test cycle
+          ansible.builtin.uri:
+            url: "{{ engine_api }}/requests/{{ engine_cycle }}"
+            headers: { X-EupaDev: "1", Authorization: "Bearer {{ engine_token }}" }
+          register: remaining
+          when: engine_cycle is defined
+          failed_when: false
+
+        - name: Cancel the test cycle left open
+          ansible.builtin.uri:
+            url: "{{ engine_api }}/messages"
+            method: POST
+            headers: { X-EupaDev: "1", Authorization: "Bearer {{ engine_token }}", Idempotency-Key: "{{ engine_slug }}-cancellation" }
+            body_format: json
+            body: "{{ {'cycle_id': engine_cycle | int, 'message': {'type': 'cancellation'}} }}"
+            status_code: 202
+          when: engine_cycle is defined and remaining.json is defined and remaining.json.finished_at is none
+          changed_when: true
+          failed_when: false
+
+    # Off by default: restarts the VM (-e restart_vm=true).
+    - name: "5. VM restart: the engine comes back on its own"
+      when: restart_vm | bool
+      block:
+        - name: Restart the orchestrator VM
+          ansible.builtin.reboot:
+            reboot_timeout: 600
+
+        - name: Wait for /health 200 without restarting anything
+          ansible.builtin.uri:
+            url: "{{ engine_api }}/health"
+          register: reboot_health
+          until: reboot_health.status == 200
+          retries: 60
+          delay: 5
+
+        - name: Read the secrets service and the engine's Docker health
+          ansible.builtin.command:
+            argv:
+              - sh
+              - -c
+              - >-
+                systemctl is-active eupadev-secrets.service;
+                docker inspect --format '{{ '{{' }}.State.Health.Status{{ '}}' }}' orchestrator-engine-1
+          register: after_reboot
+          until: after_reboot.stdout_lines == ['active', 'healthy']
+          retries: 30
+          delay: 5
+          changed_when: false
+
+        - name: "5. After the restart: secrets decrypted again, engine healthy"
+          ansible.builtin.debug:
+            msg: "OK — eupadev-secrets active, engine healthy, /health 200"
+
+- name: Check that the engine API cannot be reached from another VM
+  hosts: forge
+  gather_facts: false
+  tasks:
+    - name: Try the engine API through the VM's address
+      ansible.builtin.command:
+        argv: [curl, -sS, --max-time, "5", -H, "X-EupaDev: 1", "http://{{ hostvars[groups['orchestrator'][0]].ansible_host }}:8080/health"]
+      register: from_forge
+      changed_when: false
+      failed_when: from_forge.rc == 0
+
+    - name: "3. The API cannot be reached from the forge"
+      ansible.builtin.debug:
+        msg: "OK — curl from the forge: expected failure (code {{ from_forge.rc }})"

@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Maintenance requests</title>
+  <link rel="stylesheet" href="/styles/design-system.css">
+  <link rel="stylesheet" href="/styles/app.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <div class="app-shell">
+    <nav class="sidebar" aria-label="Main">
+      <div class="sidebar-brand">
+        <span class="sidebar-brand-text">
+          <span class="sidebar-brand-name">Maintenance requests</span>
+          <span class="sidebar-brand-sub" id="me-name"></span>
+        </span>
+      </div>
+      <div class="sidebar-nav">
+        <a class="nav-item" href="#/" data-nav="/">Requests</a>
+        <a class="nav-item" href="#/requests/new" data-nav="/requests/new">New request</a>
+        <a class="nav-item" href="#/categories" data-nav="/categories" data-role="admin" hidden>Categories</a>
+        <a class="nav-item" href="#/deleted" data-nav="/deleted" data-role="admin" hidden>Deleted requests</a>
+        <button type="button" class="nav-item" id="logout">Sign out</button>
+      </div>
+    </nav>
+    <main id="main" class="app-main">
+      <p>Loading…</p>
+    </main>
+  </div>
+
+  <template id="tpl-list">
+    <section>
+      <h1>Requests</h1>
+      <form id="filters" class="filters">
+        <div>
+          <label for="f-status">Status</label>
+          <select id="f-status" name="status"><option value="">All</option></select>
+        </div>
+        <div>
+          <label for="f-category">Category</label>
+          <select id="f-category" name="category"><option value="">All</option></select>
+        </div>
+      </form>
+      <p class="actions">
+        <a href="#/requests/new">New request</a>
+        <a id="export" data-role="manage" hidden href="#/">Export CSV</a>
+        <a id="export-semicolon" data-role="manage" hidden href="#/">Export CSV (semicolon, for spreadsheets with a decimal comma)</a>
+      </p>
+      <p data-state="" aria-live="polite" class="state"></p>
+      <div class="panel">
+        <table>
+          <thead><tr><th scope="col">Title</th><th scope="col">Category</th><th scope="col">Urgency</th><th scope="col">Status</th><th scope="col">Requester</th><th scope="col">Updated</th></tr></thead>
+          <tbody id="rows"></tbody>
+        </table>
+        <p id="empty" class="hint" hidden>No request.</p>
+      </div>
+      <p><button type="button" id="more" hidden>Load more</button></p>
+    </section>
+  </template>
+
+  <template id="tpl-row">
+    <tr>
+      <td><a data-field="title" data-link="detail" href="#/"></a></td>
+      <td data-field="category"></td>
+      <td data-field="urgency"></td>
+      <td><span class="status-badge" data-field="status"></span></td>
+      <td data-field="requester_name"></td>
+      <td data-field="updated_at"></td>
+    </tr>
+  </template>
+
+  <template id="tpl-detail">
+    <section>
+      <h1 data-field="title"></h1>
+      <p><span class="status-badge" data-field="status"></span></p>
+      <div class="panel">
+        <dl class="fields">
+          <dt>Category</dt><dd data-field="category"></dd>
+          <dt>Urgency</dt><dd data-field="urgency"></dd>
+          <dt>Location</dt><dd data-field="location"></dd>
+          <dt>Description</dt><dd class="text" data-field="description"></dd>
+          <dt>Requester</dt><dd data-field="requester_name"></dd>
+          <dt>Created</dt><dd data-field="created_at"></dd>
+          <dt>Closing note</dt><dd class="text" data-field="closing_note"></dd>
+        </dl>
+      </div>
+      <h2>Attachment</h2>
+      <div class="panel">
+        <p id="attachment-none" class="hint">No attachment.</p>
+        <p id="attachment-file" class="actions" hidden>
+          <a id="attachment-link" href="#/"></a>
+          <span class="hint" id="attachment-size"></span>
+          <button type="button" id="attachment-remove" hidden>Remove attachment</button>
+        </p>
+        <form id="attachment-form" hidden>
+          <label for="file">Photo or PDF, 5 MiB at most</label>
+          <input id="file" name="file" type="file" required>
+          <p><button type="submit">Attach</button></p>
+        </form>
+        <p data-state="" aria-live="polite" class="state" id="attachment-state"></p>
+      </div>
+      <p class="actions" id="actions"></p>
+      <form id="close" class="panel" hidden>
+        <h2>Close the request</h2>
+        <label for="note">Note (resolution, or reason for rejecting)</label>
+        <textarea id="note" name="note" rows="3" required maxlength="2000"></textarea>
+        <p class="actions" id="close-actions"></p>
+      </form>
+      <p data-state="" aria-live="polite" class="state" id="detail-state"></p>
+      <h2>History</h2>
+      <div class="panel">
+        <table>
+          <thead><tr><th scope="col">Status</th><th scope="col">By</th><th scope="col">When</th></tr></thead>
+          <tbody id="history"></tbody>
+        </table>
+      </div>
+      <p><a href="#/">Back to the list</a></p>
+    </section>
+  </template>
+
+  <template id="tpl-history">
+    <tr><td data-field="to_status"></td><td data-field="actor_name"></td><td data-field="at"></td></tr>
+  </template>
+
+  <template id="tpl-request-form">
+    <section>
+      <h1 data-field="heading"></h1>
+      <form id="request-form" class="panel" novalidate>
+        <label for="title">Title</label>
+        <input id="title" name="title" type="text" autocomplete="off">
+        <label for="location">Location</label>
+        <input id="location" name="location" type="text" autocomplete="off">
+        <label for="category">Category</label>
+        <select id="category" name="category"></select>
+        <label for="urgency">Urgency</label>
+        <select id="urgency" name="urgency"></select>
+        <label for="description">Description</label>
+        <textarea id="description" name="description" rows="5"></textarea>
+        <input type="hidden" name="version">
+        <button type="submit" class="btn-primary">Save draft</button>
+        <p data-state="" aria-live="polite" class="state"></p>
+      </form>
+    </section>
+  </template>
+
+  <template id="tpl-categories">
+    <section>
+      <h1>Categories</h1>
+      <form id="category-form" class="panel" novalidate>
+        <h2>New category</h2>
+        <label for="c-code">Code</label>
+        <input id="c-code" name="code" type="text" autocomplete="off" aria-describedby="c-code-hint">
+        <p class="hint" id="c-code-hint">Lowercase letters, digits and underscores, starting with a letter.</p>
+        <label for="c-label">Label</label>
+        <input id="c-label" name="label" type="text" autocomplete="off">
+        <button type="submit" class="btn-primary">Add</button>
+        <p data-state="" aria-live="polite" class="state"></p>
+      </form>
+      <p data-state="" aria-live="polite" class="state" id="categories-state"></p>
+      <div class="panel">
+        <table>
+          <thead><tr><th scope="col">Code</th><th scope="col">Label</th><th scope="col">State</th><th scope="col"><span class="visually-hidden">Action</span></th></tr></thead>
+          <tbody id="categories"></tbody>
+        </table>
+      </div>
+    </section>
+  </template>
+
+  <template id="tpl-category">
+    <tr>
+      <td data-field="code"></td><td data-field="label"></td><td data-field="state"></td>
+      <td><button type="button" data-action="toggle" data-field="toggle"></button></td>
+    </tr>
+  </template>
+
+  <template id="tpl-deleted">
+    <section>
+      <h1>Deleted requests</h1>
+      <p class="hint">A deleted request can be restored until its retention delay is over; then the purge erases it.</p>
+      <p data-state="" aria-live="polite" class="state"></p>
+      <div class="panel">
+        <table>
+          <thead><tr><th scope="col">Title</th><th scope="col">Status</th><th scope="col">Requester</th><th scope="col"><span class="visually-hidden">Action</span></th></tr></thead>
+          <tbody id="deleted"></tbody>
+        </table>
+        <p id="empty" class="hint" hidden>No deleted request.</p>
+      </div>
+    </section>
+  </template>
+
+  <template id="tpl-deleted-row">
+    <tr>
+      <td data-field="title"></td><td data-field="status"></td><td data-field="requester_name"></td>
+      <td><button type="button" data-action="restore">Restore</button></td>
+    </tr>
+  </template>
+
+  <template id="tpl-message">
+    <section>
+      <h1 data-field="heading"></h1>
+      <p data-field="text"></p>
+      <p><a href="#/">Back to the list</a></p>
+    </section>
+  </template>
+</body>
+</html>

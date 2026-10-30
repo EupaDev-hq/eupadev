@@ -1,0 +1,67 @@
+# Sorting (and, if cleanup_apply, erasing) of the forge's image registry by
+# files/registry-cleanup.py — shared by registry-cleanup.yml and
+# verify-forge.yml. Inputs:
+#   cleanup_in_service     images in service (host/org/name@sha256:…)
+#   cleanup_movable        movable tags (host/org/name:tag)
+#   cleanup_packages       packages processed ([]: all of them)
+#   cleanup_apply          false: list only (trial mode)
+#   cleanup_grace_minutes  minutes: an untagged manifest more recent is kept
+#                          (build in progress), 60 by default
+# Output: cleanup_result (no secret).
+- name: Install the registry cleanup script
+  ansible.builtin.copy:
+    src: files/registry-cleanup.py
+    dest: /usr/local/sbin/eupadev-registry-cleanup
+    mode: "0755"
+
+- name: "Sort the registry {{ 'and erase' if cleanup_apply | bool else '(trial mode, nothing is erased)' }}"
+  ansible.builtin.command:
+    argv: [python3, -I, /usr/local/sbin/eupadev-registry-cleanup]
+    stdin: "{{ cleanup_settings | to_json }}"
+  vars:
+    cleanup_settings:
+      root: http://127.0.0.1:3000
+      org: "{{ gitea_org }}"
+      user: "{{ gitea_admin_user }}"
+      password: "{{ vault_gitea_admin_password }}"
+      in_service: "{{ cleanup_in_service }}"
+      movable_tags: "{{ cleanup_movable }}"
+      packages: "{{ cleanup_packages | default([]) }}"
+      keep: 3
+      grace_minutes: "{{ cleanup_grace_minutes | default(60) }}"
+      throwaway_prefix: check-
+      apply: "{{ cleanup_apply | bool }}"
+  register: cleanup
+  changed_when: cleanup_apply | bool and cleanup.rc == 0
+  failed_when: false
+  no_log: true
+
+- name: Read the result of the sort
+  ansible.builtin.set_fact:
+    cleanup_result: "{{ cleanup.stdout | from_json }}"
+
+- name: The sort succeeded
+  ansible.builtin.assert:
+    that: cleanup.rc == 0
+    fail_msg: "FAILED — nothing was erased: {{ cleanup_result.error | default(cleanup.stderr_lines | default([]) | last | default('?')) }}"
+    quiet: true
+
+- name: Summary per package
+  ansible.builtin.debug:
+    msg: >-
+      {{ item.key }}: {{ item.value.erased | length }} {{ 'erased' if cleanup_result.applied else 'to erase' }},
+      {{ item.value.kept | length }} kept, {{ (item.value.freed_bytes / 1048576) | round(1) }} MiB freed
+      — kept: {{ item.value.kept | rejectattr('version', 'match', 'sha256:') | map(attribute='version') | list }}
+      — {{ 'erased' if cleanup_result.applied else 'to erase' }}:
+      {{ item.value.erased | rejectattr('version', 'match', 'sha256:') | map(attribute='version') | list }}
+      + {{ item.value.erased | selectattr('version', 'match', 'sha256:') | list | length }} untagged manifests
+  loop: "{{ cleanup_result.packages | dict2items }}"
+  loop_control: { label: "{{ item.key }}" }
+
+- name: Total
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'Erased' if cleanup_result.applied else 'Trial mode, nothing erased (-e apply=true to erase)' }}:
+      {{ cleanup_result.packages.values() | map(attribute='erased') | map('length') | sum }} versions,
+      ≈ {{ (cleanup_result.freed_bytes / 1073741824) | round(2) }} GiB freed
+      {{ '(blobs removed by the Gitea housekeeping)' if cleanup_result.applied else '' }}

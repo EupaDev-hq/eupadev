@@ -1,0 +1,58 @@
+# Branch protections set on the template repository, identical to
+# gitea_branch_protections: a tool generated with protected_branch: true
+# (Gitea 28) receives them from its creation. A missing rule is created, a
+# different rule is realigned; nothing changes otherwise (rerunnable).
+- name: "Read the protections of the template: {{ gitea_org_repo.name }}"
+  ansible.builtin.uri:
+    url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ gitea_org_repo.name }}/branch_protections"
+    url_username: "{{ gitea_admin_user }}"
+    url_password: "{{ vault_gitea_admin_password }}"
+    force_basic_auth: true
+    return_content: true
+  register: gitea_org_protections
+
+# In the order of gitea_branch_protections: the first rule that matches a
+# branch applies.
+- name: "Create the missing rules: {{ gitea_org_repo.name }}"
+  ansible.builtin.uri:
+    url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ gitea_org_repo.name }}/branch_protections"
+    method: POST
+    url_username: "{{ gitea_admin_user }}"
+    url_password: "{{ vault_gitea_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body: "{{ item }}"
+    status_code: 201
+  loop: "{{ gitea_branch_protections }}"
+  loop_control: { label: "{{ item.rule_name }}" }
+  when: item.rule_name not in (gitea_org_protections.json | map(attribute='rule_name'))
+  changed_when: true
+
+- name: "Realign the rules that differ: {{ gitea_org_repo.name }}"
+  vars:
+    gitea_org_existing_rule: "{{ gitea_org_protections.json | selectattr('rule_name', 'equalto', item.rule_name) | first | default({}) }}"
+    # True if a field described in gitea_branch_protections has another value on the
+    # forge (lists compared without order: Gitea returns them sorted).
+    gitea_org_differs: >-
+      {%- set ns = namespace(d=false) -%}
+      {%- for k, v in item.items() if k != 'rule_name' -%}
+      {%- set a = gitea_org_existing_rule[k] | default(none) -%}
+      {%- if v is sequence and v is not string -%}{%- set a = (a or []) | sort -%}{%- set v = v | sort -%}{%- endif -%}
+      {%- if a != v -%}{%- set ns.d = true -%}{%- endif -%}
+      {%- endfor -%}
+      {{ ns.d }}
+  ansible.builtin.uri:
+    url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ gitea_org_repo.name }}/branch_protections/{{ item.rule_name | urlencode | replace('/', '%2F') }}"
+    method: PATCH
+    url_username: "{{ gitea_admin_user }}"
+    url_password: "{{ vault_gitea_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body: "{{ item | dict2items | rejectattr('key', 'equalto', 'rule_name') | items2dict }}"
+    status_code: 200
+  loop: "{{ gitea_branch_protections }}"
+  loop_control: { label: "{{ item.rule_name }}" }
+  when:
+    - item.rule_name in (gitea_org_protections.json | map(attribute='rule_name'))
+    - gitea_org_differs | bool
+  changed_when: true

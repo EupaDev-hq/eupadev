@@ -1,0 +1,1080 @@
+# Real-conditions check of Keycloak (identity step B) — rerunnable.
+#   ansible-playbook verify-keycloak.yml
+# One check per decision D2, D4, D5, D7, D8, D9, D11, D12, D13, D14, D15 of
+# docs/reflexions/2026-10-15-analyse-keycloak.md, plus the inventory of the realm
+# compared with the declaration (group_vars/orchestrator/keycloak.yml).
+# The public flows (sign-in, tokens, redirects) are played from the CI VM,
+# like an outside client, by files/check-keycloak.py.
+# Part 2: realm tools (R8) == core/tests/keycloak/realm-test.json, sign-in of
+# each test person (throwaway password, removed afterwards).
+# Part 3: realm master (ilan-admin, OTP, brute force) through an ephemeral
+# temp-admin: stops Keycloak ≈ 1 min.
+# Creates test users (check-person, check-otp-master) and deletes them at the
+# end; leaves nothing but the sign-in and administration events (intended
+# log, D11).
+- name: Check Keycloak
+  hosts: orchestrator
+  become: true
+  gather_facts: false
+  vars:
+    kc: http://127.0.0.1:8180
+    kc_admin: "{{ kc }}/admin/realms/eupadev"
+    public: "https://{{ keycloak_domain }}"
+    client_ci: "{{ groups['ci'][0] }}"
+    person: check-person
+    issuer_clients: [eupadev-cli, eupadev-web, check-requester, check-admin]
+  module_defaults:
+    ansible.builtin.uri:
+      return_content: true
+  tasks:
+    - name: Throwaway password of the test user
+      ansible.builtin.set_fact:
+        person_password: "{{ lookup('ansible.builtin.password', '/dev/null', length=24, chars=['ascii_letters', 'digits']) }}"
+      no_log: true
+
+    - name: Checks
+      block:
+        - name: Token of the configuration client
+          ansible.builtin.uri:
+            url: "{{ keycloak_internal_token_url }}"
+            method: POST
+            body_format: form-urlencoded
+            body:
+              grant_type: client_credentials
+              client_id: eupadev-config
+              client_secret: "{{ vault_keycloak_config_secret }}"
+          register: cfg
+          no_log: true
+
+        - name: Keep the administration header
+          ansible.builtin.set_fact:
+            admin: { Authorization: "Bearer {{ cfg.json.access_token }}" }
+          no_log: true
+
+        # ---- Realm settings: D8, D11, D13 ----
+        - name: Read the realm
+          ansible.builtin.uri:
+            url: "{{ kc_admin }}"
+            headers: "{{ admin }}"
+          register: realm
+
+        - name: Lifespans, rotation, events, brute force, forgotten password (D8, D11, D13)
+          ansible.builtin.assert:
+            that:
+              - r.accessTokenLifespan == 300
+              - r.ssoSessionIdleTimeout == 1800
+              - r.ssoSessionMaxLifespan == 36000
+              - r.revokeRefreshToken
+              - r.refreshTokenMaxReuse == 0
+              - r.eventsEnabled and r.adminEventsEnabled and r.adminEventsDetailsEnabled
+              - r.eventsExpiration == 34560000
+              - r.attributes.adminEventsExpiration == '34560000'
+              - "'jboss-logging' in r.eventsListeners"
+              - r.bruteForceProtected and not r.permanentLockout
+              - r.maxFailureWaitSeconds <= 900
+              - not r.resetPasswordAllowed and not r.registrationAllowed
+              - r.internationalizationEnabled and r.supportedLocales | sort == keycloak_locales.supported | sort and r.defaultLocale == keycloak_locales.default
+            fail_msg: "Unexpected realm settings"
+          vars:
+            r: "{{ realm.json }}"
+
+        # ---- Clients: D4, D7, D15 and inventory ----
+        - name: Read the clients
+          ansible.builtin.uri:
+            url: "{{ kc_admin }}/clients"
+            headers: "{{ admin }}"
+          register: clients
+          # The client list carries the secrets of the confidential clients.
+          no_log: true
+
+        - name: Full scope off, no direct password nor implicit flow, at+jwt, exact redirect and PKCE (D4, D7, D8, D15)
+          ansible.builtin.assert:
+            that:
+              - clients.json | selectattr('fullScopeAllowed') | list | length == 0
+              - clients.json | selectattr('directAccessGrantsEnabled') | list | length == 0
+              - clients.json | selectattr('implicitFlowEnabled') | list | length == 0
+              - at_jwt.split() == ['true'] * (issuer_clients | length)
+              - cli.redirectUris == ['http://127.0.0.1/callback']
+              - cli.attributes['pkce.code.challenge.method'] == 'S256'
+              - cli.publicClient
+              - "'offline_access' not in (clients.json | selectattr('clientId', 'in', declared) | map(attribute='optionalClientScopes') | flatten)"
+            fail_msg: >-
+              Clients: full scope {{ clients.json | selectattr('fullScopeAllowed') | map(attribute='clientId') | list }},
+              direct {{ clients.json | selectattr('directAccessGrantsEnabled') | map(attribute='clientId') | list }},
+              at+jwt {{ issuers | map(attribute='clientId') | list }} → {{ at_jwt }}
+          vars:
+            # Our clients (declared scopes); the clients created by Keycloak keep theirs.
+            declared: "{{ keycloak_clients | selectattr('client_scopes_behavior', 'defined') | map(attribute='client_id') | list }}"
+            issuers: "{{ clients.json | selectattr('clientId', 'in', issuer_clients) | list }}"
+            # Attribute name with dots: map(attribute=…) would read it as a path.
+            at_jwt: "{% for c in issuers %}{{ c.attributes['access.token.header.type.rfc9068'] | default('absent') }} {% endfor %}"
+            cli: "{{ clients.json | selectattr('clientId', 'equalto', 'eupadev-cli') | first }}"
+
+        - name: Client inventory == declared (D6, drift)
+          ansible.builtin.assert:
+            that: actual == expected
+            fail_msg: "Actual clients {{ actual }} ≠ declared {{ expected }}"
+          vars:
+            actual: "{{ clients.json | map(attribute='clientId') | sort }}"
+            expected: "{{ ((keycloak_clients | map(attribute='client_id') | list) + keycloak_builtin_clients) | sort }}"
+
+        - name: Read the roles of the API
+          ansible.builtin.uri:
+            url: "{{ kc_admin }}/clients/{{ (clients.json | selectattr('clientId', 'equalto', 'eupadev-api') | first).id }}/roles"
+            headers: "{{ admin }}"
+          register: api_roles
+
+        - name: Read groups, identity providers, directories, flows
+          ansible.builtin.uri:
+            url: "{{ kc_admin }}/{{ item }}"
+            headers: "{{ admin }}"
+          loop:
+            - groups
+            - identity-provider/instances
+            - components?type=org.keycloak.storage.UserStorageProvider
+            - authentication/flows
+            - authentication/flows/first%20broker%20login/executions
+            - users?briefRepresentation=true&max=100
+          register: inventory
+
+        - name: Realm inventory == declared; no idp-auto-link (D4, D6, D14)
+          ansible.builtin.assert:
+            that:
+              - api_roles.json | map(attribute='name') | sort == keycloak_api_roles | map(attribute='role') | sort
+              - read[0] | map(attribute='name') | sort == keycloak_api_roles | map(attribute='group') | sort
+              - read[1] == []
+              - read[2] == []
+              - read[3] | map(attribute='alias') | sort == builtin_flows
+              - read[4] | selectattr('providerId', 'defined') | selectattr('providerId', 'equalto', 'idp-auto-link') | list == []
+              - read[5] | map(attribute='username') | reject('match', 'service-account-') | sort == keycloak_people | map(attribute='username') | sort
+            fail_msg: >-
+              Inventory: roles {{ api_roles.json | map(attribute='name') | list }}, groups {{ read[0] | map(attribute='name') | list }},
+              IdP {{ read[1] | map(attribute='alias') | list }}, directories {{ read[2] | map(attribute='name') | list }},
+              flows {{ read[3] | map(attribute='alias') | list }}, users {{ read[5] | map(attribute='username') | list }}
+          vars:
+            read: "{{ inventory.results | map(attribute='json') | list }}"
+            # Flows created by Keycloak 26.8; no flow of ours.
+            builtin_flows: [browser, clients, direct grant, docker auth, first broker login, registration, reset credentials]
+
+        # ---- D5: master reserved, temp-admin deleted ----
+        - name: The temp-admin account no longer opens a session in master
+          ansible.builtin.uri:
+            url: "{{ kc }}/realms/master/protocol/openid-connect/token"
+            method: POST
+            body_format: form-urlencoded
+            body:
+              grant_type: password
+              client_id: admin-cli
+              username: temp-admin
+              password: "{{ vault_keycloak_bootstrap_admin_password }}"
+            status_code: [200, 400, 401]
+          register: temp_admin
+          no_log: true
+
+        - name: The configuration client does not administer master
+          ansible.builtin.uri:
+            url: "{{ kc }}/admin/realms/master"
+            headers: "{{ admin }}"
+            status_code: [200, 403]
+          register: to_master
+
+        - name: No temp-admin account, master out of reach (D5)
+          ansible.builtin.assert:
+            that:
+              # Vault password refused (invalid_grant, 400 in 26.8): temp-admin no
+              # longer exists (otherwise this password, its own, would be accepted).
+              - temp_admin.status in [400, 401] and temp_admin.json.error == 'invalid_grant'
+              - to_master.status == 403
+            fail_msg: "temp-admin: {{ temp_admin.status }} (invalid_grant expected); master: {{ to_master.status }} (403 expected)"
+
+        # ---- D2, D12 on the VM: headers forged outside Caddy ----
+        - name: Discovery with forged X-Forwarded-* headers (outside Caddy)
+          ansible.builtin.uri:
+            url: "{{ kc }}/realms/eupadev/.well-known/openid-configuration"
+            headers:
+              X-Forwarded-Host: evil.example
+              X-Forwarded-Proto: http
+          register: forge_vm
+
+        - name: Administration console through the tunnel (127.0.0.1:8180)
+          ansible.builtin.uri:
+            url: "{{ kc }}/admin/"
+            follow_redirects: none
+            status_code: 302
+          register: console
+
+        # Like a browser (compressed response requested): every script of the console page must be served.
+        # Without a writable temporary directory, Keycloak answers 404 and the console stays on "Loading".
+        - name: Scripts of the administration console page
+          ansible.builtin.shell:
+            cmd: |
+              set -o pipefail
+              page=$(curl -fsS {{ kc }}/admin/master/console/)
+              for s in $(printf '%s' "$page" | grep -oE '/resources/[^"]+\.js' | sort -u); do
+                printf '%s %s\n' "$(curl -s -o /dev/null -w '%{http_code}' -H 'Accept-Encoding: gzip, deflate, br' {{ kc }}$s)" "$s"
+              done
+            executable: /bin/bash
+          register: scripts_console
+          changed_when: false
+
+        - name: Every console script is served compressed (200)
+          ansible.builtin.assert:
+            that:
+              - scripts_console.stdout_lines | length > 0
+              - scripts_console.stdout_lines | reject('match', '^200 ') | list | length == 0
+            fail_msg: "Console scripts: {{ scripts_console.stdout_lines }}"
+
+        - name: Fixed issuer despite forged headers; console on the tunnel, never on auth.<domain> (D2, D12)
+          ansible.builtin.assert:
+            that:
+              - forge_vm.json.issuer == keycloak_issuer
+              - console.location is match('http://127\\.0\\.0\\.1:8180/admin/')
+            fail_msg: "issuer {{ forge_vm.json.issuer }} (expected {{ keycloak_issuer }}); console → {{ console.location }}"
+
+        # ---- D9: PostgreSQL account ----
+        - name: Read the rights of the keycloak account and the access to its database
+          ansible.builtin.command:
+            argv:
+              - docker
+              - compose
+              - exec
+              - -T
+              - db
+              - psql
+              - -U
+              - orchestrator
+              - -d
+              - orchestrator
+              - -tAc
+              - >-
+                select format('super=%s createrole=%s createdb=%s owner=%s public_connect=%s',
+                rolsuper, rolcreaterole, rolcreatedb,
+                (select pg_get_userbyid(datdba) from pg_database where datname = 'keycloak'),
+                has_database_privilege('public', 'keycloak', 'CONNECT'))
+                from pg_roles where rolname = 'keycloak'
+            chdir: /opt/eupadev/orchestrator
+          register: pg_account
+          changed_when: false
+
+        - name: Keycloak account without privilege, owner of its own database only (D9)
+          ansible.builtin.assert:
+            that: pg_account.stdout | trim == 'super=f createrole=f createdb=f owner=keycloak public_connect=f'
+            fail_msg: "Keycloak account: {{ pg_account.stdout }}"
+
+        # ---- Container: read_only, ports, invisible secret ----
+        - name: Read the Keycloak container
+          ansible.builtin.command:
+            argv: [docker, inspect, orchestrator-keycloak-1]
+          register: container
+          changed_when: false
+
+        - name: Read-only, 8080 on 127.0.0.1:8180 only, 9000 never published (D12)
+          ansible.builtin.assert:
+            that:
+              - c.HostConfig.ReadonlyRootfs
+              - c.HostConfig.PortBindings | dict2items | map(attribute='key') | list == ['8080/tcp']
+              - "c.HostConfig.PortBindings['8080/tcp'] == [{'HostIp': '127.0.0.1', 'HostPort': '8180'}]"
+            fail_msg: "Container: read_only={{ c.HostConfig.ReadonlyRootfs }}, ports={{ c.HostConfig.PortBindings }}"
+          vars:
+            c: "{{ (container.stdout | from_json) | first }}"
+
+        # No pipefail: grep -q stops at the first match (infra/CLAUDE.md).
+        - name: The database password appears neither in docker inspect nor in the environment  # noqa: risky-shell-pipe
+          ansible.builtin.shell:
+            cmd: |
+              f=/run/eupadev/secrets/keycloak_db_password
+              test -s "$f" || { echo "empty secret"; exit 2; }
+              if docker inspect orchestrator-keycloak-1 | grep -qF -f "$f"; then echo "found in inspect"; exit 1; fi
+              if docker compose -f /opt/eupadev/orchestrator/compose.yml exec -T keycloak printenv | grep -qF -f "$f"; then
+                echo "found in the environment of the entrypoint shell"; exit 1
+              fi
+              echo absent
+            executable: /bin/bash
+          register: hidden_secret
+          changed_when: false
+          failed_when: hidden_secret.stdout | trim != 'absent'
+
+        # ---- Test user (requesters group) ----
+        - name: Create the test user
+          ansible.builtin.uri:
+            url: "{{ kc_admin }}/users"
+            method: POST
+            headers: "{{ admin }}"
+            body_format: json
+            body:
+              username: "{{ person }}"
+              enabled: true
+              email: "{{ person }}@{{ base_domain }}"
+              emailVerified: true
+              firstName: Check
+              lastName: Person
+              groups: [eupadev-requesters]
+              credentials: [{ type: password, value: "{{ person_password }}", temporary: false }]
+            status_code: 201
+          register: created
+          changed_when: true
+          no_log: true
+
+        - name: Keep the id of the test user
+          ansible.builtin.set_fact:
+            person_id: "{{ created.location | regex_replace('^.*/', '') }}"
+
+        # ---- Public flows, from the CI VM ----
+        - name: Put the check script on the CI VM
+          ansible.builtin.copy:
+            src: files/check-keycloak.py
+            dest: /tmp/check-keycloak.py
+            mode: "0755"
+          delegate_to: "{{ client_ci }}"
+
+        - name: Discovery, service accounts, redirects, sign-in, replay (D2, D7, D8, D15)
+          ansible.builtin.command:
+            argv: [python3, /tmp/check-keycloak.py]
+            stdin: "{{ params | to_json }}"
+          vars:
+            params:
+              mode: full
+              base: "{{ public }}"
+              user: "{{ person }}"
+              password: "{{ person_password }}"
+              secrets:
+                check-requester: "{{ vault_keycloak_check_requester_secret }}"
+                check-admin: "{{ vault_keycloak_check_admin_secret }}"
+          delegate_to: "{{ client_ci }}"
+          register: flows
+          changed_when: false
+          no_log: true
+
+        - name: Findings of the public flows
+          ansible.builtin.debug:
+            msg: "{{ flows.stdout | from_json }}"
+
+        - name: Issuer, at+jwt, audience, roles, 5 min, offline refused, replay refused, redirects (D2, D4, D7, D8, D15)
+          ansible.builtin.assert:
+            that:
+              - f.issuer == keycloak_issuer
+              - f['check-requester'].typ == 'at+jwt' and f['check-admin'].typ == 'at+jwt' and f.cli.typ == 'at+jwt'
+              - f['check-requester'].iss == keycloak_issuer and f.cli.iss == keycloak_issuer
+              - "'eupadev-api' in f['check-requester'].aud and 'eupadev-api' in f['check-admin'].aud and 'eupadev-api' in f.cli.aud"
+              - f['check-requester'].api_roles == ['requester'] and f['check-admin'].api_roles == ['admin']
+              - f.cli.api_roles == ['requester']
+              - f['check-requester'].realm_roles == [] and f.cli.realm_roles == []
+              - f['check-requester'].other_clients == [] and f.cli.other_clients == []
+              - f['check-requester'].duration == 300 and f.cli.duration == 300
+              - f['check-requester_offline'].status == 400 and f['check-requester_offline'].error == 'invalid_scope'
+              - f.cli_offline.error == 'invalid_scope'
+              - f.cli.refresh_typ == 'Refresh'
+              - f.sign_in == 'code received'
+              - f.refresh_1 == 200
+              - f.replay_a.status == 400 and f.replay_a.error == 'invalid_grant'
+              - "f.redirects == {'port_50001': 200, 'port_50002': 200, 'other_path': 400, 'other_host': 400}"
+              - f.without_pkce.error == 'invalid_request'
+            fail_msg: "Public flows: see \"Findings of the public flows\" above"
+          vars:
+            f: "{{ flows.stdout | from_json }}"
+
+        # ---- D12: only the public part of the realm goes through Caddy ----
+        - name: Paths forbidden by Caddy (D12)
+          ansible.builtin.uri:
+            url: "{{ public }}{{ item }}"
+            status_code: 404
+          loop: [/admin/, /admin/master/console/, /realms/master/, /realms/master/.well-known/openid-configuration, /metrics, /health/ready, /]
+          delegate_to: "{{ client_ci }}"
+
+        - name: Public discovery with forged headers
+          ansible.builtin.uri:
+            url: "{{ public }}/realms/eupadev/.well-known/openid-configuration"
+            headers:
+              X-Forwarded-Host: evil.example
+              X-Forwarded-Proto: http
+          delegate_to: "{{ client_ci }}"
+          register: forge_public
+
+        - name: Internal ports unreachable from the network (9000, 8180)
+          ansible.builtin.wait_for:
+            host: "{{ ansible_host }}"
+            port: "{{ item }}"
+            timeout: 3
+          loop: [9000, 8180, 8080]
+          delegate_to: "{{ client_ci }}"
+          register: internal_ports
+          failed_when: internal_ports is succeeded
+
+        - name: Public issuer unchanged by forged headers (D12)
+          ansible.builtin.assert:
+            that: forge_public.json.issuer == keycloak_issuer
+            fail_msg: "issuer public {{ forge_public.json.issuer }}"
+
+        # ---- D13: temporary lockout, then unlock ----
+        - name: Five wrong passwords, then the right one
+          ansible.builtin.command:
+            argv: [python3, /tmp/check-keycloak.py]
+            stdin: "{{ {'mode': 'failures', 'failures': 5, 'base': public, 'user': person, 'password': person_password} | to_json }}"
+          delegate_to: "{{ client_ci }}"
+          register: failures
+          changed_when: false
+          no_log: true
+
+        - name: New token of the configuration client (5 min lifespan)
+          ansible.builtin.uri:
+            url: "{{ keycloak_internal_token_url }}"
+            method: POST
+            body_format: form-urlencoded
+            body:
+              grant_type: client_credentials
+              client_id: eupadev-config
+              client_secret: "{{ vault_keycloak_config_secret }}"
+          register: cfg
+          no_log: true
+
+        - name: Keep the administration header
+          ansible.builtin.set_fact:
+            admin: { Authorization: "Bearer {{ cfg.json.access_token }}" }
+          no_log: true
+
+        - name: State of the brute-force protection
+          ansible.builtin.uri:
+            url: "{{ kc_admin }}/attack-detection/brute-force/users/{{ person_id }}"
+            headers: "{{ admin }}"
+          register: lockout
+
+        - name: Locked after the failures, even with the right password (D13)
+          ansible.builtin.assert:
+            that:
+              - not e.signed_in
+              - lockout.json.disabled
+            fail_msg: "No lockout: {{ e }}; {{ lockout.json }}"
+          vars:
+            e: "{{ failures.stdout | from_json }}"
+
+        - name: Unlock the test user (administration API)
+          ansible.builtin.uri:
+            url: "{{ kc_admin }}/attack-detection/brute-force/users/{{ person_id }}"
+            method: DELETE
+            headers: "{{ admin }}"
+            status_code: 204
+          changed_when: true
+
+        - name: The right password, after the unlock
+          ansible.builtin.command:
+            argv: [python3, /tmp/check-keycloak.py]
+            stdin: "{{ {'mode': 'sign_in', 'base': public, 'user': person, 'password': person_password} | to_json }}"
+          delegate_to: "{{ client_ci }}"
+          register: after
+          changed_when: false
+          no_log: true
+
+        - name: Sign-in possible again (D13)
+          ansible.builtin.assert:
+            that: (after.stdout | from_json).signed_in
+            fail_msg: "Still refused after the unlock: {{ after.stdout | from_json }}"
+
+        # ---- D11: recorded events ----
+        - name: Read the events of the test user and the administration ones
+          ansible.builtin.uri:
+            url: "{{ kc_admin }}/{{ item }}"
+            headers: "{{ admin }}"
+          loop:
+            - "events?user={{ person_id }}&max=200"
+            - "admin-events?resourcePath=users/{{ person_id }}&max=50"
+          register: events
+
+        - name: Sign-in failures and successes, creation by the API, all recorded (D11)
+          ansible.builtin.assert:
+            that:
+              - "'LOGIN_ERROR' in types"
+              - "'LOGIN' in types"
+              - "'CODE_TO_TOKEN' in types"
+              - "'CREATE' in (events.results[1].json | map(attribute='operationType'))"
+            fail_msg: "Events: {{ types }}; admin: {{ events.results[1].json | map(attribute='operationType') | list }}"
+          vars:
+            types: "{{ events.results[0].json | map(attribute='type') | unique | list }}"
+
+      rescue:
+        - name: Keycloak log
+          ansible.builtin.command:
+            argv: [docker, compose, logs, --no-log-prefix, --tail, "30", keycloak]
+            chdir: /opt/eupadev/orchestrator
+          register: kc_log
+          changed_when: false
+
+        - name: Failure
+          ansible.builtin.fail:
+            msg: "FAILED: \"{{ ansible_failed_task.name }}\": {{ ansible_failed_result.msg | default('?') }} — log: {{ kc_log.stdout_lines }}"
+
+      always:
+        - name: Token for the cleanup
+          ansible.builtin.uri:
+            url: "{{ keycloak_internal_token_url }}"
+            method: POST
+            body_format: form-urlencoded
+            body:
+              grant_type: client_credentials
+              client_id: eupadev-config
+              client_secret: "{{ vault_keycloak_config_secret }}"
+          register: cfg_end
+          no_log: true
+
+        - name: Delete the test user
+          ansible.builtin.uri:
+            url: "{{ kc_admin }}/users/{{ person_id }}"
+            method: DELETE
+            headers: { Authorization: "Bearer {{ cfg_end.json.access_token }}" }
+            status_code: 204
+          when: person_id is defined
+          changed_when: true
+          no_log: true
+
+        - name: Remove the script from the CI VM
+          ansible.builtin.file:
+            path: /tmp/check-keycloak.py
+            state: absent
+          delegate_to: "{{ client_ci }}"
+
+# Realm tools (R8, docs/reflexions/2026-10-18-note-realm-outils.md): the lab
+# realm == the import file of the core's CI (settings, clients, roles, groups,
+# people, no IdP, no directory, no realm role), except secrets and addresses;
+# its configuration client is realm-admin of this realm only; sign-in of each
+# person from the CI VM through Caddy, client roles in the ID token. Throwaway
+# password set for the test, removed at the end (the lab people have none).
+- name: Check the realm tools
+  hosts: orchestrator
+  become: true
+  gather_facts: false
+  vars:
+    kc: http://127.0.0.1:8180
+    kc_admin: "{{ kc }}/admin/realms/tools"
+    public: "https://{{ keycloak_domain }}"
+    client_ci: "{{ groups['ci'][0] }}"
+    r: "{{ keycloak_tools_realm }}"
+    trial: "{{ r.clients[0] }}"
+    address: "{{ keycloak_tool_addresses[trial.clientId] }}"
+    # Clients created by Keycloak in every realm, plus the configuration client.
+    clients_outside_file: [account, account-console, admin-cli, broker, tools-config, realm-management, security-admin-console]
+    # Registered core tools (Gate 1 registration): their clients and test personas are not in the file.
+    tool_clients: "{{ core_tools | map(attribute='slug') | product(['', '-preview']) | map('join') | list }}"
+    people_read: "{{ read.results[4].json | rejectattr('username', 'in', core_tools_personas | map(attribute='name')) | list }}"
+  module_defaults:
+    ansible.builtin.uri:
+      return_content: true
+  tasks:
+    - name: Throwaway password of the test people
+      ansible.builtin.set_fact:
+        person_password: "{{ lookup('ansible.builtin.password', '/dev/null', length=24, chars=['ascii_letters', 'digits']) }}"
+      no_log: true
+
+    - name: Checks of the realm tools
+      block:
+        - name: Token of the configuration client of the realm tools
+          ansible.builtin.uri:
+            url: "{{ kc }}/realms/tools/protocol/openid-connect/token"
+            method: POST
+            body_format: form-urlencoded
+            body:
+              grant_type: client_credentials
+              client_id: tools-config
+              client_secret: "{{ vault_keycloak_tools_config_secret }}"
+          register: cfg
+          no_log: true
+
+        - name: Keep the administration header
+          ansible.builtin.set_fact:
+            admin: { Authorization: "Bearer {{ cfg.json.access_token }}" }
+          no_log: true
+
+        # no_log: the client list carries the secrets of the confidential clients.
+        - name: Read the realm, default optional scopes, clients, groups, people, IdP, directories, flows, realm roles
+          ansible.builtin.uri:
+            url: "{{ kc_admin }}{{ item }}"
+            headers: "{{ admin }}"
+          loop:
+            - ""
+            - /default-optional-client-scopes
+            - /clients
+            - /groups
+            - "/users?briefRepresentation=true&max=100"
+            - /identity-provider/instances
+            - /components?type=org.keycloak.storage.UserStorageProvider
+            - /authentication/flows
+            - /authentication/flows/first%20broker%20login/executions
+            - /roles
+          register: read
+          no_log: true
+
+        - name: Realm settings == file (D8, D11, D13)
+          ansible.builtin.assert:
+            that:
+              - actual_realm | dict2items | selectattr('key', 'in', setting_keys) | items2dict
+                == r | dict2items | selectattr('key', 'in', setting_keys) | items2dict
+              - actual_realm.attributes | dict2items | selectattr('key', 'in', r.attributes) | items2dict == r.attributes
+              - read.results[1].json | map(attribute='name') | sort == r.defaultOptionalClientScopes | sort
+            fail_msg: >-
+              Settings: lab {{ actual_realm | dict2items | selectattr('key', 'in', setting_keys) | items2dict }}, attributes {{ actual_realm.attributes }};
+              optional scopes {{ read.results[1].json | map(attribute='name') | list }}
+          vars:
+            actual_realm: "{{ read.results[0].json }}"
+            setting_keys: "{{ r.keys() | reject('in', ['clients', 'roles', 'groups', 'users', 'defaultOptionalClientScopes', 'attributes']) | list }}"
+
+        - name: Inventory == file; full scope, direct password, implicit flow off; no IdP, directory, flow, realm role (D4, D6, D8, D14)
+          ansible.builtin.assert:
+            that:
+              # One client, one client per group: what the recipe and this check can handle.
+              - r.clients | length == 1
+              - r.groups | map(attribute='clientRoles') | map('length') | unique | list == [1]
+              - actual_clients | map(attribute='clientId') | reject('in', tool_clients) | sort
+                == (r.clients | map(attribute='clientId') | list + clients_outside_file) | sort
+              - actual_clients | selectattr('fullScopeAllowed') | list == []
+              - actual_clients | selectattr('directAccessGrantsEnabled') | list == []
+              - actual_clients | selectattr('implicitFlowEnabled') | list == []
+              - read.results[3].json | map(attribute='subGroupCount') | select | list == []
+              - read.results[5].json == []
+              - read.results[6].json == []
+              - read.results[7].json | map(attribute='alias') | sort == builtin_flows
+              - read.results[8].json | selectattr('providerId', 'defined') | selectattr('providerId', 'equalto', 'idp-auto-link') | list == []
+              - read.results[9].json | map(attribute='name') | sort == ['default-roles-tools', 'offline_access', 'uma_authorization']
+            fail_msg: >-
+              Clients {{ actual_clients | map(attribute='clientId') | list }};
+              full scope {{ actual_clients | selectattr('fullScopeAllowed') | map(attribute='clientId') | list }},
+              direct {{ actual_clients | selectattr('directAccessGrantsEnabled') | map(attribute='clientId') | list }};
+              IdP {{ read.results[5].json | map(attribute='alias') | list }}, directories {{ read.results[6].json | map(attribute='name') | list }},
+              flows {{ read.results[7].json | map(attribute='alias') | list }}, realm roles {{ read.results[9].json | map(attribute='name') | list }}
+          vars:
+            # Not `clients`: registered by part 1, it would win over a task variable.
+            actual_clients: "{{ read.results[2].json }}"
+            builtin_flows: [browser, clients, direct grant, docker auth, first broker login, registration, reset credentials]
+
+        - name: Client of the tool == file, lab addresses (D15)
+          ansible.builtin.assert:
+            that:
+              - c | dict2items | selectattr('key', 'in', client_keys) | items2dict == trial | dict2items | selectattr('key', 'in', client_keys) | items2dict
+              - c.redirectUris == redirects
+              - c.attributes | dict2items | selectattr('key', 'in', expected_attributes) | items2dict == expected_attributes
+              - c.defaultClientScopes | sort == trial.defaultClientScopes | sort
+              - c.protocolMappers | map(attribute='name') | list == trial.protocolMappers | map(attribute='name') | list
+              - c.protocolMappers | map(attribute='config') | list == trial.protocolMappers | map(attribute='config') | list
+            fail_msg: >-
+              Client {{ trial.clientId }}: {{ c | dict2items
+              | selectattr('key', 'in', client_keys + ['redirectUris', 'attributes', 'defaultClientScopes', 'protocolMappers']) | items2dict }}
+          vars:
+            c: "{{ read.results[2].json | selectattr('clientId', 'equalto', trial.clientId) | first }}"
+            client_keys: [enabled, publicClient, clientAuthenticatorType, standardFlowEnabled, implicitFlowEnabled, directAccessGrantsEnabled,
+                          serviceAccountsEnabled, fullScopeAllowed, frontchannelLogout, webOrigins, optionalClientScopes]
+            # Same computation as the recipe (realm-tools.yml): origin of the file replaced by the lab address.
+            redirects: "{{ trial.redirectUris | map('regex_replace', '^https?://[^/]+', address) | list }}"
+            expected_attributes: >-
+              {{ trial.attributes | combine({
+                   'post.logout.redirect.uris': trial.attributes['post.logout.redirect.uris'] | regex_replace('^https?://[^/]+', address),
+                   'backchannel.logout.url': trial.attributes['backchannel.logout.url'] | regex_replace('^https?://[^/]+', address)}) }}
+
+        - name: Secret of the tool's client (generated by Keycloak)
+          ansible.builtin.uri:
+            url: "{{ kc_admin }}/clients/{{ (read.results[2].json | selectattr('clientId', 'equalto', trial.clientId) | first).id }}/client-secret"
+            headers: "{{ admin }}"
+          register: trial_secret
+          no_log: true
+
+        - name: The lab secret is not the one of the CI file
+          ansible.builtin.assert:
+            that:
+              - trial_secret.json.value | length >= 32
+              - trial_secret.json.value != trial.secret
+            fail_msg: "Secret of client {{ trial.clientId }}: missing, too short or equal to the one of the file"
+          no_log: true
+
+        - name: Service account of the configuration client
+          ansible.builtin.uri:
+            url: "{{ kc_admin }}/clients/{{ (read.results[2].json | selectattr('clientId', 'equalto', 'tools-config') | first).id }}/service-account-user"
+            headers: "{{ admin }}"
+          register: cfg_account
+
+        - name: Roles of roles, groups, people (groups, credentials, direct roles) and configuration account
+          ansible.builtin.uri:
+            url: "{{ kc_admin }}{{ item }}"
+            headers: "{{ admin }}"
+          loop: >-
+            {{ ['/clients/' ~ trial_id ~ '/roles', '/users/' ~ cfg_account.json.id ~ '/role-mappings']
+               + (read.results[3].json | map(attribute='id') | map('regex_replace', '^(.*)$', '/groups/\1/role-mappings/clients/' ~ trial_id) | list)
+               + (people_read | map(attribute='id') | map('regex_replace', '^(.*)$', '/users/\1/groups') | list)
+               + (people_read | map(attribute='id') | map('regex_replace', '^(.*)$', '/users/\1/credentials') | list)
+               + (people_read | map(attribute='id') | map('regex_replace', '^(.*)$', '/users/\1/role-mappings') | list) }}
+          vars:
+            trial_id: "{{ (read.results[2].json | selectattr('clientId', 'equalto', trial.clientId) | first).id }}"
+          register: details
+
+        - name: Roles, groups and people == file; people without password nor direct role; configuration account realm-admin only (D4, D5)
+          ansible.builtin.assert:
+            that:
+              - actual_roles == r.roles.client[trial.clientId] | map(attribute='name') | sort
+              - res[1].realmMappings | map(attribute='name') | list == ['default-roles-tools']
+              - res[1].clientMappings | dict2items | map(attribute='key') | list == ['realm-management']
+              - res[1].clientMappings['realm-management'].mappings | map(attribute='name') | list == ['realm-admin']
+              - actual_groups == file_groups
+              - actual_people == file_people
+              - credentials | flatten == []
+              - direct_roles | map(attribute='realmMappings') | map('map', attribute='name') | map('list') | unique | list == [['default-roles-tools']]
+              # Who gets a registered tool's role is a human act (core-tools.yml): only those clients may appear.
+              - direct_roles | selectattr('clientMappings', 'defined') | map(attribute='clientMappings') | map('dict2items') | flatten
+                | map(attribute='key') | reject('in', tool_clients) | list == []
+            fail_msg: >-
+              Roles {{ actual_roles }}; configuration account {{ res[1] }}; groups {{ actual_groups }} (file {{ file_groups }});
+              people {{ actual_people }} (file {{ file_people }}); credentials {{ credentials | flatten | map(attribute='type') | list }};
+              direct roles {{ direct_roles }}
+          vars:
+            g: "{{ read.results[3].json }}"
+            u: "{{ people_read }}"
+            ng: "{{ g | length | int }}"
+            nu: "{{ u | length | int }}"
+            res: "{{ details.results | map(attribute='json') | list }}"
+            actual_roles: "{{ res[0] | map(attribute='name') | sort }}"
+            actual_groups: "{{ dict(g | map(attribute='name') | zip(res[2 : 2 + (ng | int)] | map('map', attribute='name') | map('sort'))) }}"
+            file_groups: >-
+              {{ dict(r.groups | map(attribute='name') | zip(r.groups | map(attribute='clientRoles') | map(attribute=trial.clientId) | map('sort'))) }}
+            actual_people: >-
+              {{ dict(u | map(attribute='username') | zip(res[2 + (ng | int) : 2 + (ng | int) + (nu | int)] | map('map', attribute='path') | map('sort'))) }}
+            file_people: "{{ dict(r.users | map(attribute='username') | zip(r.users | map(attribute='groups') | map('sort'))) }}"
+            credentials: "{{ res[2 + (ng | int) + (nu | int) : 2 + (ng | int) + 2 * (nu | int)] }}"
+            direct_roles: "{{ res[2 + (ng | int) + 2 * (nu | int) :] }}"
+
+        # ---- Sign-in of each person, from the CI VM, through Caddy ----
+        - name: Keep the ids of the test people
+          ansible.builtin.set_fact:
+            people_ids: "{{ dict(people_read | map(attribute='username') | zip(people_read | map(attribute='id'))) }}"
+
+        - name: Throwaway password of the test people
+          ansible.builtin.uri:
+            url: "{{ kc_admin }}/users/{{ people_ids[item.username] }}/reset-password"
+            method: PUT
+            headers: "{{ admin }}"
+            body_format: json
+            body: { type: password, value: "{{ person_password }}", temporary: false }
+            status_code: 204
+          loop: "{{ r.users }}"
+          loop_control:
+            label: "{{ item.username }}"
+          changed_when: true
+          no_log: true
+
+        - name: Put the check script on the CI VM
+          ansible.builtin.copy:
+            src: files/check-keycloak.py
+            dest: /tmp/check-keycloak.py
+            mode: "0755"
+          delegate_to: "{{ client_ci }}"
+
+        - name: Sign-in by code + PKCE to the tool's client, ID token
+          ansible.builtin.command:
+            argv: [python3, /tmp/check-keycloak.py]
+            stdin: "{{ params | to_json }}"
+          vars:
+            params:
+              mode: tool
+              base: "{{ public }}"
+              realm: tools
+              client: "{{ trial.clientId }}"
+              secret: "{{ trial_secret.json.value }}"
+              redirect: "{{ address }}/auth/callback"
+              user: "{{ item.username }}"
+              password: "{{ person_password }}"
+          loop: "{{ r.users }}"
+          loop_control:
+            label: "{{ item.username }}"
+          delegate_to: "{{ client_ci }}"
+          register: flows
+          changed_when: false
+          no_log: true
+
+        - name: Findings of the sign-ins
+          ansible.builtin.debug:
+            msg: "{{ flows.results | map(attribute='stdout') | map('from_json') | list }}"
+
+        - name: Public issuer, tool's ID token with the roles of the groups; no PKCE and other redirect refused (D2, D4, D15)
+          ansible.builtin.assert:
+            that:
+              - f.issuer == issuer
+              - f.sign_in == 'code received'
+              - f.id_token.iss == issuer and f.id_token.aud == trial.clientId
+              - f.id_token.nonce_ok and f.id_token.sid and f.id_token.sub
+              - f.id_token.email and f.id_token.name
+              - f.id_token.clients == [trial.clientId]
+              - f.id_token.roles == expected
+              - f.id_token.realm_roles == []
+              - f.without_pkce == 'invalid_request'
+              - f.other_redirect == 400
+            fail_msg: "{{ item.item.username }}: see \"Findings of the sign-ins\" above (expected roles {{ expected }})"
+          vars:
+            f: "{{ item.stdout | from_json }}"
+            issuer: "https://{{ keycloak_domain }}/realms/tools"
+            expected: >-
+              {{ r.groups | selectattr('name', 'in', item.item.groups | map('regex_replace', '^/', '') | list)
+                 | map(attribute='clientRoles') | map(attribute=trial.clientId) | flatten | sort }}
+          loop: "{{ flows.results }}"
+          loop_control:
+            label: "{{ item.item.username }}"
+
+      rescue:
+        - name: Keycloak log
+          ansible.builtin.command:
+            argv: [docker, compose, logs, --no-log-prefix, --tail, "30", keycloak]
+            chdir: /opt/eupadev/orchestrator
+          register: kc_log
+          changed_when: false
+
+        - name: Failure
+          ansible.builtin.fail:
+            msg: "FAILED: \"{{ ansible_failed_task.name }}\": {{ ansible_failed_result.msg | default('?') }} — log: {{ kc_log.stdout_lines }}"
+
+      always:
+        - name: Token for the cleanup
+          ansible.builtin.uri:
+            url: "{{ kc }}/realms/tools/protocol/openid-connect/token"
+            method: POST
+            body_format: form-urlencoded
+            body:
+              grant_type: client_credentials
+              client_id: tools-config
+              client_secret: "{{ vault_keycloak_tools_config_secret }}"
+          register: cfg_end
+          no_log: true
+
+        - name: Credentials of the test people
+          ansible.builtin.uri:
+            url: "{{ kc_admin }}/users/{{ people_ids[item.username] }}/credentials"
+            headers: { Authorization: "Bearer {{ cfg_end.json.access_token }}" }
+          loop: "{{ r.users if people_ids is defined else [] }}"
+          loop_control:
+            label: "{{ item.username }}"
+          register: final_credentials
+          no_log: true
+
+        - name: Remove the throwaway passwords (the people have no password again)
+          ansible.builtin.uri:
+            url: "{{ kc_admin }}/users/{{ people_ids[item.0.item.username] }}/credentials/{{ item.1.id }}"
+            method: DELETE
+            headers: { Authorization: "Bearer {{ cfg_end.json.access_token }}" }
+            status_code: 204
+          loop: "{{ final_credentials.results | default([]) | subelements('json') }}"
+          loop_control:
+            label: "{{ item.0.item.username }}"
+          changed_when: true
+          no_log: true
+
+        - name: Remove the script from the CI VM
+          ansible.builtin.file:
+            path: /tmp/check-keycloak.py
+            state: absent
+          delegate_to: "{{ client_ci }}"
+
+# Master (D5): named administrators, OTP required, brute force. No
+# permanent account can read master: ephemeral temp-admin, like the
+# bootstrap (Keycloak stopped ≈ 1 min), deleted at the end. Ilan's account
+# is only read; the sign-ins are tried with a throwaway user.
+- name: Check the realm master
+  hosts: orchestrator
+  become: true
+  gather_facts: false
+  vars:
+    kc: http://127.0.0.1:8180
+    kc_master: "{{ kc }}/admin/realms/master"
+    throwaway_user: check-otp-master
+    token_url: "{{ kc }}/realms/master/protocol/openid-connect/token"
+  module_defaults:
+    ansible.builtin.uri:
+      return_content: true
+    group/community.general.keycloak:
+      auth_keycloak_url: "{{ kc }}"
+      auth_realm: master
+      auth_client_id: admin-cli
+      auth_username: temp-admin
+      auth_password: "{{ vault_keycloak_bootstrap_admin_password }}"
+  tasks:
+    - name: Password of the throwaway user
+      ansible.builtin.set_fact:
+        throwaway_password: "{{ lookup('ansible.builtin.password', '/dev/null', length=24, chars=['ascii_letters', 'digits']) }}"
+      no_log: true
+
+    - name: Checks of master
+      block:
+        - name: Create temp-admin (Keycloak stopped for the command)
+          ansible.builtin.include_role:
+            name: keycloak
+            tasks_from: temp-admin.yml
+
+        # Master token: 60 s lifespan; asked again before each series of calls.
+        - name: Token of temp-admin
+          ansible.builtin.uri:
+            url: "{{ token_url }}"
+            method: POST
+            body_format: form-urlencoded
+            body: { grant_type: password, client_id: admin-cli, username: temp-admin, password: "{{ vault_keycloak_bootstrap_admin_password }}" }
+          register: tadm
+          no_log: true
+
+        - name: Read master, ilan-admin, its role and its registered credentials (types only)
+          ansible.builtin.uri:
+            url: "{{ kc_master }}{{ item }}"
+            headers: { Authorization: "Bearer {{ tadm.json.access_token }}" }
+          loop:
+            - ""
+            - /users?username=ilan-admin&exact=true
+          register: master_read
+          no_log: true
+
+        - name: Keep the useful fields
+          ansible.builtin.set_fact:
+            m_realm: "{{ [master_read.results[0].json] | community.general.keep_keys(target=realm_keys) | first }}"
+            m_admin: "{{ master_read.results[1].json | community.general.keep_keys(target=['id', 'username', 'enabled', 'requiredActions']) }}"
+          vars:
+            realm_keys: [bruteForceProtected, permanentLockout, failureFactor, maxFailureWaitSeconds, otpPolicyType, otpPolicyAlgorithm,
+                         otpPolicyDigits, otpPolicyPeriod, otpPolicyLookAheadWindow, otpSupportedApplications]
+
+        - name: Roles and credential types of ilan-admin
+          ansible.builtin.uri:
+            url: "{{ kc_master }}/users/{{ m_admin[0].id }}/{{ item }}"
+            headers: { Authorization: "Bearer {{ tadm.json.access_token }}" }
+          loop: [role-mappings/realm, credentials]
+          when: m_admin | length == 1
+          register: admin_read
+          no_log: true
+
+        - name: The ilan-admin account has the admin role, OTP registered or enrolment required; OTP policy and brute force of master (D5, D13)
+          ansible.builtin.assert:
+            that:
+              - m_admin | length == 1 and m_admin[0].enabled
+              - "'admin' in roles_admin"
+              - "'otp' in types or 'CONFIGURE_TOTP' in (m_admin[0].requiredActions | default([]))"
+              - m_realm.bruteForceProtected and not m_realm.permanentLockout
+              - m_realm.failureFactor == 5 and m_realm.maxFailureWaitSeconds <= 900
+              - m_realm.otpPolicyType == keycloak_master_otp.type and m_realm.otpPolicyAlgorithm == keycloak_master_otp.algorithm
+              - m_realm.otpPolicyDigits == keycloak_master_otp.digits and m_realm.otpPolicyPeriod == keycloak_master_otp.period
+              - "'totpAppGoogleName' in m_realm.otpSupportedApplications and 'totpAppFreeOTPName' in m_realm.otpSupportedApplications"
+            fail_msg: "master: {{ m_realm }}; ilan-admin: {{ m_admin }}, roles {{ roles_admin }}, credentials {{ types }}"
+          vars:
+            roles_admin: "{{ admin_read.results[0].json | default([]) | map(attribute='name') | list }}"
+            types: "{{ admin_read.results[1].json | default([]) | map(attribute='type') | list }}"
+
+        # Created like an administrator of master.yml (final password to isolate
+        # the OTP), without role: it can administer nothing.
+        - name: Create the throwaway user of master
+          community.general.keycloak_user:
+            realm: master
+            username: "{{ throwaway_user }}"
+            first_name: Check
+            last_name: Otp
+            email_verified: true
+            enabled: true
+            credentials: [{ type: password, value: "{{ throwaway_password }}", temporary: false }]
+            required_actions: [CONFIGURE_TOTP]
+          no_log: true
+
+        - name: Password only through admin-cli (password grant)
+          ansible.builtin.uri:
+            url: "{{ token_url }}"
+            method: POST
+            body_format: form-urlencoded
+            body: { grant_type: password, client_id: admin-cli, username: "{{ throwaway_user }}", password: "{{ throwaway_password }}" }
+            status_code: [200, 400, 401]
+          register: no_otp
+          no_log: true
+
+        - name: Put the check script
+          ansible.builtin.copy:
+            src: files/check-keycloak.py
+            dest: /tmp/check-keycloak.py
+            mode: "0700"
+
+        - name: Password only in the console (tunnel 127.0.0.1:8180)
+          ansible.builtin.command:
+            argv: [python3, /tmp/check-keycloak.py]
+            stdin: "{{ {'mode': 'console', 'base': kc, 'user': throwaway_user, 'password': throwaway_password} | to_json }}"
+          register: console
+          changed_when: false
+          no_log: true
+
+        - name: Discovery of master
+          ansible.builtin.uri:
+            url: "{{ kc }}/realms/master/.well-known/openid-configuration"
+          register: master_discovery
+
+        - name: Without OTP, no session (token refused, console requiring enrolment); master served through the tunnel
+          ansible.builtin.assert:
+            that:
+              - master_discovery.json.issuer == kc ~ '/realms/master'
+              - no_otp.status == 400 and no_otp.json.error == 'invalid_grant'
+              - no_otp.json.error_description == 'Account is not fully set up'
+              - (console.stdout | from_json).result == 'OTP enrolment required'
+            fail_msg: >-
+              master issuer {{ master_discovery.json.issuer }};
+              password grant {{ no_otp.status }} {{ no_otp.json.error | default('') }} {{ no_otp.json.error_description | default('') }};
+              console {{ console.stdout }}
+
+        - name: Five wrong passwords for the throwaway user
+          ansible.builtin.uri:
+            url: "{{ token_url }}"
+            method: POST
+            body_format: form-urlencoded
+            body: { grant_type: password, client_id: admin-cli, username: "{{ throwaway_user }}", password: "wrong-{{ item }}" }
+            status_code: [400, 401]
+          loop: [1, 2, 3, 4, 5]
+
+        - name: Token of temp-admin (reading the lockout)
+          ansible.builtin.uri:
+            url: "{{ token_url }}"
+            method: POST
+            body_format: form-urlencoded
+            body: { grant_type: password, client_id: admin-cli, username: temp-admin, password: "{{ vault_keycloak_bootstrap_admin_password }}" }
+          register: tadm
+          no_log: true
+
+        - name: Users of master
+          community.general.keycloak_realm_users_info:
+            realm: master
+          register: users_master
+
+        - name: Brute-force state of the throwaway user
+          ansible.builtin.uri:
+            url: "{{ kc_master }}/attack-detection/brute-force/users/{{ throwaway_id }}"
+            headers: { Authorization: "Bearer {{ tadm.json.access_token }}" }
+          vars:
+            throwaway_id: "{{ users_master.users | selectattr('username', 'equalto', throwaway_user) | map(attribute='id') | first }}"
+          register: master_lockout
+
+        - name: Locked after five failures (brute force active on master, D13)
+          ansible.builtin.assert:
+            that: master_lockout.json.disabled
+            fail_msg: "No lockout in master: {{ master_lockout.json }}"
+
+      rescue:
+        - name: Keycloak log
+          ansible.builtin.command:
+            argv: [docker, compose, logs, --no-log-prefix, --tail, "30", keycloak]
+            chdir: /opt/eupadev/orchestrator
+          register: kc_log
+          changed_when: false
+
+        - name: Failure
+          ansible.builtin.fail:
+            msg: "FAILED: \"{{ ansible_failed_task.name }}\": {{ ansible_failed_result.msg | default('?') }} — log: {{ kc_log.stdout_lines }}"
+
+      always:
+        - name: Delete the throwaway user, then temp-admin
+          community.general.keycloak_user:
+            realm: master
+            username: "{{ item }}"
+            state: absent
+          loop: ["{{ throwaway_user }}", temp-admin]
+
+        - name: Remove the script
+          ansible.builtin.file:
+            path: /tmp/check-keycloak.py
+            state: absent
+
+    - name: The temp-admin account no longer answers
+      ansible.builtin.uri:
+        url: "{{ token_url }}"
+        method: POST
+        body_format: form-urlencoded
+        body: { grant_type: password, client_id: admin-cli, username: temp-admin, password: "{{ vault_keycloak_bootstrap_admin_password }}" }
+        status_code: [200, 400, 401]
+      register: temp_admin_end
+      failed_when: temp_admin_end.status == 200
+      no_log: true

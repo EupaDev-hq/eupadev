@@ -1,0 +1,37 @@
+# Managed by Ansible (orchestrator role) — do not edit by hand.
+# NON-secret configuration: the secrets are files in memory
+# (/run/eupadev/secrets, eupadev-secrets.service), never here.
+{% if orchestrator_image %}
+# Engine image by digest, signature checked by Ansible.
+ORCHESTRATOR_IMAGE={{ orchestrator_image }}
+{% endif %}
+{% if keycloak_image | default('') %}
+# Keycloak by digest, signature checked by Ansible (keycloak role).
+KEYCLOAK_IMAGE={{ keycloak_image }}
+KEYCLOAK_HOSTNAME=https://{{ keycloak_domain }}
+KEYCLOAK_NETWORK={{ keycloak_network }}
+KEYCLOAK_PROXY_IP={{ keycloak_proxy_ip }}
+KEYCLOAK_IP={{ keycloak_ip }}
+ORCH_AUTH_ADDRESS={{ ansible_host }}
+# caddy-auth by digest (OVH DNS module when caddy_image is set, role keycloak).
+CADDY_IMAGE={{ caddy_image or caddy_image_official }}
+{% endif %}
+COMPOSE_PROFILES={{ (((['engine'] + (['mailpit'] if orchestrator_mailpit else [])) if orchestrator_image else [])
+                     + (['keycloak'] if keycloak_image | default('') else [])) | join(',') }}
+{% for name, value in orchestrator_config.items() %}
+{{ name }}={{ value }}
+{% endfor %}
+# Identity (I0, ADR-017): IdP and four-eyes exemption.
+OIDC_ISSUER={{ orchestrator_oidc_issuer }}
+OIDC_JWKS_URL={{ orchestrator_oidc_jwks_url }}
+OIDC_AUDIENCE={{ orchestrator_oidc_audience }}
+FOUR_EYES_EXEMPTION_SUBJECT={{ orchestrator_four_eyes_exemption_subject }}
+# Chat step 2 (ADR-024): browser sign-in by the engine, client eupadev-web.
+OIDC_WEB_CLIENT_ID={{ orchestrator_oidc_web_client_id }}
+OIDC_WEB_REDIRECT_URL={{ orchestrator_oidc_web_redirect_url }}
+# Database port published on this address (executor of the agents VM,
+# filtered by eupadev-db-firewall.service).
+ORCH_DB_ADDRESS={{ ansible_host }}
+# Forge seen from the engine container (no DNS of the lab inside it).
+FORGE_HOST={{ gitea_domain }}
+FORGE_IP={{ forge_ip }}

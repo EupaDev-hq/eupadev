@@ -1,0 +1,5 @@
+# Put by Ansible (role deployer, ADR-014). A single rule: the deployment
+# account runs the script WITHOUT arguments ("" = no argument allowed). The
+# requested command goes through SSH_ORIGINAL_COMMAND, kept for this script only.
+Defaults!/usr/local/sbin/eupadev-deployer env_keep += "SSH_ORIGINAL_COMMAND SSH_CONNECTION"
+{{ deployer_user }} ALL=(root) NOPASSWD: /usr/local/sbin/eupadev-deployer ""

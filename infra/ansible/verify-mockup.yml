@@ -1,0 +1,374 @@
+# Real test of the mock-up (ADR-009, ADR-022, step E5e) — rerunnable, leaves
+# nothing behind.
+#   ansible-playbook verify-mockup.yml </dev/null
+# On the CI VM, archives shaped like the forge's (<repo>/web/…) are given on
+# stdin to eupadev-deployer, as the engine does through SSH:
+# 1. a trapped archive (symlink) and a wrong digest are refused, nothing written;
+# 2. a good archive is served, only its web/ folder; the same digest again
+#    touches nothing; served gives the digest and the cycle;
+# Then, from the engine VM (wildcard DNS, lab CA), with curl:
+# 3. Sec-Fetch-Dest iframe → the page, with the exact ADR-009 CSP;
+#    document or no header → the platform frame page (banner, sandboxed
+#    iframe on the same path, frame-src 'self'); script → the file;
+# 4. two mock-ups side by side, each under its own digest path; files outside
+#    web/ and paths outside /<digest>/ give 404;
+# 5. remove by another cycle has no effect; by the right cycle the mock-up
+#    is gone (404).
+- name: Mock-up — upload on the CI VM, headers seen from the engine
+  hosts: ci
+  become: true
+  gather_facts: false
+  vars:
+    # Frame page texts in the platform language (roles/deployer/lang/<language>.json).
+    check_frame_texts: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/roles/deployer/lang/' ~ eupadev_language ~ '.json') | from_json }}"
+    check_engine: "{{ groups['orchestrator'][0] }}"
+    check_dir: /run/eupadev/check-mockup
+    check_base_url: "https://mockup.{{ base_domain }}"
+    check_page_csp: "sandbox allow-scripts allow-forms; default-src 'self'; connect-src 'none'; form-action 'none'; frame-ancestors 'self'"
+    check_frame_csp: "default-src 'none'; frame-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"
+    check_tools:
+      - { slug: check-mockup, page: "<h1>mockup A</h1>" }
+      - { slug: check-mockup-b, page: "<h1>mockup B</h1>" }
+  tasks:
+    - name: Trials (cleanup guaranteed)
+      block:
+        - name: Trial folders
+          ansible.builtin.file:
+            path: "{{ check_dir }}/{{ item }}/{{ item }}/web"
+            state: directory
+            mode: "0755"
+          loop: "{{ check_tools | map(attribute='slug') }}"
+
+        - name: Trial trees (like a forge archive)
+          ansible.builtin.copy:
+            dest: "{{ check_dir }}/{{ item.0.slug }}/{{ item.0.slug }}/{{ item.1.path }}"
+            content: "{{ item.1.content }}"
+            mode: "0644"
+          loop: >-
+            {{ check_tools | product([
+                 {'path': 'web/index.html', 'content': 'PAGE'},
+                 {'path': 'web/app.js', 'content': 'console.log(1)'},
+                 {'path': 'README.md', 'content': 'outside web'}]) | list }}
+          loop_control:
+            label: "{{ item.0.slug }}/{{ item.1.path }}"
+
+        - name: A page of its own for each tool
+          ansible.builtin.copy:
+            dest: "{{ check_dir }}/{{ item.slug }}/{{ item.slug }}/web/index.html"
+            content: "{{ item.page }}"
+            mode: "0644"
+          loop: "{{ check_tools }}"
+
+        - name: Trapped archive (folder)
+          ansible.builtin.file:
+            path: "{{ check_dir }}/trap/check-mockup/web"
+            state: directory
+            mode: "0755"
+
+        - name: Symbolic link of the trapped archive
+          ansible.builtin.file:
+            src: /etc/passwd
+            dest: "{{ check_dir }}/trap/check-mockup/web/link"
+            state: link
+
+        - name: Archives tar.gz
+          ansible.builtin.command:
+            argv: [tar, -czf, "{{ check_dir }}/{{ item }}.tgz", -C, "{{ check_dir }}/{{ item }}",
+                   "{{ 'check-mockup-b' if item == 'check-mockup-b' else 'check-mockup' }}"]
+          loop: [check-mockup, check-mockup-b, trap]
+          changed_when: false
+
+        - name: Digests of the archives
+          ansible.builtin.command:
+            argv: [sha256sum, "{{ check_dir }}/{{ item }}.tgz"]
+          loop: [check-mockup, check-mockup-b, trap]
+          register: check_sha
+          changed_when: false
+
+        - name: Digest per archive
+          ansible.builtin.set_fact:
+            check_digest_of: >-
+              {{ dict(['check-mockup', 'check-mockup-b', 'trap']
+                 | zip(check_sha.results | map(attribute='stdout') | map('split') | map('first'))) }}
+
+        - name: Trapped archive and wrong digest → refused (code 2), nothing written
+          ansible.builtin.shell:
+            cmd: /usr/local/sbin/eupadev-deployer < {{ check_dir }}/{{ item.archive }}.tgz
+          environment:
+            SSH_ORIGINAL_COMMAND: "deploy mockup check-mockup 1 {{ check_digest_of[item.digest] }}"
+          loop:
+            - { archive: trap, digest: trap, pattern: "link or special file" }
+            - { archive: check-mockup-b, digest: check-mockup, pattern: "archive digest" }
+          register: check_refusal
+          changed_when: false
+          failed_when: check_refusal.rc != 2 or check_refusal.stdout is not search(item.pattern)
+
+        - name: Nothing written for the refusals
+          ansible.builtin.stat:
+            path: "/srv/eupadev/mockups/{{ check_digest_of[item] }}"
+          loop: [trap, check-mockup]
+          register: check_nothing
+          failed_when: check_nothing.stat.exists
+
+        - name: Deploy the two mock-ups (cycle 1)
+          ansible.builtin.shell:
+            cmd: /usr/local/sbin/eupadev-deployer < {{ check_dir }}/{{ item }}.tgz
+          environment:
+            SSH_ORIGINAL_COMMAND: "deploy mockup {{ item }} 1 {{ check_digest_of[item] }}"
+          loop: [check-mockup, check-mockup-b]
+          register: check_deployment
+          changed_when: true
+          failed_when: >-
+            check_deployment.rc != 0 or (check_deployment.stdout | from_json) !=
+            {'digest': 'sha256:' ~ check_digest_of[item], 'url': check_base_url ~ '/' ~ check_digest_of[item] ~ '/', 'health': 'ok'}
+
+        - name: Served content (web/ only)
+          ansible.builtin.find:
+            paths: "/srv/eupadev/mockups/{{ check_digest_of['check-mockup'] }}"
+            recurse: true
+          register: check_files
+          failed_when: check_files.files | map(attribute='path') | map('basename') | sort != ['app.js', 'index.html']
+
+        - name: Folder before the second upload
+          ansible.builtin.stat:
+            path: "/srv/eupadev/mockups/{{ check_digest_of['check-mockup'] }}"
+          register: check_before
+
+        - name: Same digest a second time → nothing touched
+          ansible.builtin.shell:
+            cmd: /usr/local/sbin/eupadev-deployer < {{ check_dir }}/check-mockup.tgz
+          environment:
+            SSH_ORIGINAL_COMMAND: "deploy mockup check-mockup 1 {{ check_digest_of['check-mockup'] }}"
+          register: check_two
+          changed_when: false
+          failed_when: check_two.rc != 0 or check_two.stdout != check_deployment.results[0].stdout
+
+        - name: Folder after the second upload
+          ansible.builtin.stat:
+            path: "/srv/eupadev/mockups/{{ check_digest_of['check-mockup'] }}"
+          register: check_after
+          failed_when: check_after.stat.inode != check_before.stat.inode or check_after.stat.mtime != check_before.stat.mtime
+
+        - name: Served = digest and cycle
+          ansible.builtin.command: /usr/local/sbin/eupadev-deployer
+          environment: { SSH_ORIGINAL_COMMAND: "served mockup check-mockup" }
+          register: check_served
+          changed_when: false
+          failed_when: >-
+            (check_served.stdout | from_json) != {'digest': 'sha256:' ~ check_digest_of['check-mockup'], 'cycle': 1}
+
+        # ── Headers, from the engine VM ───────────────────────────────────
+        - name: Headers and contents by Sec-Fetch-Dest
+          ansible.builtin.command:
+            argv: "{{ ['curl', '-sS', '-D', '-', '--max-time', '20'] + item.header + [check_base_url ~ item.path] }}"
+          delegate_to: "{{ check_engine }}"
+          loop:
+            - { name: "page in the frame", path: "/{{ check_digest_of['check-mockup'] }}/", header: [-H, "Sec-Fetch-Dest: iframe"],
+                code: "200", contains: "mockup A", csp: "{{ check_page_csp }}" }
+            - { name: "other mock-up, its own path", path: "/{{ check_digest_of['check-mockup-b'] }}/", header: [-H, "Sec-Fetch-Dest: iframe"],
+                code: "200", contains: "mockup B", csp: "{{ check_page_csp }}" }
+            - { name: "top-level navigation", path: "/{{ check_digest_of['check-mockup'] }}/", header: [-H, "Sec-Fetch-Dest: document"],
+                code: "200", contains: 'src="/{{ check_digest_of[''check-mockup''] }}/"', csp: "{{ check_frame_csp }}" }
+            - { name: "no header", path: "/{{ check_digest_of['check-mockup'] }}/", header: [],
+                code: "200", contains: "{{ check_frame_texts['mockup.banner'] }}", csp: "{{ check_frame_csp }}" }
+            - { name: "script", path: "/{{ check_digest_of['check-mockup'] }}/app.js", header: [-H, "Sec-Fetch-Dest: script"],
+                code: "200", contains: "console.log(1)", csp: "{{ check_page_csp }}" }
+            - { name: "outside web/", path: "/{{ check_digest_of['check-mockup'] }}/README.md", header: [-H, "Sec-Fetch-Dest: iframe"],
+                code: "404", contains: "", csp: "" }
+            - { name: "outside a digest", path: "/index.html", header: [-H, "Sec-Fetch-Dest: iframe"], code: "404", contains: "", csp: "" }
+          loop_control:
+            label: "{{ item.name }}"
+          register: check_curl
+          changed_when: false
+          failed_when: >-
+            check_curl.rc != 0
+            or check_curl.stdout_lines[0].split()[1] != item.code
+            or item.contains not in check_curl.stdout
+            or (item.csp != '' and check_curl.stdout is not search('(?im)^content-security-policy: ' ~ (item.csp | regex_escape) ~ '\r?$'))
+
+        # ── Removal ────────────────────────────────────────────────────────
+        - name: Remove by another cycle → no effect
+          ansible.builtin.command: /usr/local/sbin/eupadev-deployer
+          environment: { SSH_ORIGINAL_COMMAND: "remove mockup check-mockup 2" }
+          register: check_other
+          changed_when: false
+          failed_when: check_other.stdout is not search('owned by cycle 1')
+
+        - name: Remove (cycle 1)
+          ansible.builtin.command: /usr/local/sbin/eupadev-deployer
+          environment: { SSH_ORIGINAL_COMMAND: "remove mockup check-mockup 1" }
+          register: check_removal
+          changed_when: true
+          failed_when: >-
+            (check_removal.stdout | from_json) != {'done': true}
+
+        - name: No longer served
+          ansible.builtin.command:
+            argv: [curl, -sS, -o, /dev/null, -w, "%{http_code}", -H, "Sec-Fetch-Dest: iframe", "{{ check_base_url }}/{{ check_digest_of['check-mockup'] }}/"]
+          delegate_to: "{{ check_engine }}"
+          register: check_gone
+          changed_when: false
+          failed_when: check_gone.stdout != '404'
+
+      always:
+        - name: Remove the trial mock-ups
+          ansible.builtin.command: /usr/local/sbin/eupadev-deployer
+          environment: { SSH_ORIGINAL_COMMAND: "remove mockup {{ item.slug }} 1" }
+          loop: "{{ check_tools }}"
+          changed_when: false
+          failed_when: false
+
+        - name: Work folder
+          ansible.builtin.file:
+            path: "{{ check_dir }}"
+            state: absent
+
+# 6. The ENGINE's code, in the engine image on the engine VM (SshDeployer
+#    built by externalWorld, real key and known_hosts): it reads the archive
+#    of the head of agent/<slug>/<cycle>/scoping from the forge (throwaway
+#    repository and read token), pipes it through SSH, gets the mock-up URL;
+#    served gives the same digest; remove removes it.
+- name: Mock-up through the engine's code (forge archive, SSH)
+  hosts: orchestrator
+  become: true
+  gather_facts: false
+  vars:
+    check_slug: check-mockup-e3
+    check_forge: "{{ hostvars[groups['forge'][0]] }}"
+    check_ci: "{{ hostvars[groups['ci'][0]].ansible_host }}"
+    check_secrets: /run/eupadev/secrets
+    lab_ca_crt: /usr/local/share/ca-certificates/eupadev-lab.crt
+  module_defaults:
+    ansible.builtin.uri:
+      url_username: "{{ gitea_admin_user }}"
+      url_password: "{{ vault_gitea_admin_password }}"
+      force_basic_auth: true
+      body_format: json
+  tasks:
+    - name: Trials (cleanup guaranteed)
+      block:
+        - name: Remove a repository and a token of an interrupted run
+          ansible.builtin.uri:
+            url: "{{ check_forge.gitea_api }}{{ item }}"
+            method: DELETE
+            status_code: [204, 404]
+          loop:
+            - "/repos/eupadev/{{ check_slug }}"
+            - /users/svc-orchestrator/tokens/check-mockup
+          delegate_to: "{{ groups['forge'][0] }}"
+
+        - name: Trial repository
+          ansible.builtin.uri:
+            url: "{{ check_forge.gitea_api }}/orgs/eupadev/repos"
+            method: POST
+            body: { name: "{{ check_slug }}", private: true, auto_init: true, default_branch: main }
+            status_code: 201
+          delegate_to: "{{ groups['forge'][0] }}"
+
+        - name: Scoping branch with web/index.html
+          ansible.builtin.uri:
+            url: "{{ check_forge.gitea_api }}/repos/eupadev/{{ check_slug }}/contents/web/index.html"
+            method: POST
+            body:
+              content: "{{ '<h1>mockup E3</h1>' | b64encode }}"
+              branch: main
+              new_branch: "agent/{{ check_slug }}/1/scoping"
+              message: mock-up for verify-mockup.yml
+            status_code: 201
+          delegate_to: "{{ groups['forge'][0] }}"
+
+        - name: Throwaway svc-orchestrator token (reads the repositories)
+          ansible.builtin.uri:
+            url: "{{ check_forge.gitea_api }}/users/svc-orchestrator/tokens"
+            method: POST
+            body: { name: check-mockup, scopes: ["read:repository"] }
+            status_code: 201
+          delegate_to: "{{ groups['forge'][0] }}"
+          register: check_token
+          no_log: true
+
+        - name: Temporary files (token, trial script)
+          ansible.builtin.tempfile:
+            suffix: "{{ item }}"
+          loop: [-token, -trial.ts]
+          register: check_tmp
+
+        - name: Token in its file (read through FORGE_TOKEN_FILE)
+          ansible.builtin.copy:
+            dest: "{{ check_tmp.results[0].path }}"
+            content: "{{ check_token.json.sha1 }}\n"
+            owner: "1000"
+            mode: "0400"
+          no_log: true
+
+        - name: The engine's trial script
+          ansible.builtin.copy:
+            src: "{{ playbook_dir }}/../../orchestrator/scripts/trial-deployment.ts"
+            dest: "{{ check_tmp.results[1].path }}"
+            mode: "0444"
+
+        - name: The engine deploys the mock-up, reads it served, removes it
+          ansible.builtin.command:
+            argv: >-
+              {{ ['docker', 'run', '--rm', '--read-only', '--tmpfs', '/tmp', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true',
+                  '--user', '1000', '--entrypoint', 'node',
+                  '-v', check_tmp.results[1].path ~ ':/app/scripts/trial-deployment.ts:ro',
+                  '-v', check_tmp.results[0].path ~ ':/run/secrets/token:ro',
+                  '-v', check_secrets ~ '/deployer_key:/run/secrets/deployer_key:ro',
+                  '-v', check_secrets ~ '/deployer_known_hosts:/run/secrets/deployer_known_hosts:ro',
+                  '-v', lab_ca_crt ~ ':/lab-ca.crt:ro', '-e', 'NODE_EXTRA_CA_CERTS=/lab-ca.crt',
+                  '-e', 'EUPADEV_EXTERNAL=forge=gitea,deployer=ssh', '-e', 'FORGE_URL=https://' ~ gitea_domain,
+                  '-e', 'FORGE_TOKEN_FILE=/run/secrets/token',
+                  '-e', 'DEPLOYER_HOSTS=mockup=' ~ check_ci ~ ',preview=' ~ check_ci ~ ',prod=' ~ hostvars[groups['tools'][0]].ansible_host,
+                  '-e', 'DEPLOYER_KEY_FILE=/run/secrets/deployer_key', '-e', 'DEPLOYER_KNOWN_HOSTS_FILE=/run/secrets/deployer_known_hosts',
+                  orchestrator_image, '/app/scripts/trial-deployment.ts'] + item }}
+          loop:
+            - [deploy, mockup, "{{ check_slug }}", "1"]
+            - [served, mockup, "{{ check_slug }}"]
+          register: check_engine
+          changed_when: true
+          failed_when: check_engine.rc != 0
+
+        - name: The engine's answers
+          vars:
+            d: "{{ check_engine.results[0].stdout | from_json }}"
+            s: "{{ check_engine.results[1].stdout | from_json }}"
+          ansible.builtin.assert:
+            that:
+              - d.health == 'ok'
+              - d.url == 'https://mockup.' ~ base_domain ~ '/' ~ d.digest[7:] ~ '/'
+              - s.digest == d.digest and s.cycleId == 1
+            fail_msg: "Unexpected answers: {{ check_engine.results | map(attribute='stdout') | list }}"
+
+        - name: The mock-up serves the page of the scoping branch
+          ansible.builtin.command:
+            argv: [curl, -sS, --max-time, "20", -H, "Sec-Fetch-Dest: iframe", "{{ (check_engine.results[0].stdout | from_json).url }}"]
+          register: check_page
+          changed_when: false
+          failed_when: "'mockup E3' not in check_page.stdout"
+
+      always:
+        - name: Remove the mock-up (script of the CI VM)
+          ansible.builtin.command: /usr/local/sbin/eupadev-deployer
+          environment: { SSH_ORIGINAL_COMMAND: "remove mockup {{ check_slug }} 1" }
+          delegate_to: "{{ groups['ci'][0] }}"
+          changed_when: false
+          failed_when: false
+
+        - name: Trial repository and token
+          ansible.builtin.uri:
+            url: "{{ check_forge.gitea_api }}{{ item }}"
+            method: DELETE
+            status_code: [204, 404]
+          loop:
+            - "/repos/eupadev/{{ check_slug }}"
+            - /users/svc-orchestrator/tokens/check-mockup
+          delegate_to: "{{ groups['forge'][0] }}"
+
+        - name: Temporary files
+          ansible.builtin.file:
+            path: "{{ item.path }}"
+            state: absent
+          loop: "{{ check_tmp.results | default([]) }}"
+          loop_control:
+            label: "{{ item.path }}"

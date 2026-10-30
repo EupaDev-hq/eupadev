@@ -1,0 +1,92 @@
+# Builds, checks and publishes the golden image (variants build, run and ci) to
+# the forge's registry. Started on every change, every Monday at 4 am
+# (security fixes), or by hand.
+name: Golden image
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 4 * * 1"
+  workflow_dispatch:
+
+jobs:
+  publish:
+    # Runner "image": the only one that gives access to the CI VM's Docker.
+    runs-on: ci-image
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Build the three variants
+        run: |
+          REG="${GITHUB_SERVER_URL#https://}"
+          BASE="$(echo "$REG/${GITHUB_REPOSITORY%%/*}/base-node" | tr 'A-Z' 'a-z')"
+          echo "REG=$REG" >> "$GITHUB_ENV"
+          echo "BASE=$BASE" >> "$GITHUB_ENV"
+          echo "DAY=$(date -u +%Y%m%d)" >> "$GITHUB_ENV"
+          # --no-cache: without it, Docker would reuse the Debian update of a
+          # previous build and the new security fixes would never be applied
+          # (the whole point of the weekly rebuild).
+          docker build -q --pull --no-cache --target build -t "$BASE:build-24" .
+          docker build -q --pull --no-cache --target run -t "$BASE:run-24" .
+          docker build -q --pull --no-cache --target ci -t "$BASE:ci-24" .
+
+      - name: Known flaws (Trivy)
+        run: |
+          for v in build-24 run-24 ci-24; do
+            docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+              -v trivy-cache:/root/.cache/ aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa image \
+              --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed "$BASE:$v"
+          done
+
+      - name: Check the image's promises
+        run: |
+          # Debian 13 in the 3 variants, and recognised by Trivy: an unrecognised
+          # OS would not be scanned, while leaving the check green.
+          for v in build-24 run-24 ci-24; do
+            docker run --rm --entrypoint grep "$BASE:$v" -q '^VERSION_CODENAME=trixie$' /etc/os-release
+          done
+          echo "OK: the 3 variants are on Debian 13 (trixie)."
+          SCAN=$(docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            -v trivy-cache:/root/.cache/ aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa image \
+            --severity CRITICAL "$BASE:run-24" 2>&1)
+          echo "$SCAN" | grep -q '(debian 13' || { echo "FAILED: Trivy does not recognise Debian 13."; echo "$SCAN" | head -20; exit 1; }
+          if echo "$SCAN" | grep -qi 'unsupported\|not supported'; then echo "FAILED: Trivy reports an unsupported OS."; exit 1; fi
+          echo "OK: Trivy recognises and scans Debian 13."
+          test "$(docker run --rm "$BASE:run-24" whoami)" = node
+          echo "OK: the run image runs as a non-root user (node)."
+          if docker run --rm "$BASE:run-24" sh -c 'command -v npm || command -v npx || command -v corepack || command -v yarn'; then
+            echo "FAILED: a package manager is left in the run image."; exit 1
+          fi
+          echo "OK: no package manager in the run image."
+          echo "OK: $(docker run --rm "$BASE:run-24" node --version) in the run image."
+          echo "OK: pnpm $(docker run --rm "$BASE:build-24" pnpm --version) in the build image."
+          # CI image: the jobs run there without Docker, the tools must be in it.
+          docker run --rm "$BASE:ci-24" sh -c 'echo "OK: CI image — gitleaks $(gitleaks version), $(hadolint --version), Opengrep $(opengrep --version), pnpm $(pnpm --version), $(git --version)"'
+          if docker run --rm "$BASE:ci-24" sh -c 'command -v docker'; then
+            echo "FAILED: a Docker client is present in the CI image."; exit 1
+          fi
+          echo "OK: no Docker client in the CI image."
+
+      # Tags: "build-24" / "run-24" follow the latest version;
+      # "-YYYYMMDD" keeps a dated trace of each build.
+      - name: Publish to the forge's registry
+        env:
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+        run: |
+          echo "$REGISTRY_TOKEN" | docker login "$REG" -u svc-ci --password-stdin
+          for v in build-24 run-24 ci-24; do
+            docker tag "$BASE:$v" "$BASE:$v-$DAY"
+            docker push -q "$BASE:$v"
+            docker push -q "$BASE:$v-$DAY"
+            echo "Digest $v: $(docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$BASE:$v" | grep "^$BASE@")"
+          done
+
+      - name: Clean up
+        if: always()
+        run: |
+          docker logout "$REG" > /dev/null 2>&1 || true
+          for v in build-24 run-24 ci-24; do
+            docker rmi "$BASE:$v" "$BASE:$v-$DAY" > /dev/null 2>&1 || true
+          done

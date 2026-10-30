@@ -1,0 +1,24 @@
+# AI proxy (ROADMAP §8.16 L4): the agents' only path to the Anthropic API.
+# The agent container gets ANTHROPIC_BASE_URL=http://<IP of this proxy>:8080
+# and a fake key (ANTHROPIC_API_KEY, sent by Claude Code as x-api-key);
+# the real key never enters the container: it is added here.
+# Method: the "proxy pattern" of the Anthropic documentation (Securely
+# deploying AI agents, option ANTHROPIC_BASE_URL: the proxy gets clear HTTP).
+{
+	# Neither admin API (port 2019) nor certificates: clear HTTP, reachable
+	# only from the internal networks of the tasks.
+	admin off
+	auto_https off
+}
+
+:8080 {
+	reverse_proxy https://api.anthropic.com {
+		# Without it, Caddy forwards the client's Host (the proxy's IP).
+		header_up Host {upstream_hostport}
+		# {file.*} is read again on every request (a rotation does not need a
+		# Caddy reload); unreadable file = empty header = 401 from Anthropic.
+		header_up x-api-key {file./run/secrets/anthropic_api_key}
+		# A bearer token supplied by the agent must never go through.
+		header_up -Authorization
+	}
+}

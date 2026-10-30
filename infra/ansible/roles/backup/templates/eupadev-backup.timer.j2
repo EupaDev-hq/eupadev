@@ -1,0 +1,11 @@
+# Managed by Ansible (backup role).
+[Unit]
+Description=Daily EupaDev backup
+
+[Timer]
+OnCalendar={{ backup_hour }}
+# Machine off at the planned hour: the backup runs at the next boot.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

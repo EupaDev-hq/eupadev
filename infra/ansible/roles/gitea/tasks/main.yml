@@ -1,0 +1,81 @@
+- name: Directory of the forge (root access only)
+  ansible.builtin.file:
+    path: /opt/eupadev/forge
+    state: directory
+    mode: "0750"
+
+- name: Copy the Compose file
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../compose/forge/compose.yml"
+    dest: /opt/eupadev/forge/compose.yml
+    mode: "0640"
+
+- name: Caddyfile (TLS internal, or Let's Encrypt DNS-01 at OVH)
+  ansible.builtin.template:
+    src: Caddyfile.j2
+    dest: /opt/eupadev/forge/Caddyfile
+    mode: "0640"
+  register: gitea_caddyfile
+
+# The secrets are readable by root only on the VM.
+- name: Install the variables (secrets included) next to the Compose file
+  ansible.builtin.template:
+    src: forge-variables.j2
+    dest: /opt/eupadev/forge/.env
+    mode: "0600"
+
+# Caddy with the OVH DNS module (images/caddy), pulled from this forge's own
+# registry through the running Caddy (trusted since the previous pass: role
+# lab_ca at the end of the forge play, or a public certificate), signature
+# verified with the key of the installation (same tasks as the engine's image).
+- name: EupaDev configuration directory
+  ansible.builtin.file:
+    path: /etc/eupadev
+    state: directory
+    mode: "0755"
+
+- name: Caddy image (download, signature)
+  ansible.builtin.include_role:
+    name: orchestrator
+    tasks_from: image.yml
+  vars:
+    orchestrator_image: "{{ caddy_image }}"
+  when: caddy_image | length > 0
+
+- name: Start or update the services, wait until they are healthy
+  ansible.builtin.command:
+    cmd: docker compose up -d --wait
+    chdir: /opt/eupadev/forge
+  register: gitea_compose_up
+  changed_when: gitea_compose_up.stderr is search('Created|Recreated|Started|Pulled')
+
+# A rewritten Caddyfile is a new inode, unseen by the running container
+# (admin API inside the container only): Caddy alone is recreated.
+- name: Recreate Caddy after a change of the Caddyfile  # noqa: no-handler
+  ansible.builtin.command:
+    cmd: docker compose up -d --wait --no-deps --force-recreate caddy
+    chdir: /opt/eupadev/forge
+  when: gitea_caddyfile.changed
+  changed_when: true
+
+- name: List the existing administrators
+  ansible.builtin.command:
+    cmd: docker compose exec -T gitea gitea admin user list --admin
+    chdir: /opt/eupadev/forge
+  register: gitea_admins
+  changed_when: false
+
+# Human admin account, for emergencies. No service will ever use this account
+# (each one has its own account with limited rights).
+- name: Create the administrator account if it does not exist
+  ansible.builtin.command:
+    cmd: >-
+      docker compose exec -T gitea gitea admin user create --admin
+      --username {{ gitea_admin_user }}
+      --email {{ gitea_admin_email }}
+      --password {{ vault_gitea_admin_password }}
+      --must-change-password=false
+    chdir: /opt/eupadev/forge
+  when: gitea_admin_user not in gitea_admins.stdout
+  no_log: true
+  changed_when: true

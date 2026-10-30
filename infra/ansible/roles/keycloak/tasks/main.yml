@@ -1,0 +1,130 @@
+# Keycloak on the orchestrator VM (docs/reflexions/2026-10-15-note-keycloak-labo.md,
+# decisions D1-D15 of docs/reflexions/2026-10-15-analyse-keycloak.md). Played
+# after the role orchestrator: same Compose, same PostgreSQL, same
+# systemd-creds secrets (orchestrator_secrets), already decrypted in memory.
+- name: Keycloak
+  when: keycloak_image | default('') | length > 0
+  block:
+    # Same chain as the engine: digest, cosign signature with the key of the
+    # installation, before any start.
+    - name: Keycloak image (download, signature)
+      ansible.builtin.include_role:
+        name: orchestrator
+        tasks_from: image.yml
+      vars:
+        orchestrator_image: "{{ keycloak_image }}"
+
+    # Password through psql's standard input (\set), never as an argument.
+    - name: Database and PostgreSQL account of Keycloak
+      ansible.builtin.command:
+        argv: [docker, compose, exec, -T, db, psql, -U, orchestrator, -d, orchestrator, -v, ON_ERROR_STOP=1, -f, "-"]
+        chdir: /opt/eupadev/orchestrator
+        stdin: |
+          \set keycloak_password '{{ vault_keycloak_db_password | replace("'", "''") }}'
+          {{ lookup('ansible.builtin.file', 'db.sql') }}
+      register: keycloak_db_setup
+      changed_when: keycloak_db_setup.stdout is search('CREATE (ROLE|DATABASE)')
+      no_log: true
+
+    - name: Caddyfile of auth.<domain>
+      ansible.builtin.template:
+        src: Caddyfile-auth.j2
+        dest: /opt/eupadev/orchestrator/Caddyfile-auth
+        mode: "0644"
+      register: keycloak_caddyfile
+
+    # Caddy with the OVH DNS module (Let's Encrypt DNS-01), same chain.
+    - name: Caddy image (download, signature)
+      ansible.builtin.include_role:
+        name: orchestrator
+        tasks_from: image.yml
+      vars:
+        orchestrator_image: "{{ caddy_image }}"
+      when: caddy_image | length > 0
+
+    # --force-recreate after a secret change (orchestrator_recreate, set by the
+    # role orchestrator): a container keeps the old file.
+    - name: Start or update Keycloak, wait until it is healthy
+      ansible.builtin.command:
+        argv: >-
+          {{ ['docker', 'compose', 'up', '-d', '--wait', '--wait-timeout', '300']
+             + (['--force-recreate'] if orchestrator_recreate | default(false) else []) + ['keycloak'] }}
+        chdir: /opt/eupadev/orchestrator
+      register: keycloak_compose
+      changed_when: keycloak_compose.stderr is search('keycloak-1\s+(Created|Recreated|Started)')
+
+    # Caddyfile read only when the container is created (admin off); the same
+    # for the secrets (OVH) after a change (orchestrator_recreate).
+    - name: Start or update caddy-auth
+      ansible.builtin.command:
+        argv: >-
+          {{ ['docker', 'compose', 'up', '-d', '--wait', '--wait-timeout', '60']
+             + (['--force-recreate'] if (keycloak_caddyfile.changed or orchestrator_recreate | default(false)) else [])
+             + ['caddy-auth'] }}
+        chdir: /opt/eupadev/orchestrator
+      register: keycloak_compose_caddy
+      changed_when: keycloak_compose_caddy.stderr is search('caddy-auth-1\s+(Created|Recreated|Started)')
+
+    # Ansible talks to Keycloak through its configuration client (D5); if it
+    # does not answer (first installation), bootstrap by temp-admin.
+    - name: Does the configuration client answer?
+      ansible.builtin.uri:
+        url: "{{ keycloak_admin_url }}/realms/eupadev/protocol/openid-connect/token"
+        method: POST
+        body_format: form-urlencoded
+        body:
+          grant_type: client_credentials
+          client_id: eupadev-config
+          client_secret: "{{ vault_keycloak_config_secret }}"
+        status_code: [200, 400, 401, 404]
+      register: keycloak_cfg_token
+      no_log: true
+
+    - name: Bootstrap (temp-admin, then configuration client)
+      ansible.builtin.include_tasks: bootstrap.yml
+      when: keycloak_cfg_token.status != 200
+      vars:
+        bootstrap_realm: eupadev
+        bootstrap_client: eupadev-config
+        bootstrap_secret: "{{ vault_keycloak_config_secret }}"
+
+    # Digest of the declaration of master (tasks and variables, no secret);
+    # read back from the local fact, written at the end of realm.yml.
+    - name: Digest of the declaration of master
+      ansible.builtin.set_fact:
+        keycloak_master_digest: >-
+          {{ (lookup('ansible.builtin.file', role_path ~ '/tasks/master.yml')
+              ~ ([keycloak_master_admins, keycloak_master_otp] | to_json)) | hash('sha256') }}
+
+    - name: Realm master as code (ephemeral temp-admin, Keycloak stopped ≈ 30 s)
+      ansible.builtin.include_tasks: master.yml
+      when: (ansible_local.keycloak.master | default('')) != keycloak_master_digest
+
+    - name: Realm eupadev as code
+      ansible.builtin.include_tasks: realm.yml
+
+    # Realm of the generated tools (R8, docs/reflexions/2026-10-18-note-realm-outils.md):
+    # its own configuration client, bootstrapped like the one of eupadev.
+    - name: Does the configuration client of the realm tools answer?
+      ansible.builtin.uri:
+        url: "{{ keycloak_admin_url }}/realms/tools/protocol/openid-connect/token"
+        method: POST
+        body_format: form-urlencoded
+        body:
+          grant_type: client_credentials
+          client_id: tools-config
+          client_secret: "{{ vault_keycloak_tools_config_secret }}"
+        status_code: [200, 400, 401, 404]
+      register: keycloak_tools_cfg_token
+      no_log: true
+
+    - name: Bootstrap of the realm tools (temp-admin, then configuration client)
+      ansible.builtin.include_tasks: bootstrap.yml
+      when: keycloak_tools_cfg_token.status != 200
+      vars:
+        bootstrap_realm: tools
+        bootstrap_client: tools-config
+        bootstrap_secret: "{{ vault_keycloak_tools_config_secret }}"
+
+    - name: Realm tools as code
+      ansible.builtin.include_tasks: realm-tools.yml

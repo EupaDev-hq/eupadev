@@ -1,0 +1,300 @@
+# Real test of step E1 ("engine for real" note §2) — can be rerun.
+#   ansible-playbook verify-engine-mails.yml
+# The engine in service (EUPADEV_EXTERNAL=notifications=smtp, the rest as
+# automatic fakes) sends its mails to Mailpit, on the same VM (lab, ROADMAP
+# §8.16 M7). The mails are read through Mailpit's API (127.0.0.1:8025).
+# Checks:
+#   1. Mailpit: healthy, SMTP not published on the VM, page and API on
+#      127.0.0.1 only; the engine did start with the real mails;
+#   2. a request through the API, on behalf of the service account
+#      check-requester (Keycloak token, I0): the requester receives the
+#      "mock-up available" mail at the contact address of that account
+#      (keycloak_check_requester_mail);
+#   3. Gate 1 sends the "decision required" mail to the admin; the engine is
+#      killed (docker kill) as soon as that mail has arrived (0.1 s loop on the
+#      VM), then restarted: resumed at Gate 1, NO 2nd mail, Message-ID =
+#      sha256 of the key recorded in sent_notifications.
+#   The riskiest exact instant (mail accepted, DBOS step not recorded yet)
+#   cannot be aimed at from outside: it is caused for sure by the local test
+#   orchestrator/tests/mails.test.ts (E1 resumption).
+# Cleanup (always): engine restarted, test cycle cancelled (nothing is deleted
+# from the database, by design), the mails of this test removed from Mailpit.
+- name: E1 — a gate sends a mail, never two
+  hosts: orchestrator
+  become: true
+  vars:
+    # Subjects in the lab language (engine_texts, group_vars/orchestrator): the requester's mail
+    # announcing the mock-up, and the admin's Gate 1 decision mail (prefix up to the tool name).
+    mockup_subject: >-
+      {{ engine_texts['mail.requester.subject'] | replace('{tool}', engine_name)
+         | replace('{summary}', engine_texts['chat.mockupAvailable'].split('{url}')[0]) }}
+    gate_1_subject: "{{ engine_texts['mail.decision.subject'].split('{tool}')[0] | replace('{state}', 'gate_1') }}"
+    gate_1_full_subject: "{{ engine_texts['mail.decision.subject'] | replace('{state}', 'gate_1') | replace('{tool}', engine_name) }}"
+    engine_api: http://127.0.0.1:8080
+    mailpit_api: http://127.0.0.1:8025/api/v1
+    psql: [docker, compose, exec, -T, db, psql, -U, orchestrator, -d, orchestrator, -tAc]
+  module_defaults:
+    ansible.builtin.uri:
+      headers: { X-EupaDev: "1" }
+      return_content: true
+    ansible.builtin.command:
+      chdir: /opt/eupadev/orchestrator
+  tasks:
+    - name: The engine is deployed with the real mails and Mailpit
+      ansible.builtin.assert:
+        that:
+          - orchestrator_image | length > 0
+          - orchestrator_mailpit | bool
+          - "'notifications=smtp' in orchestrator_config.EUPADEV_EXTERNAL | default('')"
+        fail_msg: "orchestrator_image, orchestrator_mailpit and EUPADEV_EXTERNAL (group_vars/orchestrator/vars.yml): E1 not deployed."
+        quiet: true
+
+    - name: Is an emergency stop in progress?
+      ansible.builtin.stat:
+        path: /opt/eupadev/orchestrator/EMERGENCY-STOP
+      register: emergency_stop
+
+    - name: No emergency stop in progress
+      ansible.builtin.assert:
+        that: not emergency_stop.stat.exists
+        fail_msg: "Emergency stop in progress: resume first (emergency-stop.yml -e level=0 -e confirm=yes)."
+        quiet: true
+
+    # Name without an accent: the hard-stop loop searches the subject as is (grep -F). The requester is the service
+    # account check-requester (I0): its contact address comes from Keycloak, not from the body of the request.
+    - name: Unique names of the test tool, requester's address
+      ansible.builtin.set_fact:
+        engine_slug: "check-e1-{{ timestamp }}"
+        engine_name: "Check E1 {{ timestamp }}"
+        engine_requester: "{{ keycloak_check_requester_mail }}"
+      vars:
+        timestamp: "{{ lookup('ansible.builtin.pipe', 'date -u +%Y%m%d%H%M%S') }}"
+
+    - name: Mail checks
+      block:
+        # ---------- 1. Mailpit and configuration ----------
+        - name: Read Mailpit's health and the SMTP and API listening addresses
+          ansible.builtin.command:
+            argv:
+              - sh
+              - -c
+              - >-
+                docker inspect --format '{{ '{{' }}.State.Health.Status{{ '}}' }}' orchestrator-mailpit-1;
+                echo "smtp:$(ss -Hltn 'sport = :1025' | wc -l)";
+                ss -Hltn 'sport = :8025' | awk '{print $4}'
+          register: mailpit_state
+          changed_when: false
+
+        - name: "1. Mailpit healthy, SMTP not published, API on 127.0.0.1 only"
+          ansible.builtin.assert:
+            that: mailpit_state.stdout_lines == ['healthy', 'smtp:0', '127.0.0.1:8025']
+            success_msg: "OK — Mailpit healthy, reachable by the engine only (SMTP), read on 127.0.0.1:8025"
+            fail_msg: "FAILED — {{ mailpit_state.stdout_lines }}"
+
+        - name: Read the engine's startup line
+          ansible.builtin.command:
+            argv: [docker, compose, logs, --no-color, engine]
+          register: engine_log
+          changed_when: false
+
+        - name: "1. The engine started with the real mails"
+          ansible.builtin.assert:
+            that: startup is search('notifications=smtp')
+            success_msg: "OK — {{ startup }}"
+            fail_msg: "FAILED — last startup line: \"{{ startup }}\""
+          vars:
+            startup: "{{ engine_log.stdout_lines | select('search', 'Orchestrator started') | list | last | default('none') }}"
+
+        # ---------- 2. The requester receives their mail ----------
+        - name: Requester token
+          ansible.builtin.include_tasks: tasks/engine-token.yml
+          vars: { engine_hat: requester }
+
+        - name: "2. New request through the API"
+          ansible.builtin.uri:
+            url: "{{ engine_api }}/requests"
+            method: POST
+            headers: { X-EupaDev: "1", Authorization: "Bearer {{ engine_token }}", Idempotency-Key: "{{ engine_slug }}" }
+            body_format: json
+            body: { type: creation, name: "{{ engine_name }}", slug: "{{ engine_slug }}", owner_service: lab, need: "Lab check: track lent gear" }
+            status_code: 201
+          register: request
+
+        - name: Keep the cycle
+          ansible.builtin.set_fact:
+            engine_cycle: "{{ request.json.cycle_id }}"
+
+        - name: "2. Wait for the requester's mail (mock-up available)"
+          ansible.builtin.uri:
+            url: "{{ mailpit_api }}/messages?limit=500"
+          register: mailbox
+          until: >-
+            mailbox.status == 200 and
+            mailbox.json.messages | selectattr('Subject', 'search', mockup_subject | regex_escape)
+            | map(attribute='To') | flatten | map(attribute='Address') | list == [engine_requester]
+          retries: 90
+          delay: 2
+
+        - name: "2. Mail received by the requester, at their address"
+          ansible.builtin.debug:
+            msg: "OK — {{ engine_requester }}: \"{{ (mailbox.json.messages | selectattr('Subject', 'search', engine_name) | first).Subject }}\""
+
+        # ---------- 3. Gate 1: one mail, then a hard stop ----------
+        - name: "3. Requester's feedback on the mock-up"
+          ansible.builtin.include_tasks: tasks/engine-step.yml
+          vars:
+            engine_state: waiting_scoping_feedback
+            engine_message: { type: scoping_feedback, outcome: satisfied }
+
+        # On the VM, without an SSH round trip: killed at most 0.1 s after the mail arrived.
+        - name: "3. Kill the engine as soon as the Gate 1 mail has arrived (docker kill)"
+          ansible.builtin.command:
+            argv:
+              - timeout
+              - "300"
+              - sh
+              - -c
+              - >-
+                until curl -sf '{{ mailpit_api }}/messages?limit=500' | grep -qF "$1"; do sleep 0.1; done;
+                docker compose kill engine
+              - wait-for-gate
+              - "{{ gate_1_full_subject }}"
+          changed_when: true
+
+        - name: Restart the same container
+          ansible.builtin.command:
+            argv: [docker, compose, start, engine]
+          changed_when: true
+
+        - name: Wait until the engine is healthy again
+          ansible.builtin.uri:
+            url: "{{ engine_api }}/health"
+          register: resume_health
+          until: resume_health.status == 200
+          retries: 60
+          delay: 3
+
+        - name: Requester token
+          ansible.builtin.include_tasks: tasks/engine-token.yml
+          vars: { engine_hat: requester }
+
+        - name: "3. Resumption: the cycle still waits for the Gate 1 decision"
+          ansible.builtin.uri:
+            url: "{{ engine_api }}/requests/{{ engine_cycle }}"
+            headers: { X-EupaDev: "1", Authorization: "Bearer {{ engine_token }}" }
+          register: after_kill
+          until: after_kill.status == 200 and after_kill.json.state == 'gate_1' and after_kill.json.workflow == 'PENDING'
+          retries: 30
+          delay: 2
+
+        # Leaves time for a possible resend (replayed step) to arrive.
+        - name: Wait a few seconds after the resumption
+          ansible.builtin.pause:
+            seconds: 10
+
+        - name: Read Mailpit's mailbox again
+          ansible.builtin.uri:
+            url: "{{ mailpit_api }}/messages?limit=500"
+          register: final_mailbox
+
+        - name: Read the recorded key of the Gate 1 mail (sha256)
+          ansible.builtin.command:
+            argv: "{{ psql + [sql] }}"
+          vars:
+            sql: >-
+              select encode(sha256(convert_to(key, 'UTF8')), 'hex') from sent_notifications
+              where cycle_id = {{ engine_cycle | int }} and recipient = 'admin' and key like '%#mail.decision.subject#{"state":"gate_1",%'
+          register: gate_key
+          changed_when: false
+
+        - name: "3. A single Gate 1 mail, Message-ID = recorded key; no duplicate mail of the test"
+          ansible.builtin.assert:
+            that:
+              - gate_1 | length == 1
+              - gate_1[0].To | map(attribute='Address') | list == [gitea_admin_email]
+              - gate_key.stdout_lines | length == 1
+              - gate_1[0].MessageID == gate_key.stdout_lines[0] ~ '@' ~ base_domain
+              - of_test | map(attribute='MessageID') | unique | list | length == of_test | length
+            success_msg: "OK — 1 Gate 1 mail after the hard stop ({{ of_test | length }} mails of the test, no duplicate)"
+            fail_msg: >-
+              FAILED — Gate 1: {{ gate_1 | map(attribute='MessageID') | list }}; key {{ gate_key.stdout_lines }};
+              subjects {{ of_test | map(attribute='Subject') | list }}
+          vars:
+            of_test: "{{ final_mailbox.json.messages | selectattr('Subject', 'search', engine_name) | list }}"
+            gate_1: "{{ of_test | selectattr('Subject', 'search', '^' ~ gate_1_subject | regex_escape) | list }}"
+
+      rescue:
+        - name: Engine and Mailpit logs (diagnosis)
+          ansible.builtin.command:
+            argv: [docker, compose, logs, --no-color, --tail, "80", engine, mailpit]
+          register: diagnosis_log
+          changed_when: false
+          failed_when: false
+
+        - name: Show the log
+          ansible.builtin.debug:
+            var: diagnosis_log.stdout_lines
+
+        - name: Check failed
+          ansible.builtin.fail:
+            msg: "verify-engine-mails failed: {{ ansible_failed_task.name }} — see the log above."
+
+      always:
+        - name: The engine runs (restarted if it was killed)
+          ansible.builtin.command:
+            argv: [docker, compose, up, -d, --wait, --wait-timeout, "300", engine]
+          changed_when: false
+          failed_when: false
+
+        - name: Admin token (cleanup)
+          ansible.builtin.include_tasks: tasks/engine-token.yml
+          vars: { engine_hat: admin }
+          when: engine_cycle is defined
+
+        - name: Read the final state of the test cycle
+          ansible.builtin.uri:
+            url: "{{ engine_api }}/requests/{{ engine_cycle }}"
+            headers: { X-EupaDev: "1", Authorization: "Bearer {{ engine_token }}" }
+          register: remaining
+          when: engine_cycle is defined
+          failed_when: false
+
+        - name: Cancel the test cycle left open
+          ansible.builtin.uri:
+            url: "{{ engine_api }}/messages"
+            method: POST
+            headers: { X-EupaDev: "1", Authorization: "Bearer {{ engine_token }}", Idempotency-Key: "{{ engine_slug }}-cancellation" }
+            body_format: json
+            body: "{{ {'cycle_id': engine_cycle | int, 'message': {'type': 'cancellation'}} }}"
+            status_code: 202
+          when: engine_cycle is defined and remaining.json is defined and remaining.json.finished_at is none
+          changed_when: true
+          failed_when: false
+
+        # The end of the cycle still sends its mails: wait until it is done.
+        - name: Wait for the end of the test cycle
+          ansible.builtin.uri:
+            url: "{{ engine_api }}/requests/{{ engine_cycle }}"
+            headers: { X-EupaDev: "1", Authorization: "Bearer {{ engine_token }}" }
+          register: cycle_end
+          until: cycle_end.status == 200 and cycle_end.json.finished_at is not none and cycle_end.json.workflow == 'SUCCESS'
+          retries: 30
+          delay: 2
+          when: engine_cycle is defined
+          failed_when: false
+
+        - name: Read the mails of the test
+          ansible.builtin.uri:
+            url: "{{ mailpit_api }}/messages?limit=500"
+          register: to_remove
+          failed_when: false
+
+        - name: Remove the mails of this test from Mailpit
+          ansible.builtin.uri:
+            url: "{{ mailpit_api }}/messages"
+            method: DELETE
+            body_format: json
+            body: { IDs: "{{ to_remove.json.messages | selectattr('Subject', 'search', engine_name) | map(attribute='ID') | list }}" }
+          when: to_remove.json is defined
+          changed_when: true
+          failed_when: false

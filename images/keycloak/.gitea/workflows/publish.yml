@@ -1,0 +1,100 @@
+# Builds, checks, publishes (by digest) and SIGNS the platform's Keycloak image
+# in the forge's registry (ADR-005), like the `engine` repository.
+# Started on every change of the `keycloak` repository (synced by Ansible from
+# EupaDev) or by hand. The image is never deployed by this pipeline:
+# Ansible pulls it by its digest (`keycloak_image`) after checking the
+# signature.
+name: Keycloak image
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  publish:
+    # Runner "image": the only one that gives access to the CI VM's Docker.
+    runs-on: ci-image
+    timeout-minutes: 60
+    env:
+      # Official cosign binary, checked by its sha256 sum (the one in
+      # cosign_checksums.txt of the release published on GitHub).
+      COSIGN_VERSION: v3.1.3
+      COSIGN_SHA256: 4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Build the image
+        run: |
+          REG="${GITHUB_SERVER_URL#https://}"
+          IMAGE="$(echo "$REG/${GITHUB_REPOSITORY%%/*}/keycloak" | tr '[:upper:]' '[:lower:]')"
+          TAG="$(echo "$GITHUB_SHA" | cut -c1-12)"
+          { echo "REG=$REG"; echo "IMAGE=$IMAGE"; echo "TAG=$TAG"; } >> "$GITHUB_ENV"
+          docker build -q --pull --no-cache -t "$IMAGE:$TAG" .
+
+      # Java image: Trivy also downloads its Java database (≈ 940 MiB, kept in
+      # the trivy-cache volume). On the 1st run the download exceeded the
+      # default timeout of 5 min ("context deadline exceeded", 2026-10-15):
+      # longer timeout, same threshold.
+      # Dated exceptions: .trivyignore.yaml, copied into the Trivy container
+      # (a bind mount would name a path of the job container, unknown to the
+      # host's Docker). Trivy skips a missing ignore file.
+      - name: Known flaws (Trivy)
+        run: |
+          cid="$(docker create -v /var/run/docker.sock:/var/run/docker.sock \
+            -v trivy-cache:/root/.cache/ aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa image \
+            --timeout 30m --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed \
+            --ignorefile /.trivyignore.yaml "$IMAGE:$TAG")"
+          if [ -f .trivyignore.yaml ]; then docker cp .trivyignore.yaml "$cid:/.trivyignore.yaml"; fi
+          rc=0; docker start -a "$cid" || rc=$?
+          docker rm "$cid" > /dev/null
+          exit "$rc"
+
+      - name: Check the image's promises
+        run: |
+          test "$(docker run --rm --entrypoint id "$IMAGE:$TAG" -u)" = 1000
+          echo "OK: Keycloak runs as a non-root user (uid 1000)."
+          docker run --rm "$IMAGE:$TAG" --version | grep -q '^Keycloak 26\.8\.1$'
+          echo "OK: version 26.8.1."
+          docker run --rm "$IMAGE:$TAG" show-config 2>/dev/null | grep -Eq 'kc\.db *= *postgres'
+          echo "OK: built for PostgreSQL."
+
+      # Tag = short commit (trace); the digest is the only reference used to
+      # sign and deploy.
+      - name: Publish to the forge's registry
+        env:
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+        run: |
+          echo "$REGISTRY_TOKEN" | docker login "$REG" -u svc-ci --password-stdin
+          docker push -q "$IMAGE:$TAG"
+          REF="$(docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$IMAGE:$TAG" | grep "^$IMAGE@sha256:")"
+          echo "REF=$REF" >> "$GITHUB_ENV"
+
+      # Signed with the installation's cosign key (secrets of the `keycloak`
+      # repository, set by Ansible from the vault, the same as `engine` and
+      # `agent`). Signing configuration WITHOUT any service: nothing is sent to
+      # the public transparency log (Rekor) nor to a timestamp authority — the
+      # name and digest of an internal image do not leave the forge.
+      - name: Sign the image (cosign)
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+        run: |
+          curl -fsSLo /tmp/cosign "https://github.com/sigstore/cosign/releases/download/$COSIGN_VERSION/cosign-linux-amd64"
+          echo "$COSIGN_SHA256  /tmp/cosign" | sha256sum -c -
+          chmod 0755 /tmp/cosign
+          /tmp/cosign signing-config create --out /tmp/signing-config.json
+          /tmp/cosign sign --yes --key env://COSIGN_PRIVATE_KEY --signing-config /tmp/signing-config.json "$REF"
+          # The installation's versioned public key (images/engine/cosign.pub,
+          # copied to its original path) is the one the deployment will use:
+          # check with it, not with the private one.
+          /tmp/cosign verify --key images/engine/cosign.pub --insecure-ignore-tlog=true "$REF" > /dev/null
+          echo "OK: signature checked with the repository's public key."
+          echo "Keycloak digest: $REF"
+
+      - name: Clean up
+        if: always()
+        run: |
+          docker logout "$REG" > /dev/null 2>&1 || true
+          docker rmi "$IMAGE:$TAG" > /dev/null 2>&1 || true
+          rm -f /tmp/cosign /tmp/signing-config.json

@@ -1,0 +1,248 @@
+# First real Claude Code started by the executor IN SERVICE (note
+# docs/reflexions/2026-10-15-note-essai-executeur-claude.md) — can be rerun.
+#   ansible-playbook verify-executor-claude.yml -e ai_call=true   (PAID CALL)
+# Without -e ai_call=true, it stops before anything (guard, as verify-engine-claude.yml).
+# Expected cost: a few cents (overlap, Haiku 5.5, effort medium: MODELS_BY_ROLE);
+# engine cap: 4 $ per overlap task (DEFAULT_THRESHOLDS.task.overlap.budget_usd, provisional A-R5).
+#
+# 1. the executor (agents VM) switches to engine=claude through its role;
+# 2. the tool's repository is created on the forge from tool-template;
+# 3. request through the pilot's API; the first task of the cycle (overlap) is
+#    taken by the executor, which starts the real Claude Code;
+# 4. checks: task closed with a report, cost and tokens read, run by
+#    agent-executor (DBOS); no task leftover on the agents VM;
+# 5. cleanup guaranteed: cycle cancelled, executor back to the fake, repository deleted.
+# Prerequisites: site.yml, verify-engine.yml and verify-agents.yml green.
+- name: Executor with the Claude Code engine
+  hosts: agents
+  become: true
+  gather_facts: false
+  vars:
+    ai_call: false
+  tasks:
+    - name: Guard — paid call only on request
+      ansible.builtin.assert:
+        that: ai_call | bool
+        fail_msg: "Paid call: run again with -e ai_call=true"
+        quiet: true
+
+    - name: Unique name of the trial tool
+      ansible.builtin.set_fact:
+        trial_slug: "check-exec-{{ lookup('ansible.builtin.pipe', 'date -u +%Y%m%d%H%M%S') }}"
+
+    - name: Switch the executor to engine=claude
+      ansible.builtin.include_role:
+        name: executor
+      vars:
+        executor_claude_engine: true
+
+- name: A task of the pilot, run by the executor with the real Claude Code
+  hosts: orchestrator
+  become: true
+  gather_facts: false
+  vars:
+    engine_api: http://127.0.0.1:8080
+    trial_slug: "{{ hostvars[groups['agents'][0]].trial_slug }}"
+    check_forge: "{{ groups['forge'][0] }}"
+    forge_api: "{{ hostvars[check_forge].gitea_api }}"
+    forge_org: "{{ hostvars[check_forge].gitea_org }}"
+    psql: [docker, compose, exec, -T, db, psql, -U, orchestrator, -d, orchestrator, -tAc]
+  module_defaults:
+    ansible.builtin.command:
+      chdir: /opt/eupadev/orchestrator
+  tasks:
+    - name: Trial (cleanup guaranteed)
+      block:
+        - name: Create the tool's repository from the template (agents' instructions)
+          ansible.builtin.uri:
+            url: "{{ forge_api }}/repos/{{ forge_org }}/tool-template/generate"
+            method: POST
+            url_username: "{{ gitea_admin_user }}"
+            url_password: "{{ vault_gitea_admin_password }}"
+            force_basic_auth: true
+            body_format: json
+            body: { owner: "{{ forge_org }}", name: "{{ trial_slug }}", private: true, git_content: true }
+            status_code: 201
+          delegate_to: "{{ check_forge }}"
+
+        - name: Read the teams of the organisation
+          ansible.builtin.uri:
+            url: "{{ forge_api }}/orgs/{{ forge_org }}/teams?limit=50"
+            url_username: "{{ gitea_admin_user }}"
+            url_password: "{{ vault_gitea_admin_password }}"
+            force_basic_auth: true
+          register: teams
+          delegate_to: "{{ check_forge }}"
+
+        # As GiteaForge.createRepo does: svc-agent only sees the repositories of the agents team.
+        - name: Assign the repository to the agents team
+          ansible.builtin.uri:
+            url: "{{ forge_api }}/teams/{{ (teams.json | selectattr('name', 'equalto', 'agents') | first).id }}/repos/{{ forge_org }}/{{ trial_slug }}"
+            method: PUT
+            url_username: "{{ gitea_admin_user }}"
+            url_password: "{{ vault_gitea_admin_password }}"
+            force_basic_auth: true
+            status_code: 204
+          delegate_to: "{{ check_forge }}"
+
+        - name: Requester token
+          ansible.builtin.include_tasks: tasks/engine-token.yml
+          vars: { engine_hat: requester }
+
+        - name: New request through the pilot's API
+          ansible.builtin.uri:
+            url: "{{ engine_api }}/requests"
+            method: POST
+            headers: { X-EupaDev: "1", Authorization: "Bearer {{ engine_token }}", Idempotency-Key: "{{ trial_slug }}" }
+            body_format: json
+            body:
+              type: creation
+              name: Claude executor trial
+              slug: "{{ trial_slug }}"
+              owner_service: lab
+              need: "Lab check: track lent gear"
+            status_code: 201
+          register: request
+
+        - name: Keep the cycle
+          ansible.builtin.set_fact:
+            trial_cycle: "{{ request.json.cycle_id }}"
+
+        # Duration cap of the overlap task: 60 min (DEFAULT_THRESHOLDS.task.overlap.duration_min, provisional A-R5);
+        # the wait goes beyond it (380 × 10 s), so that the task's timer decides before the playbook.
+        - name: Wait for the end of the overlap task
+          ansible.builtin.command:
+            argv: "{{ psql + [sql] }}"
+          vars:
+            sql: >-
+              select status from tasks where cycle_id = {{ trial_cycle | int }} and role = 'overlap'
+              order by attempt desc limit 1
+          register: task_status
+          until: task_status.stdout | trim in ['done', 'blocked', 'failed']
+          retries: 380
+          delay: 10
+          changed_when: false
+
+        - name: Read the task and its executor (DBOS)
+          ansible.builtin.command:
+            argv: "{{ psql + [sql] }}"
+          vars:
+            sql: >-
+              select json_build_object('status', t.status, 'cost', t.cost_usd, 'input', t.input_tokens,
+                'output', t.output_tokens, 'duration', t.duration_s, 'report', t.report is not null,
+                'summary', left(coalesce(t.report->>'summary', ''), 300), 'executor', w.executor_id)
+              from tasks t left join dbos.workflow_status w on w.workflow_uuid = 'task-' || t.id
+              where t.cycle_id = {{ trial_cycle | int }} and t.role = 'overlap' order by t.attempt desc limit 1
+          register: task_read
+          changed_when: false
+
+        - name: Task run by the executor, real report, cost and tokens read
+          vars:
+            t: "{{ task_read.stdout | from_json }}"
+          ansible.builtin.assert:
+            that:
+              - t.status in ['done', 'blocked']
+              - t.report
+              - t.executor == 'agent-executor'
+              - 0 < t.cost | float <= 3
+              - t.input > 0 and t.output > 0
+            success_msg: "OK — {{ t.status }} by {{ t.executor }}, {{ t.cost }} $, {{ t.input }}/{{ t.output }} tokens, {{ t.duration }} s — {{ t.summary }}"
+            fail_msg: "FAILED — {{ task_read.stdout }}"
+            quiet: true
+
+      # Failure kept without stopping the recipe: otherwise Ansible stops here (no
+      # host left in this play) and the executor would stay with engine=claude.
+      rescue:
+        - name: Keep the failure (reported at the end, after going back to the fake)
+          ansible.builtin.set_fact:
+            trial_failure: "{{ ansible_failed_task.name }} — {{ ansible_failed_result.msg | default('') }}"
+
+      always:
+        - name: Admin token (cleanup)
+          ansible.builtin.include_tasks: tasks/engine-token.yml
+          vars: { engine_hat: admin }
+          when: trial_cycle is defined
+
+        - name: Cancel the trial cycle (no other paid task)
+          ansible.builtin.uri:
+            url: "{{ engine_api }}/messages"
+            method: POST
+            headers: { X-EupaDev: "1", Authorization: "Bearer {{ engine_token }}", Idempotency-Key: "{{ trial_slug }}-cancellation" }
+            body_format: json
+            body: "{{ {'cycle_id': trial_cycle | int, 'message': {'type': 'cancellation'}} }}"
+            status_code: 202
+          when: trial_cycle is defined
+          changed_when: true
+          failed_when: false
+
+        - name: Total cost of the trial cycle
+          ansible.builtin.command:
+            argv: "{{ psql + [sql] }}"
+          vars:
+            sql: >-
+              select coalesce(sum(cost_usd), 0) || ' $ — ' || coalesce(string_agg(role || ':' || status, ', '), '')
+              from tasks where cycle_id = {{ trial_cycle | int }}
+          register: total_cost
+          when: trial_cycle is defined
+          changed_when: false
+          failed_when: false
+
+        - name: Show the total cost
+          ansible.builtin.debug:
+            msg: "{{ total_cost.stdout | default('no cycle') }}"
+
+        - name: Delete the trial repository
+          ansible.builtin.uri:
+            url: "{{ forge_api }}/repos/{{ forge_org }}/{{ trial_slug }}"
+            method: DELETE
+            url_username: "{{ gitea_admin_user }}"
+            url_password: "{{ vault_gitea_admin_password }}"
+            force_basic_auth: true
+            status_code: [204, 404]
+          delegate_to: "{{ check_forge }}"
+
+- name: Executor back to the fake, no task leftover
+  hosts: agents
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Put the executor back to fake-auto
+      ansible.builtin.include_role:
+        name: executor
+
+    # The cancellation stops the running task: give the launcher time to clean up.
+    - name: Task leftovers on the VM (containers, networks, volumes)
+      ansible.builtin.shell:
+        cmd: |
+          set -eu
+          f="--filter label=eupadev.task -q"
+          docker ps -a $f; docker network ls $f; docker volume ls $f
+      register: leftovers
+      until: leftovers.stdout | trim == ''
+      retries: 12
+      delay: 10
+      changed_when: false
+
+    - name: Read the executor's engine
+      ansible.builtin.command:
+        argv: [docker, inspect, --format, "{{ '{{' }}range .Config.Env{{ '}}' }}{{ '{{' }}println .{{ '}}' }}{{ '{{' }}end{{ '}}' }}", executor-executor-1]
+      register: executor_env
+      changed_when: false
+
+    - name: Executor in fake-auto, no leftover
+      ansible.builtin.assert:
+        that: "'EUPADEV_EXTERNAL=fake-auto' in executor_env.stdout_lines"
+        success_msg: "OK — executor back to fake-auto; no task container, network or volume"
+        fail_msg: "FAILED — the executor did not come back to fake-auto"
+        quiet: true
+
+- name: Trial result
+  hosts: orchestrator
+  gather_facts: false
+  tasks:
+    - name: The trial succeeded
+      ansible.builtin.assert:
+        that: trial_failure is not defined
+        fail_msg: "FAILED — {{ trial_failure | default('') }}"
+        success_msg: "OK — trial succeeded"
+        quiet: true

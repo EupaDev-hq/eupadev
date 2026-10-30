@@ -1,0 +1,245 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "Version tracking of the EupaDev repository (GitHub). Choices and limits: the version-tracking note of 2026-10-13 (private notes).",
+  "extends": [
+    "config:recommended",
+    "docker:pinDigests",
+    "helpers:pinGitHubActionDigestsToSemver"
+  ],
+  "timezone": "Europe/Paris",
+  "labels": [
+    "dependencies"
+  ],
+  "schedule": [
+    "before 7am on monday"
+  ],
+  "minimumReleaseAge": "3 days",
+  "ignorePaths": [
+    "**/node_modules/**",
+    "infra/ansible/files/**"
+  ],
+  "vulnerabilityAlerts": {
+    "labels": [
+      "dependencies",
+      "security"
+    ],
+    "schedule": [
+      "at any time"
+    ],
+    "minimumReleaseAge": null
+  },
+  "osvVulnerabilityAlerts": true,
+  "packageRules": [
+    {
+      "description": "Docker images: minor, patch and digest updates grouped (major: one PR each).",
+      "matchDatasources": [
+        "docker"
+      ],
+      "matchUpdateTypes": [
+        "minor",
+        "patch",
+        "digest",
+        "pin",
+        "pinDigest"
+      ],
+      "groupName": "Docker images"
+    },
+    {
+      "description": "CI actions (GitHub and Gitea): minor and patch updates grouped.",
+      "matchManagers": [
+        "github-actions"
+      ],
+      "matchUpdateTypes": [
+        "minor",
+        "patch",
+        "digest",
+        "pin",
+        "pinDigest"
+      ],
+      "groupName": "CI actions"
+    },
+    {
+      "description": "pnpm dependencies: minor and patch updates grouped per project.",
+      "matchManagers": [
+        "npm"
+      ],
+      "matchUpdateTypes": [
+        "minor",
+        "patch"
+      ],
+      "groupName": "pnpm {{parentDir}}",
+      "additionalBranchPrefix": "{{parentDir}}-"
+    },
+    {
+      "description": "Check tools: binary of the golden image and Docker image of the same tool in a single PR.",
+      "matchPackageNames": [
+        "hadolint/hadolint"
+      ],
+      "groupName": "hadolint"
+    },
+    {
+      "description": "gitleaks: Go module rebuilt in the golden image and Docker image of verify.sh.",
+      "matchPackageNames": [
+        "gitleaks/gitleaks",
+        "zricethezav/gitleaks"
+      ],
+      "groupName": "gitleaks"
+    },
+    {
+      "description": "pnpm: packageManager, golden image (corepack) and guard-rails.sh must stay at the same version.",
+      "matchPackageNames": [
+        "pnpm",
+        "corepack"
+      ],
+      "groupName": "pnpm and corepack"
+    },
+    {
+      "description": "PostgreSQL: a major needs a dump/restore, never grouped.",
+      "matchDatasources": [
+        "docker"
+      ],
+      "matchPackageNames": [
+        "postgres"
+      ],
+      "matchUpdateTypes": [
+        "major"
+      ],
+      "labels": [
+        "dependencies",
+        "postgres-major"
+      ]
+    },
+    {
+      "description": "PRIORITY: Gitea and its runner (frequent security advisories, no free LTS): PR as soon as published, at any time, before the others.",
+      "matchDatasources": [
+        "docker"
+      ],
+      "matchPackageNames": [
+        "gitea/gitea",
+        "gitea/runner",
+        "gitea/runner-images"
+      ],
+      "groupName": "Gitea and runner",
+      "schedule": [
+        "at any time"
+      ],
+      "minimumReleaseAge": null,
+      "prPriority": 10,
+      "labels": [
+        "dependencies",
+        "gitea"
+      ]
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Images pinned tag@sha256 outside the files read natively: docker run of workflows and scripts, TypeScript constants, Ansible variables.",
+      "managerFilePatterns": [
+        "/(^|/)\\.(github|gitea)/workflows/[^/]+\\.ya?ml$/",
+        "/\\.sh$/",
+        "/(^|/)[^/]+\\.ts$/",
+        "/^infra/ansible/.+\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        "(?:^|[\\s'\"=])(?<depName>[a-z0-9][a-z0-9._/-]*):(?<currentValue>[A-Za-z0-9][A-Za-z0-9._-]*)@(?<currentDigest>sha256:[a-f0-9]{64})"
+      ],
+      "datasourceTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "description": "Actions pinned by SHA in workflows embedded in the Ansible playbooks (verify-ci.yml).",
+      "managerFilePatterns": [
+        "/^infra/ansible/.+\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        "uses: (?<depName>[\\w.-]+/[\\w.-]+)@(?<currentDigest>[a-f0-9]{40}) # (?<currentValue>v\\d+\\.\\d+\\.\\d+)"
+      ],
+      "datasourceTemplate": "github-tags"
+    },
+    {
+      "customType": "regex",
+      "description": "Binaries downloaded with ADD --checksum: the new sha256 sum is computed by the github-release-attachments datasource.",
+      "managerFilePatterns": [
+        "/(^|/)Dockerfile$/"
+      ],
+      "matchStrings": [
+        "--checksum=sha256:(?<currentDigest>[a-f0-9]{64})\\s*\\\\\\s*https://github\\.com/(?<depName>[^/]+/[^/]+)/releases/download/(?<currentValue>v[^/]+)/"
+      ],
+      "datasourceTemplate": "github-release-attachments"
+    },
+    {
+      "customType": "regex",
+      "description": "npm versions written literally: corepack and pnpm of the golden image, PNPM_VERSION of the guard rails.",
+      "managerFilePatterns": [
+        "/(^|/)Dockerfile$/",
+        "/(^|/)guard-rails\\.sh$/"
+      ],
+      "matchStrings": [
+        "(?<depName>corepack|pnpm)@(?<currentValue>\\d+\\.\\d+\\.\\d+)",
+        "PNPM_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "depNameTemplate": "{{#if depName}}{{depName}}{{else}}pnpm{{/if}}",
+      "datasourceTemplate": "npm"
+    },
+    {
+      "customType": "regex",
+      "description": "Claude Code of the agents' image (images/agent): same version number on npm and on downloads.claude.ai. PR reviewed, never merged on its own (ADR-013).",
+      "managerFilePatterns": [
+        "/(^|/)images/agent/Dockerfile$/"
+      ],
+      "matchStrings": [
+        "ARG CLAUDE_CODE_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "depNameTemplate": "@anthropic-ai/claude-code",
+      "datasourceTemplate": "npm"
+    },
+    {
+      "customType": "regex",
+      "description": "gitleaks rebuilt from its Go module (module version and displayed version).",
+      "managerFilePatterns": [
+        "/(^|/)Dockerfile$/"
+      ],
+      "matchStrings": [
+        "gitleaks/v8@v(?<currentValue>\\d+\\.\\d+\\.\\d+)",
+        "gitleaks/v8/version\\.Version=(?<currentValue>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "depNameTemplate": "gitleaks/gitleaks",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>.*)$"
+    },
+    {
+      "customType": "regex",
+      "description": "Caddy DNS module built by xcaddy (images/caddy): Go module pinned by tag.",
+      "managerFilePatterns": [
+        "/(^|/)images/caddy/Dockerfile$/"
+      ],
+      "matchStrings": [
+        "xcaddy build[^\\n]*--with (?<depName>github\\.com/caddy-dns/[a-z0-9-]+)@(?<currentValue>v\\d+\\.\\d+\\.\\d+)"
+      ],
+      "datasourceTemplate": "go"
+    },
+    {
+      "customType": "regex",
+      "description": "golang.org/x modules raised by hand for gitleaks.",
+      "managerFilePatterns": [
+        "/(^|/)Dockerfile$/"
+      ],
+      "matchStrings": [
+        "(?<depName>golang\\.org/x/[a-z]+)@(?<currentValue>v\\d+\\.\\d+\\.\\d+)"
+      ],
+      "datasourceTemplate": "go"
+    },
+    {
+      "customType": "regex",
+      "description": "Python tools installed by pip with a pinned version in the workflows (ansible-lint).",
+      "managerFilePatterns": [
+        "/(^|/)\\.github/workflows/[^/]+\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        "pip\"? install [^\\n]*?(?<depName>[a-z0-9-]+)==(?<currentValue>\\d+(?:\\.\\d+)*)"
+      ],
+      "datasourceTemplate": "pypi"
+    }
+  ]
+}

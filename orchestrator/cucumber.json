@@ -1,0 +1,10 @@
+{
+  "default": {
+    "import": ["features/support/**/*.ts", "features/steps/**/*.ts"],
+    "tags": "not @to-wire",
+    "format": ["progress"],
+    "formatOptions": { "snippetInterface": "async-await" },
+    "publish": false,
+    "strict": true
+  }
+}

@@ -1,0 +1,41 @@
+# Reruns the publish.yml workflow (or pipeline_workflow) of the repository `repo` (e.g. a
+# security fix has just come out), waits for the end of THIS build and exposes its
+# result like tasks/wait-for-pipeline.yml (`pipeline`, `pipeline_jobs`).
+- name: Find the last existing build
+  ansible.builtin.uri:
+    url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/actions/runs"
+  register: runs_before
+
+- name: "Start the pipeline of {{ repo }}"
+  ansible.builtin.uri:
+    url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/actions/workflows/{{ pipeline_workflow | default('publish.yml') }}/dispatches"
+    method: POST
+    body: { ref: main }
+    status_code: [204]
+  changed_when: true
+
+- name: Wait for the end of the new build
+  ansible.builtin.uri:
+    url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/actions/runs"
+  register: runs_after
+  until: >-
+    runs_after.json.workflow_runs
+    | rejectattr('id', 'in', runs_before.json.workflow_runs | map(attribute='id') | list)
+    | selectattr('status', 'equalto', 'completed') | list | length > 0
+  retries: 120
+  delay: 10
+
+- name: Keep the new build
+  ansible.builtin.set_fact:
+    pipeline: >-
+      {{ runs_after.json.workflow_runs
+         | rejectattr('id', 'in', runs_before.json.workflow_runs | map(attribute='id') | list) | first }}
+
+- name: List its jobs
+  ansible.builtin.uri:
+    url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/actions/runs/{{ pipeline.id }}/jobs"
+  register: jobs_response
+
+- name: Keep the result of each job
+  ansible.builtin.set_fact:
+    pipeline_jobs: "{{ jobs_response.json.jobs | items2dict(key_name='name', value_name='conclusion') }}"

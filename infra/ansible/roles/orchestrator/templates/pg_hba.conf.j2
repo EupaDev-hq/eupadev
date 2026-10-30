@@ -1,0 +1,18 @@
+# Managed by Ansible (orchestrator role, db-tls.yml) — do not edit by hand.
+# First matching line = decision (PostgreSQL documentation, pg_hba.conf).
+# TYPE     DATABASE       ROLE         ADDRESS              METHOD
+# Local socket of the container: docker compose exec (root of the VM) only.
+local      all            all                               trust
+# Executor of the agents VM: TLS + password + client certificate signed by
+# the database authority, whose CN is the requested role.
+{% for ip in orchestrator_db_tls_clients %}
+hostssl    orchestrator   orch_engine  {{ ip }}/32  scram-sha-256  clientcert=verify-full
+{% endfor %}
+# Keycloak: its own database only, TLS + password; no other database for it.
+hostssl    keycloak       keycloak     samenet              scram-sha-256
+host       all            keycloak     all                  reject
+# Compose services (migrate, engine): TLS + password.
+hostssl    all            all          samenet              scram-sha-256
+# Everything else refused, in clear text as over TLS (CIS §6.8).
+hostnossl  all            all          all                  reject
+host       all            all          all                  reject

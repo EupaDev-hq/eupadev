@@ -1,0 +1,10 @@
+# gVisor: pinned version = dated channel of the official APT repository (a
+# dated channel holds one version and never moves). Upgrade: change
+# gvisor_version, rerun site.yml then verify-agents.yml.
+# Published versions: https://storage.googleapis.com/gvisor/releases/dists/release/main/binary-amd64/Packages
+gvisor_version: "20261005"
+
+# Signing key of the repository ("The gVisor Authors <gvisor-bot@google.com>",
+# fingerprint 6F1D F85E 3A71 C249 18E7  27D5 6FC6 D554 E32B D943, read on
+# 2026-10-13): sha256 of the published file, refused if it changes.
+gvisor_key_sha256: 757d2ebdf00cdc5661f88443e2bea848d3e2ded0780cbcd2d811be05e0c1d5dd

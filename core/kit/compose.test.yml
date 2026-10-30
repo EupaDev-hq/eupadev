@@ -1,0 +1,129 @@
+# Test Compose of the kit (§2.10, step 7): the tool as two instances behind Caddy, PostgreSQL (roles and
+# migrations of the core then of the tool), real Keycloak (test realm imported), Mailpit. Production posture for
+# the tool: read-only root, tmpfs /tmp, no capability, no-new-privileges, NODE_ENV=production.
+#
+# A single origin, http://localhost:3000, seen the same from the machine (browser, kit) and from the containers:
+# Caddy serves Keycloak there (/realms/, /resources/) and the tool; the two instances share Caddy's network
+# namespace (ports 3001 and 3002), so `localhost:3000` there is Caddy too (OIDC discovery, code exchange). These are
+# the addresses of the test realm (redirect_uri, post_logout_redirect_uri), unchanged. Note: docs/reflexions/2026-10-19-note-socle-kit.md (K6).
+#
+# Example tool (or another tool, below) mounted from the repository (no built image yet: A-R0, step 9, K7); CORE_SRC
+# replaces src/ in the two instances (deliberate mutations of tests/kit.test.js). OIDC_CLIENT_SECRET: the test
+# realm's, passed by the bench. Run by tests/kit.test.js (`pnpm test:kit`).
+# Another tool is described by four variables, set by its bench: TOOL_NAME (PostgreSQL database and roles),
+# TOOL_DIR (directory of the tool on the machine, mounted on /tool), TOOL_ROOT (working directory in the container:
+# /tool) and TOOL_CORE (the core the tool imports: /tool/node_modules/@eupadev/core, a single copy of the core's
+# classes, `instanceof Problem` included). Example: examples/requests/tests/kit.test.js.
+# A tool's own variables go in a file named by TOOL_VARS (optional, KEY=value lines). Mail: SMTP_URL and MAIL_FROM
+# point at Mailpit, whose API is published on 127.0.0.1 (random port) for the bench to read (kit/mailpit.js).
+name: eupadev-kit
+
+x-node: &node
+  image: node:24.22.1-trixie-slim@sha256:43b9ba1142b8dcf33fa8f922ca1be85714adc444e0586c7cf7726daaeabc1bea
+  user: node
+  read_only: true
+  tmpfs: [/tmp]
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  working_dir: ${TOOL_ROOT:-/core/tests/example}
+
+x-tool: &tool
+  <<: *node
+  network_mode: service:caddy
+  command: ["node", "${TOOL_CORE:-/core}/bin/start.js"]
+  volumes:
+    - ..:/core:ro
+    - ${CORE_SRC:-../src}:/core/src:ro
+    - ${TOOL_DIR:-../tests/example}:/tool:ro
+  depends_on:
+    migrate: { condition: service_completed_successfully }
+    keycloak: { condition: service_healthy }
+  env_file:
+    - { path: "${TOOL_VARS:-./none.vars}", required: false }
+  healthcheck:
+    test: ["CMD", "node", "-e", "fetch(`http://127.0.0.1:$${process.env['PORT']}/health`).then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+    interval: 2s
+    retries: 30
+  environment: &env
+    NODE_ENV: production
+    DATABASE_URL: postgres://${TOOL_NAME:-example}_app:test-app@postgres:5432/${TOOL_NAME:-example}
+    DATABASE_TLS: "off"
+    APP_URL: http://localhost:3000
+    OIDC_ISSUER: http://localhost:3000/realms/tools
+    OIDC_CLIENT_ID: trial-tool
+    OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:?secret of the trial-tool client of the test realm}
+    OIDC_TLS: "off"
+    TRUST_PROXY: 127.0.0.1
+    SMTP_URL: smtp://mailpit:1025
+    MAIL_FROM: noreply@example.test
+
+services:
+  postgres:
+    image: postgres:18.6-alpine@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873
+    environment:
+      POSTGRES_PASSWORD: test-admin
+      POSTGRES_DB: ${TOOL_NAME:-example}
+    # Port published for the bench only (reset of rate_limits between two checks).
+    ports: ["127.0.0.1::5432"]
+    tmpfs: [/var/lib/postgresql]
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "${TOOL_NAME:-example}"]
+      interval: 1s
+      retries: 60
+
+  # Roles of the tool (sql/roles.sql), as the platform does with a superuser.
+  roles:
+    image: postgres:18.6-alpine@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873
+    depends_on:
+      postgres: { condition: service_healthy }
+    environment:
+      PGPASSWORD: test-admin
+    volumes: ["../sql/roles.sql:/roles.sql:ro"]
+    command: ["psql", "-q", "-h", "postgres", "-U", "postgres", "-d", "${TOOL_NAME:-example}", "-v", "ON_ERROR_STOP=1", "-v", "tool=${TOOL_NAME:-example}",
+              "-v", "owner_password=test-owner", "-v", "app_password=test-app", "-v", "purge_password=test-purge", "-f", "/roles.sql"]
+
+  # Migrations of the core then of the tool, owner account (D14: outside the web process).
+  migrate:
+    <<: *node
+    depends_on:
+      roles: { condition: service_completed_successfully }
+    volumes: ["..:/core:ro", "${TOOL_DIR:-../tests/example}:/tool:ro"]
+    environment:
+      DATABASE_URL: postgres://${TOOL_NAME:-example}_owner:test-owner@postgres:5432/${TOOL_NAME:-example}
+      DATABASE_TLS: "off"
+    command: ["node", "${TOOL_CORE:-/core}/bin/migrate.js"]
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.8.1@sha256:79c623a22abacf3fe6c00a5fb30f5b7843d717b234033b80995891c06116d244
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_HOSTNAME: http://localhost:3000
+      KC_HTTP_ENABLED: "true"
+      KC_PROXY_HEADERS: xforwarded
+      KC_HEALTH_ENABLED: "true"
+    volumes: ["../tests/keycloak:/opt/keycloak/data/import:ro"]
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.0\\r\\n\\r\\n' >&3 && head -1 <&3 | grep -q ' 200'"]
+      interval: 2s
+      retries: 90
+
+  mailpit:
+    image: axllent/mailpit:v1.31.5@sha256:94f6b70c1436defae6799d9ac7ff0eeff9540465b842026d5cdb018f1c0234ea
+    ports: ["127.0.0.1::8025"]
+
+  caddy:
+    image: caddy:2.11.6-alpine@sha256:d44355d3c2149dc580ce2cac735955d1c08d3d00882c30489c241aa51a5c10d9
+    ports: ["127.0.0.1:3000:3000"]
+    volumes: ["./Caddyfile.test:/etc/caddy/Caddyfile:ro"]
+
+  tool-1:
+    <<: *tool
+    environment:
+      <<: *env
+      PORT: "3001"
+
+  tool-2:
+    <<: *tool
+    environment:
+      <<: *env
+      PORT: "3002"

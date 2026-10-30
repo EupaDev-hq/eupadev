@@ -1,0 +1,58 @@
+# E5 full cycle: durable token of svc-orchestrator for the pilot with the
+# real forge (forge=gitea: repository creation, integration, merge, CI and
+# Preview pipeline, registry digest). Same pattern as the executor's token
+# (roles/executor/tasks/token.yml): Gitea never shows a token twice, so the
+# one already encrypted on the VM is kept while the forge accepts it, else
+# recreated. Encrypted by systemd-creds with the other secrets of the VM.
+- name: Read the forge token already encrypted on the VM
+  ansible.builtin.command:
+    argv: [systemd-creds, decrypt, --newline=no, --name=orch_forge_token,
+           /etc/eupadev/credstore.encrypted/orch_forge_token, "-"]
+  register: orchestrator_token_read
+  changed_when: false
+  failed_when: false
+  check_mode: false  # read only
+  no_log: true
+
+# Call covered by the token's scopes (read:package).
+- name: Does the forge accept this token?
+  ansible.builtin.uri:
+    url: "{{ hostvars[groups['forge'][0]].gitea_api }}/packages/eupadev?limit=1"
+    headers:
+      Authorization: "token {{ orchestrator_token_read.stdout }}"
+    status_code: [200, 401, 403]
+  delegate_to: "{{ groups['forge'][0] }}"
+  register: orchestrator_token_trial
+  when: orchestrator_token_read.rc == 0
+  no_log: true
+
+- name: Create a new token (missing or refused)
+  when: orchestrator_token_read.rc != 0 or orchestrator_token_trial.status | default(0) != 200
+  module_defaults:
+    ansible.builtin.uri:
+      url_username: "{{ gitea_admin_user }}"
+      url_password: "{{ vault_gitea_admin_password }}"
+      force_basic_auth: true
+  block:
+    - name: Remove the engine's old token
+      ansible.builtin.uri:
+        url: "{{ hostvars[groups['forge'][0]].gitea_api }}/users/svc-orchestrator/tokens/engine"
+        method: DELETE
+        status_code: [204, 404]
+      delegate_to: "{{ groups['forge'][0] }}"
+
+    - name: Create the engine's token
+      ansible.builtin.uri:
+        url: "{{ hostvars[groups['forge'][0]].gitea_api }}/users/svc-orchestrator/tokens"
+        method: POST
+        body_format: json
+        body: { name: engine, scopes: ["write:repository", "write:organization", "read:package"] }
+        status_code: 201
+      delegate_to: "{{ groups['forge'][0] }}"
+      register: orchestrator_token_created
+      no_log: true
+
+- name: Remember the engine's token
+  ansible.builtin.set_fact:
+    orchestrator_forge_token: "{{ orchestrator_token_created.json.sha1 if orchestrator_token_created.json is defined else orchestrator_token_read.stdout }}"
+  no_log: true

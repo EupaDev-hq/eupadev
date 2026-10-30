@@ -1,0 +1,53 @@
+# Real test of the Docker storage — rerunnable, read only.
+#   ansible-playbook verify-storage.yml
+# On each VM: images and containers (containerd storage of Docker 29) are on
+# the separate Docker disk, nothing is left on the system disk, and the
+# garbage collector of the build cache is on. A full Docker disk must never
+# fill the system disk (ROADMAP §8.11, decision 1).
+- name: Verify the Docker storage
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Mount point of the containerd storage
+      ansible.builtin.command:
+        cmd: findmnt -no TARGET --target {{ containerd_root }}
+      register: storage_mount
+      changed_when: false
+
+    - name: The containerd storage is on the separate Docker disk
+      ansible.builtin.assert:
+        that: storage_mount.stdout | trim == '/var/lib/docker'
+        fail_msg: "{{ containerd_root }} is on {{ storage_mount.stdout }} instead of the Docker disk"
+
+    - name: Old location on the system disk
+      ansible.builtin.stat:
+        path: /var/lib/containerd
+      register: storage_old
+
+    - name: Nothing is left on the system disk
+      ansible.builtin.assert:
+        that: not storage_old.stat.exists
+        fail_msg: /var/lib/containerd still exists on the system disk
+
+    - name: Root actually used by containerd
+      ansible.builtin.command:
+        cmd: containerd config dump
+      register: storage_config
+      changed_when: false
+
+    - name: The root used by containerd is the configured one
+      ansible.builtin.assert:
+        that: storage_config.stdout is search('(?m)^root = ["\']' ~ containerd_root ~ '["\']$')
+        fail_msg: containerd does not use {{ containerd_root }}
+
+    - name: Docker daemon configuration
+      ansible.builtin.slurp:
+        src: /etc/docker/daemon.json
+      register: storage_daemon
+
+    - name: Build cache garbage collector on
+      ansible.builtin.assert:
+        that:
+          - (storage_daemon.content | b64decode | from_json).builder.gc.enabled
+          - (storage_daemon.content | b64decode | from_json).builder.gc.defaultKeepStorage == docker_buildkit_cache_max

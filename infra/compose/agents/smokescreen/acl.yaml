@@ -1,0 +1,16 @@
+# Allow-list of the egress of the agent containers (ROADMAP §8.16 L3).
+# The agents present no client certificate: they all fall under the
+# "default" rule (allow_missing_role, config.yaml). "enforce" = any name
+# missing from the list is refused, IP addresses written in clear included.
+# api.anthropic.com is missing on purpose: the AI goes through the AI proxy
+# (L4), which adds the key; an agent must never reach the API without it.
+# Private IPs (forge, database, lab VMs, Docker networks) are refused as well
+# by Smokescreen after DNS resolution, even for an allowed name.
+version: v1
+services: []
+default:
+  name: agents
+  project: eupadev
+  action: enforce
+  allowed_domains:
+    - registry.npmjs.org

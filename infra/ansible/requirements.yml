@@ -1,0 +1,13 @@
+# Ansible collections used by the recipes (installation:
+#   ansible-galaxy collection install -r requirements.yml).
+collections:
+  # Versions pinned per major branch (note 2026-10-15-note-ansible-core.md);
+  # read only from .ansible/collections (collections_path, ansible.cfg).
+  - name: community.general
+    version: ">=13.5.0,<14.0.0"
+  - name: ansible.posix
+    version: ">=2.2.0,<3.0.0"
+  # Certificates of the orchestrator database (verified TLS, client certificate
+  # of the executor): keys generated on the VMs, signed by the vault's authority.
+  - name: community.crypto
+    version: ">=3.5.0,<4.0.0"

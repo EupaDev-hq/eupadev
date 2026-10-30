@@ -1,0 +1,97 @@
+# One core tool on one target VM (included by the Gate 1 registration playbook
+# with loop_var `tool`): its database and roles on the tools database, its
+# secrets (systemd-creds, decrypted at boot by a systemd unit) and
+# its Gate 1 entry read by eupadev-deployer. Idempotent.
+- name: "Secrets already encrypted ({{ tool.slug }})"
+  ansible.builtin.command:
+    argv: [systemd-creds, decrypt, --newline=no, "--name=tool-{{ tool.slug }}-{{ item }}",
+           "/etc/eupadev/credstore.encrypted/tool-{{ tool.slug }}-{{ item }}", "-"]
+  loop: [db-owner, db-app, db-purge, oidc]
+  register: tool_secrets_read
+  changed_when: false
+  failed_when: false
+  check_mode: false  # read only
+  no_log: true
+
+# Generated once (letters and digits: nothing to escape in a URL or in psql),
+# then read back from the encrypted URL at every run.
+- name: "Database passwords ({{ tool.slug }})"
+  ansible.builtin.set_fact:
+    tool_passwords: >-
+      {%- set d = {} -%}
+      {%- for r in tool_secrets_read.results[:3] -%}
+        {%- set found = (r.stdout | regex_search(':([A-Za-z0-9]+)@', '\\1')) if r.rc == 0 else None -%}
+        {%- set _ = d.update({r.item[3:]: found[0] if found
+                               else lookup('ansible.builtin.password', '/dev/null', length=32, chars=['ascii_letters', 'digits'])}) -%}
+      {%- endfor -%}
+      {{ d }}
+  no_log: true
+
+- name: "Secret values ({{ tool.slug }})"
+  ansible.builtin.set_fact:
+    tool_values:
+      db-owner: "postgres://{{ tool.slug }}_owner:{{ tool_passwords.owner }}@tools-db:5432/{{ tool.slug }}"
+      db-app: "postgres://{{ tool.slug }}_app:{{ tool_passwords.app }}@tools-db:5432/{{ tool.slug }}"
+      db-purge: "postgres://{{ tool.slug }}_purge:{{ tool_passwords.purge }}@tools-db:5432/{{ tool.slug }}"
+      oidc: "{{ hostvars[groups['orchestrator'][0]].core_tools_oidc[tool.slug ~ ('' if core_tools_env == 'prod' else '-preview')] }}"
+  no_log: true
+
+- name: "Database ({{ tool.slug }})"
+  ansible.builtin.command:
+    argv: [docker, exec, -i, tools-db, psql, -U, postgres, -v, ON_ERROR_STOP=1, -f, "-"]
+    stdin: |
+      SELECT format('CREATE DATABASE %I', '{{ tool.slug }}')
+        WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '{{ tool.slug }}') \gexec
+  register: tool_db
+  changed_when: tool_db.stdout is search('CREATE DATABASE')
+
+# The core's own script (same file as the tool's core version on main);
+# passwords by \set on stdin, never as arguments (readable in `ps`).
+- name: "Roles of the tool ({{ tool.slug }})"
+  ansible.builtin.command:
+    argv: [docker, exec, -i, tools-db, psql, -U, postgres, -d, "{{ tool.slug }}", -v, ON_ERROR_STOP=1, -f, "-"]
+    stdin: |
+      \set tool '{{ tool.slug }}'
+      \set owner_password '{{ tool_passwords.owner }}'
+      \set app_password '{{ tool_passwords.app }}'
+      \set purge_password '{{ tool_passwords.purge }}'
+      {{ lookup('ansible.builtin.file', playbook_dir ~ '/../../core/sql/roles.sql') }}
+  register: tool_roles
+  changed_when: tool_roles.stdout is search('CREATE ROLE')
+  no_log: true
+
+- name: Encrypted secrets folder (root only)
+  ansible.builtin.file:
+    path: /etc/eupadev/credstore.encrypted
+    state: directory
+    mode: "0700"
+
+# An encrypted file differs every time (random): compare the decrypted value.
+- name: "Encrypt missing or changed secrets ({{ tool.slug }})"
+  ansible.builtin.command:
+    argv: [systemd-creds, encrypt, --with-key=auto, "--name=tool-{{ tool.slug }}-{{ item.item }}", "-",
+           "/etc/eupadev/credstore.encrypted/tool-{{ tool.slug }}-{{ item.item }}"]
+    stdin: "{{ tool_values[item.item] }}"
+    stdin_add_newline: false
+  loop: "{{ tool_secrets_read.results }}"
+  when: item.rc != 0 or item.stdout != tool_values[item.item]
+  changed_when: true
+  notify: Decrypt the tool secrets into /run
+  no_log: true
+
+- name: Gate 1 entries folder
+  ansible.builtin.file:
+    path: /etc/eupadev/tools
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+# No secret here: the OIDC client id and the retentions (S8).
+- name: "Gate 1 entry ({{ tool.slug }})"
+  ansible.builtin.copy:
+    dest: "/etc/eupadev/tools/{{ tool.slug }}.json"
+    content: "{{ {'client_id': tool.slug ~ ('' if core_tools_env == 'prod' else '-preview'), 'retentions': tool.retentions} | to_nice_json }}\n"
+    owner: root
+    group: root
+    mode: "0644"

@@ -1,0 +1,49 @@
+# Reviews the infra's Ansible playbooks on every change (ansible-lint,
+# "production" profile) and reruns the unit tests of the deployer script
+# (ADR-014). Touches no machine: a plain review.
+name: Infra — ansible-lint
+
+on:
+  push:
+    paths: ["infra/**", ".github/workflows/infra-lint.yml"]
+  pull_request:
+    paths: ["infra/**", ".github/workflows/infra-lint.yml"]
+
+# The pipeline's token can only read the repository.
+permissions:
+  contents: read
+
+jobs:
+  ansible-lint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: infra/ansible
+    env:
+      ANSIBLE_COLLECTIONS_PATH: ${{ github.workspace }}/infra/ansible/.ansible/collections
+    steps:
+      # Action pinned by its digest (a tag such as @v7 can be moved by its
+      # author).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Validation of the deployer's inputs (no Docker, no VM). -B: no
+      # __pycache__ left in the directory reviewed by ansible-lint.
+      - name: Test the deployer script
+        run: python3 -B roles/deployer/files/test_deployer.py
+
+      # ansible.cfg names a vault password file; there is no vault here
+      # (never versioned): a dummy password is enough to start.
+      - name: Install ansible-lint (pinned version)
+        run: |
+          echo dummy > "$HOME/.eupadev-vault-pass"
+          # Installed OUTSIDE the reviewed directory: otherwise ansible-lint
+          # reviews its own internal files (thousands of false reports).
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet ansible-lint==26.9.0
+
+      - name: Install the collections used by the playbooks
+        run: $RUNNER_TEMP/venv/bin/ansible-galaxy collection install -r requirements.yml -p .ansible/collections
+
+      - name: Review the playbooks
+        run: $RUNNER_TEMP/venv/bin/ansible-lint

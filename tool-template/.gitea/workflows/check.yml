@@ -1,0 +1,276 @@
+# Check and publication — one pipeline, two uses (ROADMAP §8.4):
+#   - push on an agent branch (agent/<role>…): every check, nothing is
+#     published;
+#   - push on main (merge after review): the same checks, then the image that
+#     was just built and checked is published in the forge's registry, with
+#     its digest, then signed (cosign, tools key): the deployer refuses an
+#     unsigned image. This is the ONLY build: the Preview, then the Prod,
+#     receive exactly this digest.
+#
+# The checks that need a deployed Preview (performance, accessibility,
+# simulated attack) are in preview-check.yml.
+#
+# Every tool has a pinned version: a version bump is a deliberate change,
+# never an accident.
+#
+# Two runners (ROADMAP §8.14 B):
+#   - ci-standard: secrets, tests, analysis, guard-rails. The tests job RUNS
+#     the agents' code: all of them run in the CI golden image (check tools
+#     preinstalled), WITHOUT any Docker access.
+#   - ci-image: the image job, the only one that drives Docker. The agents'
+#     code is only built there (docker build) and started in an isolated
+#     container.
+# This file is protected on agent branches: an agent cannot change runner.
+#
+# Image built by the platform's FIXED Dockerfile
+# (.gitea/image/Dockerfile, protected; A-R0): a Dockerfile of the agent is
+# refused at push time. The tool is a core tool (@eupadev/core): the
+# server, /health and port 3000 are the core's.
+
+name: Check
+
+on:
+  push:
+
+# ci-standard jobs: CI golden image (organisation variable CI_IMAGE),
+# pulled with the registry's read-only badge.
+jobs:
+  secrets:
+    runs-on: ci-standard
+    container:
+      image: ${{ vars.CI_IMAGE }}
+      credentials: { username: svc-deployment, password: "${{ secrets.REGISTRY_READ_TOKEN }}" }
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      # --redact: a secret found is never copied in clear into the logs.
+      # Configuration imposed from .gitea/ (protected): a .gitleaks.toml in the
+      # repository and "gitleaks:allow" comments have no effect. No option
+      # closes .gitleaksignore: it is refused at push on agent/**.
+      - name: No secret in the code (gitleaks)
+        run: gitleaks dir . --redact --exit-code 1 --verbose --ignore-gitleaks-allow --config .gitea/checks/gitleaks.toml
+
+  tests:
+    runs-on: ci-standard
+    container:
+      image: ${{ vars.CI_IMAGE }}
+      credentials: { username: svc-deployment, password: "${{ secrets.REGISTRY_READ_TOKEN }}" }
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      # Fixed commands: CI never reads the "scripts" field of package.json,
+      # which the agent can change ("test" rewritten, install scripts).
+      # Unconditional: a tool is always in Node, and without package.json the
+      # job fails (pnpm itself would pass without a word).
+      # @eupadev/core comes from the forge's npm registry, owner <org>-core
+      # (ADR-023: only svc-core writes packages there). The read-only
+      # badge is given to the install step ONLY, in a temporary user config
+      # keyed by the registry's host and path (never sent elsewhere), deleted
+      # at the end of the step. No script runs during the install, so the
+      # agent's code (next step) never sees the badge.
+      - name: Node — dependencies
+        env:
+          REGISTRY_READ_TOKEN: ${{ secrets.REGISTRY_READ_TOKEN }}
+        run: |
+          ls package.json > /dev/null
+          REG="$GITHUB_SERVER_URL/api/packages/${GITHUB_REPOSITORY%%/*}-core/npm/"
+          NPMRC="$(mktemp)"
+          trap 'rm -f "$NPMRC"' EXIT
+          printf '@eupadev:registry=%s\n%s:_authToken=%s\n' "$REG" "${REG#*:}" "$REGISTRY_READ_TOKEN" > "$NPMRC"
+          NPM_CONFIG_USERCONFIG="$NPMRC" pnpm install --frozen-lockfile --ignore-scripts --ignore-pnpmfile
+      - name: Node — tests
+        run: node --test
+
+  analysis:
+    runs-on: ci-standard
+    container:
+      image: ${{ vars.CI_IMAGE }}
+      credentials: { username: svc-deployment, password: "${{ secrets.REGISTRY_READ_TOKEN }}" }
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      # Rules in .opengrep/: every security rule that can be checked
+      # mechanically becomes a check there (the prompt guides, the code checks).
+      # --no-git-ignore: an agent's .gitignore removes no file from the
+      # analysis. .semgrepignore (root) is refused at push on agent/**.
+      # --sarif-output: the findings also as SARIF, for the engine (next step).
+      - name: Code analysis (Opengrep)
+        run: opengrep scan --config .opengrep --error --no-git-ignore --sarif-output=/tmp/opengrep.sarif .
+      # Read by the engine in this job's log (orchestrator/src/external/gitea-forge.ts,
+      # opengrepSarif): the marker line, then one SARIF result per line, so
+      # the fixing agent gets each finding's rule, file and identity.
+      - name: Findings for the engine (SARIF results)
+        if: failure()
+        run: |
+          [ -f /tmp/opengrep.sarif ] || exit 0
+          echo opengrep-sarif-results
+          node -e 'for (const r of JSON.parse(require("fs").readFileSync("/tmp/opengrep.sarif", "utf8")).runs?.[0]?.results ?? []) console.log(JSON.stringify(r))'
+
+  # What the agent must not be able to slip in (disabled tests, exception
+  # comments and files…), unless an unexpired line of the registry
+  # .gitea/exceptions.txt read on the forge's main allows it; licences of
+  # every dependency (allowed list of quality.md); dated Trivy exceptions
+  # (.trivyignore.yaml), 30 days at most; package.json without lifecycle
+  # script or devEngines.
+  # Runs NO code of the agent: only the protected scripts of .gitea/
+  # (dependencies installed without scripts or .pnpmfile).
+  guard-rails:
+    runs-on: ci-standard
+    container:
+      image: ${{ vars.CI_IMAGE }}
+      credentials: { username: svc-deployment, password: "${{ secrets.REGISTRY_READ_TOKEN }}" }
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      # The licence check installs the dependencies (core included): same
+      # read-only badge and temporary user config as the tests job.
+      - name: Exceptions in the registry, licences, dated Trivy exceptions (guard-rails)
+        env:
+          REGISTRY_READ_TOKEN: ${{ secrets.REGISTRY_READ_TOKEN }}
+        run: |
+          REG="$GITHUB_SERVER_URL/api/packages/${GITHUB_REPOSITORY%%/*}-core/npm/"
+          NPMRC="$(mktemp)"
+          trap 'rm -f "$NPMRC"' EXIT
+          printf '@eupadev:registry=%s\n%s:_authToken=%s\n' "$REG" "${REG#*:}" "$REGISTRY_READ_TOKEN" > "$NPMRC"
+          NPM_CONFIG_USERCONFIG="$NPMRC" sh .gitea/checks/guard-rails.sh
+
+  image:
+    runs-on: ci-image
+    timeout-minutes: 30
+    needs: [secrets, tests, analysis, guard-rails]
+    env:
+      IMAGE: check/${{ github.event.repository.name }}:${{ github.sha }}
+      TRIVY: trivy-${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      # Base = the forge's golden image (organisation variables), pulled with
+      # the read-only badge: the write badge only serves the publication on
+      # main. The platform's FIXED Dockerfile (-f), never a file of the agent.
+      # DOCKER_BUILDKIT=1: only BuildKit reads
+      # .gitea/image/Dockerfile.dockerignore; without BuildKit (no buildx),
+      # the build fails instead of falling back to the classic builder,
+      # which would ignore it.
+      - name: Build the image (from the golden image)
+        env:
+          REGISTRY_READ_TOKEN: ${{ secrets.REGISTRY_READ_TOKEN }}
+        run: |
+          echo "$REGISTRY_READ_TOKEN" | docker login "${GITHUB_SERVER_URL#https://}" -u svc-deployment --password-stdin
+          # On main (published image), build without the cache shared with the
+          # agent branches: no layer made on a branch ends up in a published
+          # image.
+          NO_CACHE=""
+          if [ "$GITHUB_REF" = "refs/heads/main" ]; then NO_CACHE="--no-cache"; fi
+          echo "Build: ${NO_CACHE:-with the cache}"
+          # @eupadev/core from the forge's npm registry: read-only badge
+          # and certificate authorities (lab: the forge's internal CA) passed
+          # as BuildKit secrets, never in a layer. The build's RUN steps do not
+          # see the job's /etc/hosts: the forge's address is passed explicitly.
+          REG="$GITHUB_SERVER_URL/api/packages/${GITHUB_REPOSITORY%%/*}-core/npm/"
+          NPMRC="$(mktemp)"
+          trap 'rm -f "$NPMRC"' EXIT
+          printf '@eupadev:registry=%s\n%s:_authToken=%s\n' "$REG" "${REG#*:}" "$REGISTRY_READ_TOKEN" > "$NPMRC"
+          FORGE="${GITHUB_SERVER_URL#https://}"
+          FORGE_IP="$(getent hosts "$FORGE" | awk '{ print $1; exit }')"
+          # Core version named in package.json: the fixed Dockerfile checks it is the
+          # one installed and labels the image with it (deployer's core mode).
+          CORE_VERSION="$(node -p 'require("./package.json").dependencies?.["@eupadev/core"] ?? ""')"
+          DOCKER_BUILDKIT=1 docker build --pull $NO_CACHE -f .gitea/image/Dockerfile -t "$IMAGE" \
+            --secret id=npmrc,src="$NPMRC" --secret id=ca,src=/etc/ssl/certs/ca-certificates.crt \
+            ${FORGE_IP:+--add-host "$FORGE:$FORGE_IP"} \
+            --build-arg BASE_IMAGE_BUILD="${{ vars.BASE_IMAGE_BUILD }}" \
+            --build-arg BASE_IMAGE_RUN="${{ vars.BASE_IMAGE_RUN }}" --build-arg CORE_VERSION="$CORE_VERSION" .
+
+      # Vulnerability database kept from one run to the next (trivy-cache
+      # volume). Dated exceptions: .trivyignore.yaml, written by a human on
+      # main (refused at push on agent/**), 30 days at most (checked by
+      # guard-rails); after the date, Trivy puts the vulnerability back in its
+      # results. The Trivy container runs on the VM's Docker: "-v $PWD/…"
+      # would name a path of the VM, not of the job. The file is therefore
+      # copied into the created container (docker cp), before it starts.
+      - name: Known vulnerabilities in the image (Trivy)
+        run: |
+          EXCEPTIONS=""
+          if [ -f .trivyignore.yaml ]; then EXCEPTIONS="--ignorefile /trivyignore.yaml"; fi
+          docker create --name "$TRIVY" -v /var/run/docker.sock:/var/run/docker.sock \
+            -v trivy-cache:/root/.cache/ aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa image \
+            --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed $EXCEPTIONS "$IMAGE" > /dev/null
+          if [ -n "$EXCEPTIONS" ]; then
+            docker cp .trivyignore.yaml "$TRIVY:/trivyignore.yaml"
+            echo "Dated Trivy exceptions passed on (.trivyignore.yaml)"
+          fi
+          docker start -a "$TRIVY"
+
+      # A successful build does not prove that the tool starts: the core needs
+      # its database and the identity provider's discovery document. Protected
+      # script: read-only image, uid 1000, no capability, throwaway database,
+      # roles and migration by the same image, then 200 on /health and / (step 9.7).
+      - name: The image starts read-only, migrated, and answers (throwaway database)
+        run: sh .gitea/checks/boot-check.sh "$IMAGE"
+
+      # The process (user node) cannot rewrite its own code: the files of /app
+      # belong to root (COPY without --chown in the fixed Dockerfile).
+      - name: The image's code is not writable
+        run: |
+          # An existing file (package.json) and a new file in /app.
+          docker run --rm --network none --entrypoint node "$IMAGE" -e '
+            let ko = 0;
+            for (const f of ["/app/package.json", "/app/write-trial"]) {
+              try { require("fs").writeFileSync(f, ""); console.log(`${f} written by the process: /app writable`); ko = 1; }
+              catch (e) { if (e.code === "EACCES") console.log(`${f}: EACCES`); else { console.log(`${f}: ${e.code}`); ko = 1; } }
+            }
+            process.exit(ko);'
+
+      # Only on main: the only publication, with the robot account svc-ci
+      # (token in the organisation's secrets, single right: push images).
+      - name: Publish in the forge's registry (main only)
+        if: gitea.ref == 'refs/heads/main'
+        env:
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+        run: |
+          REG="${GITHUB_SERVER_URL#https://}"
+          REF="$(echo "$REG/${{ github.repository }}:${{ github.sha }}" | tr 'A-Z' 'a-z')"
+          echo "$REGISTRY_TOKEN" | docker login "$REG" -u svc-ci --password-stdin
+          docker tag "$IMAGE" "$REF"
+          docker push -q "$REF"
+          echo "Image published: $REF"
+          # Digest given by the registry (the one Preview and Prod will receive).
+          DIGEST="$(docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$REF" | grep "^${REF%:*}@sha256:")"
+          echo "Digest: $DIGEST"
+          echo "DIGEST=$DIGEST" >> "$GITHUB_ENV"
+          docker rmi "$REF" > /dev/null
+
+      # Signature of the published image, named by its digest, with the TOOLS'
+      # cosign key (organisation secrets, set by Ansible from the vault;
+      # distinct from the key of the engine and the agents, ADR-014). The
+      # deployer refuses any tool image without this signature. No public
+      # transparency log nor timestamp authority: the name and digest of an
+      # internal tool do not leave the forge. Registry login (svc-ci) still
+      # open: the signature is pushed there next to the image.
+      - name: Sign the published image (main only, cosign)
+        if: gitea.ref == 'refs/heads/main'
+        env:
+          # Official binary, checked against its sha256 (cosign_checksums.txt of
+          # the release published on GitHub).
+          COSIGN_VERSION: v3.1.3
+          COSIGN_SHA256: 4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_TOOLS_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_TOOLS_PASSWORD }}
+        run: |
+          if [ -z "$COSIGN_PRIVATE_KEY" ]; then
+            echo "Tools signing key missing (organisation secret COSIGN_TOOLS_PRIVATE_KEY): image not signed, not deployable."
+            exit 1
+          fi
+          curl -fsSLo /tmp/cosign "https://github.com/sigstore/cosign/releases/download/$COSIGN_VERSION/cosign-linux-amd64"
+          echo "$COSIGN_SHA256  /tmp/cosign" | sha256sum -c -
+          chmod 0755 /tmp/cosign
+          /tmp/cosign signing-config create --out /tmp/signing-config.json
+          /tmp/cosign sign --yes --key env://COSIGN_PRIVATE_KEY --signing-config /tmp/signing-config.json "$DIGEST"
+          echo "Image signed (tools key): $DIGEST"
+
+      - name: Clean up
+        if: always()
+        run: |
+          docker rm -f "$TRIVY" > /dev/null 2>&1 || true
+          docker rmi "$IMAGE" > /dev/null 2>&1 || true
+          docker logout "${GITHUB_SERVER_URL#https://}" > /dev/null 2>&1 || true
+          rm -f /tmp/cosign /tmp/signing-config.json

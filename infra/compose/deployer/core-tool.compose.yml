@@ -1,0 +1,79 @@
+# Core mode of the platform Compose model (ADR-022, d5): merged over
+# tool.compose.yml by eupadev-deployer (`-f tool.compose.yml -f <this>`)
+# when the image carries the label eupadev.core AND the tool has its
+# Gate 1 entry (register-tools.yml). Same variables as the base model,
+# plus HOST, ISSUER, CLIENT, TRUST_PROXY, all set by the script. Secrets are
+# files decrypted in memory by eupadev-tools-secrets.service, mounted
+# read-only: never in the environment nor in `docker inspect`.
+#
+# Contract with a core tool image (WORKDIR = the tool's root):
+#   migration: node node_modules/@eupadev/core/bin/migrate.js (owner account),
+#           run once by `docker compose run --rm migrate` before any traffic;
+#   purge: node node_modules/@eupadev/core/bin/purge.js (purge account,
+#           RETENTION_* added by the script from the Gate 1 entry), Prod only;
+#   tool:  the image's own CMD, GET /health on port 3000 (needs the database).
+x-core: &core
+  image: ${IMAGE:?}
+  pull_policy: never
+  user: "1000:1000"
+  read_only: true
+  tmpfs:
+    - /tmp:size=16m,uid=1000,gid=1000,mode=0700
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  mem_limit: 256m
+  cpus: 0.5
+  pids_limit: 128
+  restart: "no"
+  networks: [tool]
+  # Only by `docker compose run`, never by `up`.
+  profiles: [core]
+
+services:
+  tool:
+    environment:
+      APP_URL: https://${HOST:?}
+      OIDC_ISSUER: ${ISSUER:?}
+      OIDC_CLIENT_ID: ${CLIENT:?}
+      OIDC_CLIENT_SECRET_FILE: /run/secrets/oidc
+      DATABASE_URL_FILE: /run/secrets/db_app
+      DATABASE_CA_FILE: /run/secrets/db_ca
+      # Egress: the identity provider only, through the VM's Smokescreen
+      # (S6); Node reads the proxy variables only with NODE_USE_ENV_PROXY.
+      HTTPS_PROXY: http://deployer-smokescreen-1:4750
+      NODE_USE_ENV_PROXY: "1"
+      # The VM's trusted authorities (the identity provider's certificate).
+      NODE_EXTRA_CA_CERTS: /run/secrets/ca
+      # Subnet of the tool network: only Caddy sends requests there.
+      TRUST_PROXY: ${TRUST_PROXY:?}
+    secrets: [oidc, db_app, db_ca, ca]
+
+  migrate:
+    <<: *core
+    command: [node, node_modules/@eupadev/core/bin/migrate.js]
+    environment:
+      DATABASE_URL_FILE: /run/secrets/db_owner
+      DATABASE_CA_FILE: /run/secrets/db_ca
+    secrets: [db_owner, db_ca]
+
+  purge:
+    <<: *core
+    command: [node, node_modules/@eupadev/core/bin/purge.js]
+    environment:
+      DATABASE_URL_FILE: /run/secrets/db_purge
+      DATABASE_CA_FILE: /run/secrets/db_ca
+    secrets: [db_purge, db_ca]
+
+secrets:
+  oidc:
+    file: /run/eupadev/tools/tool-${TOOL:?}-oidc
+  db_owner:
+    file: /run/eupadev/tools/tool-${TOOL:?}-db-owner
+  db_app:
+    file: /run/eupadev/tools/tool-${TOOL:?}-db-app
+  db_purge:
+    file: /run/eupadev/tools/tool-${TOOL:?}-db-purge
+  db_ca:
+    file: /opt/eupadev/tools-db/tls/ca.crt
+  ca:
+    file: /etc/ssl/certs/ca-certificates.crt

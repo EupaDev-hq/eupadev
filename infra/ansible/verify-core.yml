@@ -1,0 +1,283 @@
+# Real test of the core's publication to the forge's npm registry
+# (docs/reflexions/2026-10-22-note-socle-registry.md) — rerunnable, leaves
+# nothing behind (temporary badges deleted in `always`).
+#   ansible-playbook verify-core.yml </dev/null
+# Prerequisite: site.yml has synced the `core` platform repository.
+# Waits for the pipeline of the last commit of `core`, then checks:
+#   1. the pipeline is green; 1b. the publication badge (CORE_PUBLISH_TOKEN)
+#      is a secret of the core repository, not of the organisation;
+#   2. the version of core/package.json is in the registry, and its tarball
+#      URL has the shape guard G4 accepts (https://<forge>/api/packages/<org>/npm/);
+#   3. the read-only badge (svc-deployment, read:package) reads metadata and
+#      tarball; without a badge: 401; the read-only badge cannot publish;
+#   4. the published version cannot be overwritten (409), even by the
+#      publication badge (svc-core, write:package) with the very same tarball;
+#   5. a rerun of the pipeline is green and publishes nothing (idempotent);
+#   6. own owner (ADR-023): svc-core is no member of gitea_org; the tools'
+#      write badge (svc-ci) cannot publish under the core owner; a fake
+#      @eupadev/core it publishes under gitea_org (accepted: Gitea does not
+#      tie the scope to the owner) never appears in the core owner's registry,
+#      the only one the tools' scope registry and guard G4 accept (fake deleted).
+- name: Verify the core's publication
+  hosts: forge
+  become: true
+  vars:
+    repo: core
+    check_badge: check-core
+    check_version: "{{ (lookup('ansible.builtin.file', playbook_dir ~ '/../../core/package.json') | from_json).version }}"
+    check_npm: "http://127.0.0.1:3000/api/packages/{{ gitea_core_org.org }}/npm"
+    check_npm_tools: "http://127.0.0.1:3000/api/packages/{{ gitea_org }}/npm"
+    check_fake: 0.0.0-check-fake
+  module_defaults:
+    ansible.builtin.uri:
+      url_username: "{{ gitea_admin_user }}"
+      url_password: "{{ vault_gitea_admin_password }}"
+      force_basic_auth: true
+      body_format: json
+      return_content: true
+  tasks:
+    - name: Read the last commit of core
+      ansible.builtin.uri:
+        url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/branches/main"
+      register: main_branch
+
+    - name: Wait for the pipeline of the last commit
+      ansible.builtin.include_tasks: tasks/wait-for-pipeline.yml
+      vars:
+        commit_sha: "{{ main_branch.json.commit.id }}"
+
+    - name: "1. The core's pipeline is green"
+      ansible.builtin.assert:
+        that: pipeline.conclusion == 'success'
+        success_msg: "OK — green pipeline"
+        fail_msg: "FAILED — {{ pipeline.conclusion }} ({{ pipeline_jobs }}) — {{ pipeline.html_url }}"
+
+    - name: List the secrets of the core repository and of the organisation
+      ansible.builtin.uri:
+        url: "{{ gitea_api }}/{{ item }}/actions/secrets"
+      loop: ["repos/{{ gitea_org }}/{{ repo }}", "orgs/{{ gitea_org }}"]
+      register: check_secrets
+
+    - name: "1b. The publication badge is a secret of the core repository only"
+      ansible.builtin.assert:
+        that:
+          - "'CORE_PUBLISH_TOKEN' in (check_secrets.results[0].json | map(attribute='name'))"
+          - "'CORE_PUBLISH_TOKEN' not in (check_secrets.results[1].json | map(attribute='name'))"
+        success_msg: "OK — CORE_PUBLISH_TOKEN in the core repository, not in the organisation"
+        fail_msg: "FAILED — CORE_PUBLISH_TOKEN missing from the core repository or present in the organisation"
+
+    - name: Tests with temporary badges (cleanup guaranteed)
+      block:
+        - name: Remove temporary badges left by an interrupted run
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/users/{{ item }}/tokens/{{ check_badge }}"
+            method: DELETE
+            status_code: [204, 404]
+          loop: [svc-deployment, svc-core, svc-ci]
+
+        - name: Create the temporary badges (read, core write, tools write)
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/users/{{ item.user }}/tokens"
+            method: POST
+            body: { name: "{{ check_badge }}", scopes: ["{{ item.scope }}"] }
+            status_code: 201
+          loop:
+            - { user: svc-deployment, scope: "read:package" }
+            - { user: svc-core, scope: "write:package" }
+            - { user: svc-ci, scope: "write:package" }
+          register: check_badges
+          changed_when: false
+          no_log: true
+
+        - name: Keep the badges' values only
+          ansible.builtin.set_fact:
+            check_read: "{{ check_badges.results[0].json.sha1 }}"
+            check_write: "{{ check_badges.results[1].json.sha1 }}"
+            check_tools: "{{ check_badges.results[2].json.sha1 }}"
+          no_log: true
+
+        # Gitea builds the tarball URL from the request (Host, X-Forwarded-Proto):
+        # read through Caddy, like the tools' CI, not through 127.0.0.1:3000.
+        - name: Read Caddy's root certificate (lab internal authority)
+          ansible.builtin.command:
+            cmd: docker compose exec -T caddy cat /data/caddy/pki/authorities/local/root.crt
+            chdir: /opt/eupadev/forge
+          register: check_ca
+          changed_when: false
+          when: caddy_tls == 'internal'
+
+        - name: Write it for the HTTPS read
+          ansible.builtin.copy:
+            dest: /run/check-core-ca.crt
+            content: "{{ check_ca.stdout }}\n"
+            mode: "0644"
+          when: caddy_tls == 'internal'
+
+        - name: Read the core's metadata with the read-only badge, through the forge's public URL
+          ansible.builtin.uri:
+            url: "https://{{ gitea_domain }}/api/packages/{{ gitea_core_org.org }}/npm/@eupadev/core"
+            ca_path: "{{ '/run/check-core-ca.crt' if caddy_tls == 'internal' else omit }}"
+            url_username: ""
+            url_password: ""
+            force_basic_auth: false
+            headers: { Authorization: "token {{ check_read }}" }
+          register: check_meta
+          no_log: true
+
+        - name: Keep the published version's fields
+          ansible.builtin.set_fact:
+            check_dist: "{{ check_meta.json.versions[check_version].dist | default({}) }}"
+
+        - name: "2. The version is published, tarball URL in the shape G4 accepts: {{ check_version }}"
+          ansible.builtin.assert:
+            that:
+              - check_dist.integrity is defined
+              - check_dist.tarball is match('https://' ~ gitea_domain ~ '/api/packages/' ~ gitea_core_org.org ~ '/npm/')
+            success_msg: "OK — @eupadev/core@{{ check_version }} : {{ check_dist.tarball }}"
+            fail_msg: "FAILED — version {{ check_version }} absent or unexpected tarball URL: {{ check_dist }}"
+
+        - name: Download the tarball with the read-only badge
+          ansible.builtin.uri:
+            url: "{{ check_dist.tarball | regex_replace('^https://[^/]+', 'http://127.0.0.1:3000') }}"
+            url_username: ""
+            url_password: ""
+            force_basic_auth: false
+            headers: { Authorization: "token {{ check_read }}" }
+            dest: /run/check-core.tgz
+            mode: "0600"
+            return_content: false  # binary: not a valid UTF-8 result
+          no_log: true
+
+        - name: Without a badge, metadata refused
+          ansible.builtin.uri:
+            url: "{{ check_npm }}/@eupadev/core"
+            url_username: ""
+            url_password: ""
+            force_basic_auth: false
+            status_code: [200, 401, 403, 404]
+          register: check_anonymous
+
+        - name: Read the downloaded tarball
+          ansible.builtin.slurp:
+            src: /run/check-core.tgz
+          register: check_tgz
+
+        # Same body as `pnpm publish` (one version, its tarball, its integrity):
+        # Gitea checks the rights first, then the integrity, then duplicates.
+        - name: Publish attempts — read badge, core badge (same version), tools' write badge
+          ansible.builtin.uri:
+            url: "{{ check_npm }}/@eupadev%2fcore"
+            method: PUT
+            url_username: ""
+            url_password: ""
+            force_basic_auth: false
+            headers: { Authorization: "token {{ item }}" }
+            # Keys built in Jinja (version and file name are variables).
+            body: >-
+              {{ {'_id': '@eupadev/core', 'name': '@eupadev/core',
+                  'versions': {check_version: {'name': '@eupadev/core', 'version': check_version,
+                               'dist': {'integrity': check_dist.integrity, 'shasum': check_dist.shasum | default('')}}},
+                  '_attachments': {('core-' ~ check_version ~ '.tgz'): {'content_type': 'application/octet-stream',
+                                                                         'data': check_tgz.content}}} }}
+            status_code: [201, 400, 401, 403, 409]
+          loop: ["{{ check_read }}", "{{ check_write }}", "{{ check_tools }}"]
+          register: check_publish
+          no_log: true
+
+        - name: "3. Read-only badge: reads, cannot publish; no badge: refused"
+          ansible.builtin.assert:
+            that:
+              - check_anonymous.status == 401
+              - check_publish.results[0].status in [401, 403]
+            success_msg: "OK — anonymous {{ check_anonymous.status }}, publication with the read badge {{ check_publish.results[0].status }}"
+            fail_msg: "FAILED — anonymous {{ check_anonymous.status }}, publication with the read badge {{ check_publish.results[0].status }}"
+
+        - name: "4. A published version is never overwritten (409)"
+          ansible.builtin.assert:
+            that: check_publish.results[1].status == 409
+            success_msg: "OK — republication of {{ check_version }} refused (409)"
+            fail_msg: "FAILED — republication of {{ check_version }}: HTTP {{ check_publish.results[1].status }}"
+
+        - name: Is svc-core a member of the tools' organisation?
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/orgs/{{ gitea_org }}/members/svc-core"
+            status_code: [204, 404]
+          register: check_member
+
+        - name: Fake core published under the tools' organisation with the tools' write badge
+          ansible.builtin.uri:
+            url: "{{ check_npm_tools }}/@eupadev%2fcore"
+            method: PUT
+            url_username: ""
+            url_password: ""
+            force_basic_auth: false
+            headers: { Authorization: "token {{ check_tools }}" }
+            body: >-
+              {{ {'_id': '@eupadev/core', 'name': '@eupadev/core',
+                  'versions': {check_fake: {'name': '@eupadev/core', 'version': check_fake,
+                               'dist': {'integrity': check_dist.integrity, 'shasum': check_dist.shasum | default('')}}},
+                  '_attachments': {('core-' ~ check_fake ~ '.tgz'): {'content_type': 'application/octet-stream',
+                                                                       'data': check_tgz.content}}} }}
+            status_code: [201, 400, 401, 403, 409]
+          register: check_fake_published
+          no_log: true
+
+        - name: Read the core owner's metadata again
+          ansible.builtin.uri:
+            url: "{{ check_npm }}/@eupadev/core"
+            url_username: ""
+            url_password: ""
+            force_basic_auth: false
+            headers: { Authorization: "token {{ check_read }}" }
+          register: check_meta_after
+          no_log: true
+
+        - name: "6. Own owner: only svc-core publishes the core; a fake elsewhere is never served"
+          ansible.builtin.assert:
+            that:
+              - check_member.status == 404
+              - check_publish.results[2].status in [401, 403]
+              - check_fake not in check_meta_after.json.versions
+            success_msg: >-
+              OK — svc-core outside {{ gitea_org }}; tools' badge refused under {{ gitea_core_org.org }}
+              ({{ check_publish.results[2].status }}); fake under {{ gitea_org }} (HTTP {{ check_fake_published.status }}) not served
+            fail_msg: >-
+              FAILED — svc-core member of {{ gitea_org }}: {{ check_member.status == 204 }}; tools' badge under
+              {{ gitea_core_org.org }}: HTTP {{ check_publish.results[2].status }}; fake served: {{ check_fake in check_meta_after.json.versions }}
+
+      always:
+        - name: Delete the temporary badges
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/users/{{ item }}/tokens/{{ check_badge }}"
+            method: DELETE
+            status_code: [204, 404]
+          loop: [svc-deployment, svc-core, svc-ci]
+
+        - name: Delete the fake core of the tools' organisation
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/packages/{{ gitea_org }}/npm/@eupadev%2Fcore/{{ check_fake }}"
+            method: DELETE
+            status_code: [204, 404]
+
+        - name: Delete the downloaded tarball and the CA copy
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: absent
+          loop: [/run/check-core.tgz, /run/check-core-ca.crt]
+
+    - name: Rerun the pipeline (nothing new to publish)
+      ansible.builtin.include_tasks: tasks/rebuild-pipeline.yml
+      vars: { pipeline_workflow: publish.yml }
+
+    - name: Read the rerun's log
+      ansible.builtin.uri:
+        url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/actions/jobs/{{ (jobs_response.json.jobs | first).id }}/logs"
+      register: log_job
+
+    - name: "5. The rerun is green and publishes nothing"
+      ansible.builtin.assert:
+        that:
+          - pipeline.conclusion == 'success'
+          - "log_job.content is search('@eupadev/core@' ~ check_version ~ ' already published: nothing to do')"
+        success_msg: "OK — green, version {{ check_version }} skipped"
+        fail_msg: "FAILED — {{ pipeline.conclusion }}, skip line absent — {{ pipeline.html_url }}"

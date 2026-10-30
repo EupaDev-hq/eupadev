@@ -1,0 +1,111 @@
+# Lab only (caddy_tls: internal): the forge's certificate is signed by Caddy's
+# internal authority, known to nobody. Caddy's root certificate is installed
+# as a trusted authority, and the hosts are told where to find the forge
+# (the domain does not exist on the Internet yet).
+# Same mechanism as in a company with an internal certificate authority.
+# With a real certificate (caddy_tls = email address), this role does nothing.
+- name: Trust in the forge's authority (lab)
+  when: caddy_tls == 'internal'
+  block:
+    - name: Read Caddy's root certificate on the forge
+      ansible.builtin.command:
+        cmd: docker compose exec -T caddy cat /data/caddy/pki/authorities/local/root.crt
+        chdir: /opt/eupadev/forge
+      delegate_to: "{{ groups['forge'][0] }}"
+      become: true
+      register: lab_ca_caddy_root
+      changed_when: false
+      check_mode: false  # read only: also in --check, otherwise the certificate looks empty
+
+    - name: Install it as a trusted authority
+      ansible.builtin.copy:
+        dest: /usr/local/share/ca-certificates/eupadev-lab.crt
+        content: "{{ lab_ca_caddy_root.stdout }}\n"
+        mode: "0644"
+      register: lab_ca_file
+
+    # noqa: no-handler — must take effect at once (the runner registers right
+    # after); a handler would only run at the end of the recipe.
+    - name: Update the list of trusted authorities  # noqa: no-handler
+      ansible.builtin.command: update-ca-certificates
+      when: lab_ca_file.changed
+      changed_when: true
+
+    # Docker reads its registry authorities here, at each connection (no
+    # restart): needed to publish images to the forge.
+    - name: Is Docker installed?
+      ansible.builtin.stat:
+        path: /etc/docker
+      register: lab_ca_docker
+
+    - name: Docker trusts the forge's registry
+      when: lab_ca_docker.stat.exists
+      block:
+        - name: Folder of the registry authorities
+          ansible.builtin.file:
+            path: "/etc/docker/certs.d/{{ gitea_domain }}"
+            state: directory
+            mode: "0755"
+
+        - name: Forge authority for Docker
+          ansible.builtin.copy:
+            dest: "/etc/docker/certs.d/{{ gitea_domain }}/ca.crt"
+            content: "{{ lab_ca_caddy_root.stdout }}\n"
+            mode: "0644"
+
+        # The registry token (/v2/token) is requested by a client that reads
+        # only the system authorities, loaded when Docker starts: without a
+        # restart, "x509: certificate signed by unknown authority" (seen on
+        # the agents VM, 2026-10-13).
+        - name: Restart Docker so that it sees the new authority  # noqa: no-handler
+          ansible.builtin.systemd_service:
+            name: docker
+            state: restarted
+          when: lab_ca_file.changed
+
+    - name: Tell where the forge is
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        regexp: '\s{{ gitea_domain | regex_escape }}$'
+        line: "{{ forge_ip }} {{ gitea_domain }}"
+
+# Authorities of the Caddys of the deployment targets (ADR-014): each Caddy of
+# the lab has its own internal authority (CI VM: mock-up and Previews; tools
+# VM: Prod; orchestrator VM: auth.<domain>, Keycloak). Only when
+# lab_ca_targets: these Caddys exist only after the deployer role. The root
+# certificate appears a few seconds after Caddy starts: hence the retries.
+- name: Trust in the authorities of the deployment targets (lab)
+  when: caddy_tls == 'internal' and lab_ca_targets
+  block:
+    # + caddy-auth of the orchestrator (https://auth.<domain>, Keycloak, and
+    # https://<chat_domain>, the requesters' page: same authority),
+    # when Keycloak is deployed.
+    - name: Read the root certificate of each target Caddy
+      ansible.builtin.command:
+        cmd: "docker compose exec -T {{ 'caddy-auth' if item in groups['orchestrator'] else 'caddy' }} cat /data/caddy/pki/authorities/local/root.crt"
+        chdir: "{{ '/opt/eupadev/orchestrator' if item in groups['orchestrator'] else '/opt/eupadev/deployer' }}"
+      delegate_to: "{{ item }}"
+      become: true
+      loop: >-
+        {{ groups['ci'] + groups['tools']
+           + (groups['orchestrator'] if hostvars[groups['orchestrator'][0]].keycloak_image | default('') else []) }}
+      register: lab_ca_target_roots
+      changed_when: false
+      retries: 10
+      delay: 3
+      until: lab_ca_target_roots.rc == 0
+
+    - name: Install them as trusted authorities
+      ansible.builtin.copy:
+        dest: "/usr/local/share/ca-certificates/eupadev-lab-{{ item.item }}.crt"
+        content: "{{ item.stdout }}\n"
+        mode: "0644"
+      loop: "{{ lab_ca_target_roots.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      register: lab_ca_target_files
+
+    - name: Update the list of trusted authorities (targets)  # noqa: no-handler
+      ansible.builtin.command: update-ca-certificates
+      when: lab_ca_target_files.changed
+      changed_when: true

@@ -1,0 +1,23 @@
+# Cleanup of the forge's image registry
+# (docs/reflexions/2026-10-18-note-nettoyage-registre.md).
+#   ansible-playbook registry-cleanup.yml                # trial mode: lists, erases nothing
+#   ansible-playbook registry-cleanup.yml -e apply=true  # erases
+# Always kept: the images in service (orchestrator_image, agents_image,
+# keycloak_image: registry_in_service), the build of the base-node movable
+# tags (CI variables of the organisation), their signatures, and the last 3
+# builds (per variant) of each package. Erased: the rest, orphan signatures,
+# untagged manifests no longer referenced, the check-* packages.
+# Logic: files/registry-cleanup.py.
+- name: Clean up the forge's image registry
+  hosts: forge
+  become: true
+  gather_facts: false
+  vars:
+    apply: false
+  tasks:
+    - name: Sort the registry
+      ansible.builtin.include_tasks: tasks/registry-cleanup.yml
+      vars:
+        cleanup_apply: "{{ apply | bool }}"
+        cleanup_in_service: "{{ registry_in_service }}"
+        cleanup_movable: "{{ registry_movable }}"

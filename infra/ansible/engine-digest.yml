@@ -1,0 +1,54 @@
+# Digest of the engine image published by the pipeline of the `engine` repository
+# (to copy into group_vars/orchestrator/vars.yml: orchestrator_image).
+# Usage: ansible-playbook engine-digest.yml
+# Same reading for another image of the platform: -e repo=keycloak
+# (→ keycloak_image).
+# -e rebuild=true first reruns the build (e.g. a job cut short, or Trivy
+# reports a fix released since then).
+- name: Digest of the engine image
+  hosts: forge
+  become: true
+  gather_facts: false
+  vars:
+    repo: engine
+    rebuild: false
+  module_defaults:
+    ansible.builtin.uri:
+      url_username: "{{ gitea_admin_user }}"
+      url_password: "{{ vault_gitea_admin_password }}"
+      force_basic_auth: true
+      body_format: json
+      return_content: true
+  tasks:
+    - name: Read the last commit of the repository
+      ansible.builtin.uri:
+        url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/branches/main"
+      register: main_branch
+
+    - name: Rerun a build on demand
+      ansible.builtin.include_tasks: tasks/rebuild-pipeline.yml
+      when: rebuild | bool
+
+    - name: Wait for the pipeline of the last commit
+      ansible.builtin.include_tasks: tasks/wait-for-pipeline.yml
+      vars:
+        commit_sha: "{{ main_branch.json.commit.id }}"
+      when: not (rebuild | bool)
+
+    - name: Read the job log
+      ansible.builtin.uri:
+        url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/actions/jobs/{{ (jobs_response.json.jobs | first).id }}/logs"
+      register: log_job
+
+    # On failure: the last 40 lines of the job,
+    # to see the cause without opening Gitea.
+    - name: The pipeline is green
+      ansible.builtin.assert:
+        that: pipeline.conclusion == 'success'
+        fail_msg: >-
+          FAILED — {{ pipeline.conclusion }} ({{ pipeline_jobs }}) — {{ pipeline.html_url }}
+          — end of the log: {{ log_job.content.splitlines()[-40:] }}
+
+    - name: Published digest
+      ansible.builtin.debug:
+        msg: "{{ log_job.content | regex_findall('\\S+/' ~ repo ~ '@sha256:[0-9a-f]{64}') | last }}"

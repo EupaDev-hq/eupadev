@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["es2022", "dom", "dom.iterable"],
+    "types": ["node", "trusted-types/lib"]
+  },
+  "include": ["web/**/*.js", "tests/front.test.js", "tests/front-unit.test.js"],
+  "exclude": ["tests/tmp-*"]
+}

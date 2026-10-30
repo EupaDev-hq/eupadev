@@ -1,0 +1,73 @@
+# Test cleanup: removes what the Gate 1 registration playbook created for the
+# core tool `tool_slug` (Keycloak clients and personas, database and roles, secrets,
+# Gate 1 entry, backup dumps, PREVIEW_PERSONAS) on every VM.
+# The registration playbook itself never removes anything; only the lab tests do,
+# in their `always` block.
+- name: "Keycloak clients of the test ({{ tool_slug }})"
+  community.general.keycloak_client:
+    auth_keycloak_url: http://127.0.0.1:8180
+    auth_realm: tools
+    auth_client_id: tools-config
+    auth_client_secret: "{{ hostvars[groups['orchestrator'][0]].vault_keycloak_tools_config_secret }}"
+    realm: tools
+    client_id: "{{ item }}"
+    state: absent
+  loop: ["{{ tool_slug }}", "{{ tool_slug }}-preview"]
+  delegate_to: "{{ groups['orchestrator'][0] }}"
+
+- name: "Users of the realm, to find the personas of the test ({{ tool_slug }})"
+  community.general.keycloak_realm_users_info:
+    auth_keycloak_url: http://127.0.0.1:8180
+    auth_realm: tools
+    auth_client_id: tools-config
+    auth_client_secret: "{{ hostvars[groups['orchestrator'][0]].vault_keycloak_tools_config_secret }}"
+    realm: tools
+  delegate_to: "{{ groups['orchestrator'][0] }}"
+  register: tool_users
+
+- name: "Personas of the test ({{ tool_slug }})"
+  community.general.keycloak_user:
+    auth_keycloak_url: http://127.0.0.1:8180
+    auth_realm: tools
+    auth_client_id: tools-config
+    auth_client_secret: "{{ hostvars[groups['orchestrator'][0]].vault_keycloak_tools_config_secret }}"
+    realm: tools
+    username: "{{ item }}"
+    state: absent
+  loop: "{{ tool_users.users | map(attribute='username') | select('regex', '^' ~ tool_slug ~ '-.+-[12]$') | list }}"
+  delegate_to: "{{ groups['orchestrator'][0] }}"
+
+- name: "Persona passwords of the test ({{ tool_slug }})"
+  ansible.builtin.shell: rm -f /etc/eupadev/credstore.encrypted/persona-{{ tool_slug }}-*
+  delegate_to: "{{ groups['orchestrator'][0] }}"
+  changed_when: false
+
+# The repository may already be gone (404).
+- name: "PREVIEW_PERSONAS of the test ({{ tool_slug }})"
+  ansible.builtin.uri:
+    url: "{{ hostvars[groups['forge'][0]].gitea_api }}/repos/eupadev/{{ tool_slug }}/actions/secrets/PREVIEW_PERSONAS"
+    method: DELETE
+    url_username: "{{ gitea_admin_user }}"
+    url_password: "{{ vault_gitea_admin_password }}"
+    force_basic_auth: true
+    status_code: [204, 404]
+  delegate_to: "{{ groups['forge'][0] }}"
+
+- name: "Database and roles of the test ({{ tool_slug }})"
+  ansible.builtin.command:
+    argv: [docker, exec, -i, tools-db, psql, -U, postgres, -v, ON_ERROR_STOP=1, -f, "-"]
+    chdir: /  # overrides a play's command chdir (verify-engine-deployment.yml), absent on these VMs
+    stdin: |
+      DROP DATABASE IF EXISTS "{{ tool_slug }}" WITH (FORCE);
+      DROP ROLE IF EXISTS "{{ tool_slug }}_owner", "{{ tool_slug }}_app", "{{ tool_slug }}_purge";
+  loop: ["{{ groups['ci'][0] }}", "{{ groups['tools'][0] }}"]
+  delegate_to: "{{ item }}"
+  changed_when: false
+
+- name: "Secrets and Gate 1 entry of the test ({{ tool_slug }})"
+  ansible.builtin.shell: >-
+    rm -f /etc/eupadev/credstore.encrypted/tool-{{ tool_slug }}-* {{ backup_dir }}/tools-{{ tool_slug }}-*.dump
+    /run/eupadev/tools/tool-{{ tool_slug }}-* /etc/eupadev/tools/{{ tool_slug }}.json
+  loop: ["{{ groups['ci'][0] }}", "{{ groups['tools'][0] }}"]
+  delegate_to: "{{ item }}"
+  changed_when: false

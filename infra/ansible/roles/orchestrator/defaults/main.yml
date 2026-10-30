@@ -1,0 +1,23 @@
+# cosign that checks the signature of the engine image: same version as the
+# pipeline of the engine repository (images/engine/.gitea/workflows/publish.yml);
+# sha256 sum of the cosign-linux-amd64 binary (published cosign_checksums.txt).
+# Lab only: Mailpit (mail trap, §8.16 M7) started with the engine.
+orchestrator_mailpit: false
+orchestrator_cosign_version: v3.1.3
+orchestrator_cosign_sha256: 4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71
+# Addresses allowed to reach the database over the network (TLS + client
+# certificate): the agents VMs (DBOS executor, note docs/reflexions/2026-10-15-note-lanceur-service.md).
+orchestrator_db_tls_clients: "{{ groups['agents'] | default([]) | map('extract', hostvars, 'ansible_host') | list }}"
+# I0 (ADR-017): the IdP seen by the engine. The values come from the keycloak
+# role (step B: keycloak_issuer, keycloak_internal_jwks_url); audience = client
+# eupadev-api; four-eyes exemption = OIDC subject of a person allowed to
+# approve Gate 2 of their own tool (lab only; empty = none).
+orchestrator_oidc_issuer: "{{ keycloak_issuer }}"
+orchestrator_oidc_jwks_url: "{{ keycloak_internal_jwks_url }}"
+orchestrator_oidc_audience: eupadev-api
+orchestrator_four_eyes_exemption_subject: ""
+# Chat step 2 (ADR-024): the web page's sign-in client and its callback, at
+# the page's public name (chat step 6, chat_domain, through caddy-auth); must
+# match the redirect_uris of eupadev-web in group_vars/orchestrator/keycloak.yml.
+orchestrator_oidc_web_client_id: eupadev-web
+orchestrator_oidc_web_redirect_url: "https://{{ chat_domain }}/auth/callback"

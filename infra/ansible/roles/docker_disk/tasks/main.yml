@@ -1,0 +1,16 @@
+# Separate disk for /var/lib/docker (images, volumes: database, repositories).
+# Must run BEFORE Docker is installed. A full disk then blocks only Docker,
+# not the system (ROADMAP §8.11, decision 1).
+- name: Format the Docker disk (only when blank), grow it when it has grown
+  community.general.filesystem:
+    dev: "{{ docker_disk_device }}"
+    fstype: ext4
+    resizefs: true
+
+- name: Mount the disk on /var/lib/docker (and at every boot)
+  ansible.posix.mount:
+    path: /var/lib/docker
+    src: "{{ docker_disk_device }}"
+    fstype: ext4
+    opts: defaults
+    state: mounted

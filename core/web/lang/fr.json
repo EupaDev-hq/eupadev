@@ -1,0 +1,11 @@
+{
+  "api.httpError": "Erreur HTTP {status}",
+  "api.tooManyRequests": "Trop de demandes. Réessayez dans {seconds} s.",
+  "api.withReference": "{detail} (réf. {id})",
+  "api.noResponse": "Le serveur ne répond pas. Réessayez.",
+  "api.networkError": "Erreur réseau. Réessayez.",
+  "form.sending": "Envoi en cours…",
+  "form.saved": "Enregistré.",
+  "chart.description": "Diagramme en barres, {series} série(s) sur {categories} catégorie(s) ; les valeurs sont dans le tableau qui suit.",
+  "chart.series": "Série"
+}

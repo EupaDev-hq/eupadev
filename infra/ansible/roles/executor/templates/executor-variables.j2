@@ -1,0 +1,10 @@
+# Managed by Ansible (executor role) — do not edit by hand.
+# NON-secret configuration: the secrets are files in memory
+# (/run/eupadev/secrets, eupadev-secrets.service), never here.
+ORCHESTRATOR_IMAGE={{ executor_image }}
+DOCKER_GID={{ getent_group.docker[1] }}
+FORGE_HOST={{ gitea_domain }}
+FORGE_IP={{ forge_ip }}
+{% for name, value in executor_config.items() %}
+{{ name }}={{ value }}
+{% endfor %}

@@ -1,0 +1,147 @@
+# Regenerates the lockfiles that resolve @eupadev/core from the forge's npm
+# registry (ADR-023), which only the lab can reach: the template's
+# pnpm-lock.yaml and those of verify-template.yml's scenarios 9 and 13
+# (files/licence-agpl, files/trivy-vulnerable). Run after a core version is
+# published (site.yml --limit forge, `core` pipeline green) and its version
+# set in tool-template/package.json and the two scenario package.json.
+#   ansible-playbook template-lockfile.yml </dev/null
+# pnpm 12.16.1 (corepack) in a throwaway Node container on the forge VM,
+# `pnpm install --lockfile-only --ignore-scripts`, with a throwaway read-only
+# badge of svc-deployment (the tools' reader) on its stdin only; the
+# lockfiles are written back into the repository; badge and work folder are
+# removed (the Node image stays in the VM's cache).
+- name: Regenerate the template's lockfiles against the forge registry
+  hosts: forge
+  become: true
+  gather_facts: false
+  vars:
+    work_dir: /run/eupadev/template-lockfile
+    badge: template-lockfile
+    node_image: node:24.22.1-trixie-slim@sha256:43b9ba1142b8dcf33fa8f922ca1be85714adc444e0586c7cf7726daaeabc1bea
+    repo_root: "{{ playbook_dir }}/../.."
+    # Folder in the container → lockfile in the repository.
+    projects:
+      template: { lockfile: "{{ repo_root }}/tool-template/pnpm-lock.yaml" }
+      trivy: { lockfile: "{{ playbook_dir }}/files/trivy-vulnerable/pnpm-lock.yaml" }
+      agpl: { lockfile: "{{ playbook_dir }}/files/licence-agpl/pnpm-lock.yaml" }
+  module_defaults:
+    ansible.builtin.uri:
+      url_username: "{{ gitea_admin_user }}"
+      url_password: "{{ vault_gitea_admin_password }}"
+      force_basic_auth: true
+      body_format: json
+  tasks:
+    - name: Lockfiles
+      block:
+        - name: Project folders
+          ansible.builtin.file:
+            path: "{{ work_dir }}/{{ item }}"
+            state: directory
+            mode: "0755"
+          loop: [template, trivy, agpl, agpl/api/agpl-trial]
+
+        - name: Package files (the template's pnpm settings in each)
+          ansible.builtin.copy:
+            src: "{{ item.src | default(omit) }}"
+            content: "{{ item.content | default(omit) }}"
+            dest: "{{ work_dir }}/{{ item.dest }}"
+            mode: "0644"
+          loop:
+            - { src: "{{ repo_root }}/tool-template/package.json", dest: template/package.json }
+            - { src: "{{ playbook_dir }}/files/trivy-vulnerable/package.json", dest: trivy/package.json }
+            # Scenario 9's package.json, made by verify-template.yml the same way.
+            - content: >-
+                {{ lookup('ansible.builtin.file', repo_root ~ '/tool-template/package.json') | from_json
+                   | combine({'dependencies': {'agpl-trial': 'file:api/agpl-trial'}}, recursive=true) | to_nice_json(indent=2) }}
+              dest: agpl/package.json
+            - { src: "{{ playbook_dir }}/files/licence-agpl/package.json", dest: agpl/api/agpl-trial/package.json }
+            - { src: "{{ repo_root }}/tool-template/pnpm-workspace.yaml", dest: template/pnpm-workspace.yaml }
+            - { src: "{{ repo_root }}/tool-template/pnpm-workspace.yaml", dest: trivy/pnpm-workspace.yaml }
+            - { src: "{{ repo_root }}/tool-template/pnpm-workspace.yaml", dest: agpl/pnpm-workspace.yaml }
+          loop_control: { label: "{{ item.dest }}" }
+
+        - name: Read Caddy's root certificate (lab internal authority)
+          ansible.builtin.command:
+            cmd: docker compose exec -T caddy cat /data/caddy/pki/authorities/local/root.crt
+            chdir: /opt/eupadev/forge
+          register: ca_caddy
+          changed_when: false
+          when: caddy_tls == 'internal'
+
+        - name: Trusted authorities for the container
+          ansible.builtin.copy:
+            dest: "{{ work_dir }}/ca.crt"
+            content: "{{ ca_caddy.stdout ~ '\n' if caddy_tls == 'internal' else '' }}"
+            mode: "0644"
+
+        - name: Remove a throwaway badge left by an interrupted run
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/users/svc-deployment/tokens/{{ badge }}"
+            method: DELETE
+            status_code: [204, 404]
+
+        - name: Create the throwaway read-only badge
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/users/svc-deployment/tokens"
+            method: POST
+            body: { name: "{{ badge }}", scopes: ["read:package"] }
+            status_code: 201
+          register: read_badge
+          no_log: true
+
+        - name: Run pnpm install --lockfile-only in each folder (badge on stdin only)
+          ansible.builtin.command:
+            argv:
+              - docker
+              - run
+              - --rm
+              - -i
+              - --network=host
+              - --add-host={{ gitea_domain }}:127.0.0.1
+              - -v={{ work_dir }}:/w
+              - -e=REG=https://{{ gitea_domain }}/api/packages/{{ gitea_core_org.org }}/npm/
+              - -e=NODE_EXTRA_CA_CERTS=/w/ca.crt
+              - -e=COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+              - "{{ node_image }}"
+              - sh
+              - -c
+              - >-
+                read -r T && printf '@eupadev:registry=%s\n%s:_authToken=%s\n' "$REG" "${REG#https:}" "$T" > /tmp/npmrc &&
+                for d in template trivy agpl; do
+                (cd "/w/$d" && NPM_CONFIG_USERCONFIG=/tmp/npmrc corepack pnpm@12.16.1 install --lockfile-only --ignore-scripts) || exit 1;
+                done
+            stdin: "{{ read_badge.json.sha1 }}"
+          register: pnpm
+          changed_when: false
+          no_log: true
+
+        - name: Show pnpm output
+          ansible.builtin.debug:
+            msg: "{{ (pnpm.stdout ~ '\n' ~ pnpm.stderr).splitlines()[-30:] }}"
+
+        - name: Read the lockfiles
+          ansible.builtin.slurp:
+            src: "{{ work_dir }}/{{ item }}/pnpm-lock.yaml"
+          loop: "{{ projects.keys() | list }}"
+          register: lockfiles
+
+        - name: Write them into the repository
+          ansible.builtin.copy:
+            dest: "{{ projects[item.item].lockfile }}"
+            content: "{{ item.content | b64decode }}"
+            mode: "0644"
+          loop: "{{ lockfiles.results }}"
+          loop_control: { label: "{{ item.item }}" }
+          delegate_to: localhost
+          become: false
+      always:
+        - name: Remove the throwaway badge
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/users/svc-deployment/tokens/{{ badge }}"
+            method: DELETE
+            status_code: [204, 404]
+
+        - name: Remove the work folder
+          ansible.builtin.file:
+            path: "{{ work_dir }}"
+            state: absent

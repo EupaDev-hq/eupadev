@@ -1,0 +1,126 @@
+# Checks against the deployed Preview — the findings a source-code review
+# cannot see (served headers, real response times, rendered accessibility).
+# Started by the orchestrator once the Preview runs the published digest;
+# the results go to the human who approves gate 2 for that digest.
+#
+# - k6: smoke/performance test, `tests/perf/load.k6.js` (example to adapt
+#   to the tool's critical routes).
+# - pa11y-ci: accessibility of the rendered pages.
+# - OWASP ZAP baseline: passive scan of the served URL.
+# - acceptance: the tool's acceptance suite (tests/acceptance/, written by
+#   the tests role) signed in as the Preview personas, then the platform's
+#   SEC-* generated from the contract (.gitea/checks/acceptance.sh). No
+#   suite = red.
+# Code analysis and image scanning run on every push in
+# check.yml and are not repeated here.
+#
+# Runner: ci-image (the one with Docker), because each check runs a pinned
+# tool image (k6, pa11y, ZAP) against the Preview URL. The tool's code is not
+# executed in the job: only the k6 script (tests/perf) runs, inside the k6
+# container, and the acceptance suite inside a Playwright container, neither
+# of which gets a Docker socket. This file is protected on agent branches, so
+# an agent cannot change this.
+#
+# The orchestrator dispatches it on main with the Preview URL (input `url`,
+# checked below, passed through the environment, never pasted into a script).
+# Each tool container reaches the Preview through the CI VM's own Caddy
+# (`--add-host <host>:host-gateway`, no dependency on the container's DNS)
+# and trusts the CI VM's certificate authorities (host bundle mounted
+# read-only); certificates are never ignored.
+
+name: Preview check
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: Preview URL (https://<tool>.preview.<domain>)
+        required: true
+
+env:
+  PREVIEW_URL: ${{ inputs.url }}
+  CA: /etc/ssl/certs/ca-certificates.crt
+
+jobs:
+  perf:
+    runs-on: ci-image
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: k6 — smoke/perf test
+        if: hashFiles('tests/perf/load.k6.js') != ''
+        run: |
+          case "$PREVIEW_URL" in https://*[!a-z0-9.-]*|https://) echo "invalid Preview URL"; exit 1;; https://*) ;; *) echo "invalid Preview URL"; exit 1;; esac
+          HOST="${PREVIEW_URL#https://}"
+          # The job's files are not on the host Docker's disk: copied into the created container.
+          K6="k6-${{ github.run_id }}"
+          docker create --name "$K6" --add-host "$HOST:host-gateway" -v /etc/ssl/certs:/etc/ssl/certs:ro -e SSL_CERT_FILE="$CA" \
+            -e TARGET_URL="$PREVIEW_URL" grafana/k6:2.3.0@sha256:9c2dee7f8ed74d317e4027c06a10f169b625638189de8d4555d0b3486a5aeb34 run /scripts/load.k6.js
+          docker cp tests/perf/. "$K6:/scripts"
+          trap 'docker rm -f "$K6" > /dev/null' EXIT
+          docker start -a "$K6"
+      - name: no perf test
+        if: hashFiles('tests/perf/load.k6.js') == ''
+        run: echo "No tests/perf/load.k6.js — skipping"
+
+  accessibility-preview:
+    runs-on: ci-image
+    steps:
+      - name: pa11y-ci — accessibility on the actually deployed Preview
+        run: |
+          case "$PREVIEW_URL" in https://*[!a-z0-9.-]*|https://) echo "invalid Preview URL"; exit 1;; https://*) ;; *) echo "invalid Preview URL"; exit 1;; esac
+          HOST="${PREVIEW_URL#https://}"
+          # Chromium trusts only its own NSS store: the VM's extra authorities
+          # (/usr/local/share/ca-certificates, empty with a public CA) are imported
+          # there; certificates are never ignored. Browser from Debian (the
+          # puppeteer download lacks system libraries); no sandbox inside the
+          # throwaway container (Chrome's sandbox needs namespaces Docker refuses).
+          docker run --rm --add-host "$HOST:host-gateway" -v /usr/local/share/ca-certificates:/ca:ro \
+            -e PREVIEW_URL -e PUPPETEER_SKIP_DOWNLOAD=true \
+            node:24.22.1-trixie-slim@sha256:43b9ba1142b8dcf33fa8f922ca1be85714adc444e0586c7cf7726daaeabc1bea sh -c '
+              set -e
+              apt-get update -qq > /dev/null
+              DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends chromium libnss3-tools > /dev/null
+              mkdir -p "$HOME/.pki/nssdb"
+              certutil -d "sql:$HOME/.pki/nssdb" -N --empty-password
+              for c in /ca/*.crt; do [ -e "$c" ] && certutil -d "sql:$HOME/.pki/nssdb" -A -t C,, -n "$(basename "$c")" -i "$c"; done
+              node -e "require(\"fs\").writeFileSync(\"/tmp/pa11y.json\", JSON.stringify({ defaults: { chromeLaunchConfig: { executablePath: \"/usr/bin/chromium\", args: [\"--no-sandbox\"] } }, urls: [process.argv[1]] }))" "$PREVIEW_URL"
+              npx --yes pa11y-ci --config /tmp/pa11y.json'
+
+  pentest-dast:
+    runs-on: ci-image
+    steps:
+      - name: OWASP ZAP baseline scan — actually deployed Preview URL
+        run: |
+          case "$PREVIEW_URL" in https://*[!a-z0-9.-]*|https://) echo "invalid Preview URL"; exit 1;; https://*) ;; *) echo "invalid Preview URL"; exit 1;; esac
+          HOST="${PREVIEW_URL#https://}"
+          # ZAP writes its report only into a MOUNTED /zap/wrk: a named volume
+          # handed to its user (the job's files are not on the host's disk).
+          ZAP="zap-${{ github.run_id }}"
+          IMAGE=ghcr.io/zaproxy/zaproxy:2.17.0@sha256:7aaa659b0d43078febd82e29bad112285c370727e86ab8340444220e17d9f0d2
+          trap 'docker rm -f "$ZAP" > /dev/null; docker volume rm "$ZAP" > /dev/null' EXIT
+          docker run --rm --user root --entrypoint chown -v "$ZAP:/zap/wrk" "$IMAGE" zap:zap /zap/wrk
+          docker create --name "$ZAP" -v "$ZAP:/zap/wrk" --add-host "$HOST:host-gateway" "$IMAGE" \
+            zap-baseline.py -t "$PREVIEW_URL" -I -r zap-report.html
+          docker start -a "$ZAP"
+          docker cp "$ZAP:/zap/wrk/zap-report.html" zap-report.html
+      - name: Publish the ZAP report (to verify — Gitea artifact support unconfirmed)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: zap-report
+          path: zap-report.html
+
+  # Agent-written test code runs here with the Preview personas' passwords
+  # (accepted exposure: a login on this tool's Preview, nothing else; header
+  # of register-tools.yml). The registry badge reaches the install only.
+  acceptance:
+    runs-on: ci-image
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Acceptance suite, then the platform's SEC-*, against the Preview
+        env:
+          PREVIEW_PERSONAS: ${{ secrets.PREVIEW_PERSONAS }}
+          REGISTRY_READ_TOKEN: ${{ secrets.REGISTRY_READ_TOKEN }}
+          RUN_ID: ${{ github.run_id }}
+        run: sh .gitea/checks/acceptance.sh

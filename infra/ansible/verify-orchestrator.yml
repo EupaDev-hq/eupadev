@@ -1,0 +1,214 @@
+# Real test of the orchestrator VM — rerunnable.
+#   ansible-playbook verify-orchestrator.yml
+# Checks that its PostgreSQL database answers, that its application accounts
+# have limited rights (step 6), that no other machine can reach it, and that
+# its data lives on the separate Docker disk.
+# Read only: creates and changes nothing.
+- name: Verify the orchestrator VM
+  hosts: orchestrator
+  become: true
+  tasks:
+    - name: The database answers and accepts a query
+      ansible.builtin.command:
+        cmd: docker compose exec -T db psql -U orchestrator -d orchestrator -tAc "select 'ok'"
+        chdir: /opt/eupadev/orchestrator
+      register: orch_sql
+      changed_when: false
+      failed_when: orch_sql.stdout | trim != 'ok'
+
+    # Step 6: accounts of sql/roles.sql (orchestrator); the superuser
+    # "orchestrator" stays the emergency account.
+    - name: Read the application accounts and the database owner
+      ansible.builtin.command:
+        argv:
+          - docker
+          - compose
+          - exec
+          - -T
+          - db
+          - psql
+          - -U
+          - orchestrator
+          - -d
+          - orchestrator
+          - -tAc
+          - >-
+            select format('%s super=%s createrole=%s createdb=%s', rolname, rolsuper, rolcreaterole, rolcreatedb)
+            from pg_roles where rolname in ('orch_owner', 'orch_engine')
+            union all select 'db ' || pg_get_userbyid(datdba) from pg_database where datname = 'orchestrator'
+            order by 1
+        chdir: /opt/eupadev/orchestrator
+      register: orch_accounts
+      changed_when: false
+
+    - name: Accounts without superuser, role or database creation; database owned by orch_owner
+      ansible.builtin.assert:
+        that: >-
+          orch_accounts.stdout_lines == ['db orch_owner',
+          'orch_engine super=f createrole=f createdb=f',
+          'orch_owner super=f createrole=f createdb=f']
+        fail_msg: "Unexpected accounts or owner: {{ orch_accounts.stdout_lines }}"
+
+    # E0: the Compose service "migrate" applied the versioned migrations and
+    # the DBOS system schema; required from now on.
+    - name: Read the state of the migrations (history table, DBOS schema)
+      ansible.builtin.command:
+        argv: [docker, compose, exec, -T, db, psql, -U, orchestrator, -d, orchestrator, -tAc,
+               "select (to_regclass('public.tool_history') is not null) || ' ' || (to_regnamespace('dbos') is not null)"]
+        chdir: /opt/eupadev/orchestrator
+      register: orch_migrations
+      changed_when: false
+
+    - name: Migrations applied (history and DBOS schema present)
+      ansible.builtin.assert:
+        that: orch_migrations.stdout | trim == 'true true'
+        fail_msg: "Migrations missing ({{ orch_migrations.stdout }}): the migrate service did not run (orchestrator_image empty?)"
+
+    # Refusal expected from PostgreSQL itself (SQLSTATE 42501). In a rolled
+    # back transaction: nothing stays even if the refusal were missing.
+    - name: The engine's account is refused a forbidden write
+      ansible.builtin.command:
+        argv:
+          - docker
+          - compose
+          - exec
+          - -T
+          - db
+          - psql
+          - -U
+          - orch_engine
+          - -d
+          - orchestrator
+          - -v
+          - ON_ERROR_STOP=1
+          - -v
+          - VERBOSITY=verbose
+          - -c
+          - begin
+          - -c
+          - update tool_history set state = state
+          - -c
+          - rollback
+        chdir: /opt/eupadev/orchestrator
+      register: orch_refusal
+      changed_when: false
+      failed_when: orch_refusal.rc == 0 or orch_refusal.stderr is not search('42501')
+
+    - name: List the listening ports of the VM
+      ansible.builtin.command:
+        cmd: ss -Hltn
+      register: orch_ports
+      changed_when: false
+
+    # Published for the executor of the agents VM, on the VM's IP only
+    # (filtered by eupadev-db-firewall.service, trials below).
+    - name: PostgreSQL published on the VM's IP only
+      ansible.builtin.assert:
+        that:
+          - orch_ports.stdout_lines | select('search', ':5432 ') | list | length == 1
+          - orch_ports.stdout_lines | select('search', ' ' ~ ansible_host ~ ':5432 ') | list | length == 1
+        fail_msg: "Listening on 5432 expected on {{ ansible_host }} only: {{ orch_ports.stdout_lines | select('search', ':5432') | list }}"
+
+    - name: Read the DOCKER-USER filter
+      ansible.builtin.command:
+        argv: [iptables, -S, DOCKER-USER]
+      register: orch_docker_user
+      changed_when: false
+
+    - name: Database port open to the agents VMs only, dropped for the others
+      ansible.builtin.assert:
+        that:
+          - orch_docker_user.stdout is search('--ctorigdst ' ~ ansible_host ~ ' --ctorigdstport 5432 -j DROP')
+          - orch_docker_user.stdout_lines | select('search', 'ctorigdstport 5432 -j ACCEPT') | list | length
+            == groups['agents'] | length
+          - (orch_docker_user.stdout_lines | select('search', 'ctorigdstport 5432') | first) is search('ACCEPT')
+        fail_msg: "DOCKER-USER: {{ orch_docker_user.stdout_lines }}"
+
+    - name: Read the real directory of the database volume
+      ansible.builtin.command:
+        cmd: docker volume inspect orchestrator_db --format '{{ "{{" }} .Mountpoint {{ "}}" }}'
+      register: orch_volume
+      changed_when: false
+
+    - name: Read the mount point of the Docker disk
+      ansible.builtin.command:
+        cmd: findmnt -no TARGET --target {{ orch_volume.stdout }}
+      register: orch_mount
+      changed_when: false
+
+    - name: The database data is on the separate Docker disk
+      ansible.builtin.assert:
+        that: orch_mount.stdout | trim == '/var/lib/docker'
+        fail_msg: "Database volume on {{ orch_mount.stdout }} instead of /var/lib/docker"
+
+- name: Verify that the database cannot be reached from another VM
+  hosts: forge
+  become: true
+  tasks:
+    - name: Try a connection to the orchestrator's PostgreSQL port
+      ansible.builtin.wait_for:
+        host: "{{ hostvars['eupadev-orch'].ansible_host }}"
+        port: 5432
+        timeout: 5
+        state: started
+      register: orch_from_forge
+      failed_when: orch_from_forge is succeeded
+
+# Database over verified TLS (docs/reflexions/2026-10-15-note-lanceur-service.md, correction 4):
+# from the agents VM, only a TLS 1.3 client with the certificate signed by the
+# database authority, in the name of the requested role, and the password, gets in.
+- name: Verify the TLS access to the database from the agents VM
+  hosts: agents
+  become: true
+  vars:
+    tls_image: postgres:18.6-alpine@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873
+    tls_orch: "{{ hostvars['eupadev-orch'].ansible_host }}"
+    tls_base: "host={{ tls_orch }} port=5432 dbname=orchestrator sslrootcert=/tls/ca.crt"
+    tls_cert: "sslcert=/tls/client.crt sslkey=/tls/client.key"
+    tls_psql: [docker, run, --rm, --user, "1000:1000", -e, PGPASSWORD, -e, PGCONNECT_TIMEOUT=5,
+               -v, /opt/eupadev/executor/tls:/tls:ro, "{{ tls_image }}", psql, -tAX]
+  tasks:
+    - name: Image of the PostgreSQL client (by digest)
+      ansible.builtin.command:
+        argv: [docker, pull, -q, "{{ tls_image }}"]
+      changed_when: false
+
+    - name: Connection trials (plaintext, no certificate, TLS 1.2, other role, good client)
+      ansible.builtin.command:
+        argv: "{{ tls_psql + [item.conn, '-c', 'select current_user, ssl, version from pg_stat_ssl where pid = pg_backend_pid()'] }}"
+      environment:
+        PGPASSWORD: "{{ hostvars['eupadev-orch']['vault_orch_' ~ item.account ~ '_password'] }}"
+      loop:
+        - { name: plaintext, account: engine, conn: "{{ tls_base }} user=orch_engine sslmode=disable" }
+        - { name: no-certificate, account: engine, conn: "{{ tls_base }} user=orch_engine sslmode=verify-full" }
+        - { name: tls12, account: engine, conn: "{{ tls_base }} {{ tls_cert }} user=orch_engine sslmode=verify-full ssl_max_protocol_version=TLSv1.2" }
+        - { name: other-role, account: owner, conn: "{{ tls_base }} {{ tls_cert }} user=orch_owner sslmode=verify-full" }
+        - { name: good-client, account: engine, conn: "{{ tls_base }} {{ tls_cert }} user=orch_engine sslmode=verify-full" }
+      loop_control:
+        label: "{{ item.name }}"
+      register: tls_trials
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: Keep only the codes and outputs (without the credentials)
+      ansible.builtin.set_fact:
+        tls_results: >-
+          {{ dict(tls_trials.results | map(attribute='item.name')
+             | zip(tls_trials.results | map(attribute='rc')
+                   | zip(tls_trials.results | map(attribute='stdout'), tls_trials.results | map(attribute='stderr')))) }}
+
+    - name: Only the good client (TLS 1.3, certificate in the role's name, password) gets in
+      ansible.builtin.assert:
+        that:
+          - tls_results['plaintext'][0] != 0
+          - tls_results['no-certificate'][0] != 0
+          - tls_results['tls12'][0] != 0
+          - tls_results['other-role'][0] != 0
+          - tls_results['good-client'][0] == 0
+          - tls_results['good-client'][1] | trim == 'orch_engine|t|TLSv1.3'
+        fail_msg: "Results (code, output, error): {{ tls_results }}"
+
+    - name: Reasons of the refusals
+      ansible.builtin.debug:
+        msg: "{{ tls_results }}"

@@ -1,0 +1,491 @@
+# Contract of the "requests" tool (docs/reflexions/2026-10-19-note-exemple-demandes.md §6): category reference list,
+# requests (creation, reading, list, change, transitions, deletion and restore), attachment and CSV export.
+# One handler per operationId in api/.
+openapi: 3.1.0
+info:
+  title: Maintenance requests
+  version: 0.1.0
+paths:
+  /api/me:
+    get:
+      operationId: getMe
+      description: The caller (display name and roles), so the screens show only what the caller may do.
+      x-roles: [reader, manager, admin]
+      responses:
+        '200':
+          description: The caller
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Me' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '429': { $ref: '#/components/responses/Problem' }
+  /api/categories:
+    get:
+      operationId: listCategories
+      description: Category reference list, active ones only by default. Error codes VALIDATION_FAILED.
+      x-roles: [reader, manager, admin]
+      parameters:
+        - name: active
+          in: query
+          schema: { type: boolean, default: true }
+      responses:
+        '200':
+          description: Categories sorted by label
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CategoryList' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '429': { $ref: '#/components/responses/Problem' }
+    post:
+      operationId: createCategory
+      description: Adds a category (active). Error codes VALIDATION_FAILED, CATEGORY_EXISTS.
+      x-roles: [admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NewCategory' }
+      responses:
+        '201':
+          description: Category created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Category' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '415': { $ref: '#/components/responses/Problem' }
+        '429': { $ref: '#/components/responses/Problem' }
+  /api/categories/{code}:
+    patch:
+      operationId: updateCategory
+      description: >-
+        Changes the label of a category or deactivates it (never deleted). Error codes VALIDATION_FAILED, NOT_FOUND,
+        VERSION_CONFLICT.
+      x-roles: [admin]
+      parameters:
+        - { name: code, in: path, required: true, schema: { $ref: '#/components/schemas/CategoryCode' } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CategoryPatch' }
+      responses:
+        '200':
+          description: Category changed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Category' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '415': { $ref: '#/components/responses/Problem' }
+        '429': { $ref: '#/components/responses/Problem' }
+  /api/requests:
+    get:
+      operationId: listRequests
+      description: >-
+        Visible requests, newest first: the requester sees only their own, the manager and the administrator all of
+        them, except other people's drafts. deleted=true (admin only): the deleted requests, to restore before the
+        purge. Cursor pagination (`next`). Error codes VALIDATION_FAILED, FORBIDDEN.
+      x-roles: [reader, manager, admin]
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/RequestStatus' }
+        - name: category
+          in: query
+          schema: { $ref: '#/components/schemas/CategoryCode' }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+        - name: cursor
+          in: query
+          schema: { type: string, maxLength: 400 }
+        - name: deleted
+          in: query
+          schema: { type: boolean, default: false }
+      responses:
+        '200':
+          description: One page of requests
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RequestList' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '429': { $ref: '#/components/responses/Problem' }
+    post:
+      operationId: createRequest
+      description: >-
+        New request, as a draft, visible to its author only. Error codes VALIDATION_FAILED, UNKNOWN_CATEGORY (unknown
+        or deactivated category).
+      x-roles: [reader, manager, admin]
+      x-rate-limit: 10
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NewRequest' }
+      responses:
+        '201':
+          description: Request created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Request' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '422': { $ref: '#/components/responses/Problem' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '415': { $ref: '#/components/responses/Problem' }
+        '429': { $ref: '#/components/responses/Problem' }
+  /api/requests/{id}:
+    get:
+      operationId: getRequest
+      description: >-
+        One visible request (rules of listRequests), with its status history; outside the caller's scope, 404 like a
+        request that does not exist. Error codes VALIDATION_FAILED, NOT_FOUND.
+      x-roles: [reader, manager, admin]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: The request
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Request' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '429': { $ref: '#/components/responses/Problem' }
+    patch:
+      operationId: updateRequest
+      description: >-
+        Edits a draft, by its author only, and/or changes the status, and/or restores a deleted request (restore,
+        admin only), at the version read. Submit and cancel: the author; take on (in_progress), resolve, reject: a
+        manager or an admin, with a note to resolve or reject. Error codes VALIDATION_FAILED, NOT_FOUND, FORBIDDEN
+        (status kept for another role or for the author), NOT_EDITABLE (fields outside a draft of the caller),
+        VERSION_CONFLICT, UNKNOWN_CATEGORY, INVALID_TRANSITION, NOTE_REQUIRED, NOTE_UNEXPECTED, NOT_DELETED (restore on
+        a request that is not deleted).
+      x-roles: [reader, manager, admin]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RequestPatch' }
+      responses:
+        '200':
+          description: Request changed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Request' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '422': { $ref: '#/components/responses/Problem' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '415': { $ref: '#/components/responses/Problem' }
+        '429': { $ref: '#/components/responses/Problem' }
+    delete:
+      operationId: deleteRequest
+      description: >-
+        Soft delete (admin): the request answers 404 afterwards; the purge erases it once RETENTION_DELETED is over,
+        unless restored before (updateRequest, restore). Error codes VALIDATION_FAILED, NOT_FOUND.
+      x-roles: [admin]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '204': { description: Request deleted }
+        '400': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '429': { $ref: '#/components/responses/Problem' }
+  /api/requests/{id}/attachment:
+    put:
+      operationId: uploadAttachment
+      description: >-
+        Attaches one photo or PDF to a request, replacing the previous one. The author, while the request is a draft
+        or submitted; a manager or an administrator, on any request they see. Error codes VALIDATION_FAILED,
+        FILE_REQUIRED, FILE_TYPE_MISMATCH, NOT_FOUND, NOT_EDITABLE.
+      x-roles: [reader, manager, admin]
+      x-rate-limit: 5
+      x-max-bytes: 5242880
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: name, in: query, schema: { $ref: '#/components/schemas/FileName' } }
+      requestBody:
+        required: true
+        content:
+          image/png: {}
+          image/jpeg: {}
+          application/pdf: {}
+      responses:
+        '200':
+          description: The attachment
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Attachment' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '413': { $ref: '#/components/responses/Problem' }
+        '415': { $ref: '#/components/responses/Problem' }
+        '422': { $ref: '#/components/responses/Problem' }
+        '429': { $ref: '#/components/responses/Problem' }
+    delete:
+      operationId: deleteAttachment
+      description: >-
+        Removes the attachment (erased, no restore); 204 as well when there is none. The author, while the request is
+        a draft or submitted; an administrator, on any request. Error codes VALIDATION_FAILED, NOT_FOUND, FORBIDDEN,
+        NOT_EDITABLE.
+      x-roles: [reader, manager, admin]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '204': { description: Attachment removed }
+        '400': { $ref: '#/components/responses/Problem' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '422': { $ref: '#/components/responses/Problem' }
+        '429': { $ref: '#/components/responses/Problem' }
+  /files/requests/{id}/attachment:
+    get:
+      operationId: downloadAttachment
+      description: The attachment of a visible request, always as a download. Error codes VALIDATION_FAILED, NOT_FOUND.
+      x-roles: [reader, manager, admin]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: The file
+          content:
+            image/png: {}
+            image/jpeg: {}
+            application/pdf: {}
+        '400': { $ref: '#/components/responses/Problem' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '429': { $ref: '#/components/responses/Problem' }
+  /files/requests.csv:
+    get:
+      operationId: exportRequests
+      description: >-
+        CSV export (RFC 4180, UTF-8) of the visible requests, newest first, with the filters of listRequests;
+        downloaded as a stream. Comma separator by default, semicolon with separator=semicolon (a spreadsheet set to a
+        language with a decimal comma). Error codes VALIDATION_FAILED.
+      x-roles: [manager, admin]
+      parameters:
+        - name: separator
+          in: query
+          schema: { type: string, enum: [comma, semicolon], default: comma }
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/RequestStatus' }
+        - name: category
+          in: query
+          schema: { $ref: '#/components/schemas/CategoryCode' }
+      responses:
+        '200':
+          description: The requests, one per line
+          content:
+            text/csv: {}
+        '400': { $ref: '#/components/responses/Problem' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '429': { $ref: '#/components/responses/Problem' }
+components:
+  schemas:
+    Version:
+      description: Optimistic-locking counter (ADR-003), sent back unchanged in every PATCH; bounded so it fits bigint.
+      type: integer
+      minimum: 1
+      maximum: 9007199254740991
+    CategoryCode:
+      type: string
+      maxLength: 40
+      pattern: '^[a-z][a-z0-9_]{1,39}$'
+      example: plumbing
+    CategoryLabel:
+      type: string
+      minLength: 1
+      maxLength: 80
+      pattern: '^[^<>]*$'
+      example: Plumbing
+    Category:
+      type: object
+      additionalProperties: false
+      required: [code, label, active, version]
+      properties:
+        code: { $ref: '#/components/schemas/CategoryCode' }
+        label: { $ref: '#/components/schemas/CategoryLabel' }
+        active: { type: boolean }
+        version: { $ref: '#/components/schemas/Version' }
+    NewCategory:
+      type: object
+      additionalProperties: false
+      required: [code, label]
+      properties:
+        code: { $ref: '#/components/schemas/CategoryCode' }
+        label: { $ref: '#/components/schemas/CategoryLabel' }
+    CategoryPatch:
+      type: object
+      additionalProperties: false
+      required: [version]
+      minProperties: 2
+      example: { label: Plumbing, version: 1 }
+      properties:
+        label: { $ref: '#/components/schemas/CategoryLabel' }
+        active: { type: boolean }
+        version: { $ref: '#/components/schemas/Version' }
+    CategoryList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items: { type: array, maxItems: 500, items: { $ref: '#/components/schemas/Category' } }
+    RequestStatus:
+      type: string
+      enum: [draft, submitted, in_progress, resolved, rejected, cancelled]
+    Urgency:
+      type: string
+      enum: [low, normal, high]
+    Title: { type: string, minLength: 1, maxLength: 120 }
+    Description: { type: string, maxLength: 4000 }
+    Location: { type: string, minLength: 1, maxLength: 120 }
+    Note: { type: string, minLength: 1, maxLength: 2000 }
+    Request:
+      type: object
+      additionalProperties: false
+      required: [id, title, description, location, closing_note, category, urgency, status, requester_id, requester_name, created_at, updated_at, version]
+      properties:
+        id: { type: string, format: uuid }
+        title: { $ref: '#/components/schemas/Title' }
+        description: { $ref: '#/components/schemas/Description' }
+        location: { $ref: '#/components/schemas/Location' }
+        closing_note: { type: [string, 'null'], maxLength: 2000 }
+        category: { $ref: '#/components/schemas/CategoryCode' }
+        urgency: { $ref: '#/components/schemas/Urgency' }
+        status: { $ref: '#/components/schemas/RequestStatus' }
+        requester_id: { type: string, format: uuid }
+        requester_name: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        version: { $ref: '#/components/schemas/Version' }
+        attachment:
+          description: The attached file, if any (getRequest only).
+          oneOf:
+            - { $ref: '#/components/schemas/Attachment' }
+            - { type: 'null' }
+        history:
+          description: Successive statuses, oldest first (getRequest only).
+          type: array
+          maxItems: 10
+          items:
+            type: object
+            additionalProperties: false
+            required: [from_status, to_status, actor_id, actor_name, at]
+            properties:
+              from_status:
+                oneOf:
+                  - { $ref: '#/components/schemas/RequestStatus' }
+                  - { type: 'null' }
+              to_status: { $ref: '#/components/schemas/RequestStatus' }
+              actor_id: { type: string, format: uuid }
+              actor_name: { type: string }
+              at: { type: string, format: date-time }
+    NewRequest:
+      type: object
+      additionalProperties: false
+      required: [title, location, category, urgency]
+      properties:
+        title: { $ref: '#/components/schemas/Title' }
+        description: { type: string, maxLength: 4000, default: '' }
+        location: { $ref: '#/components/schemas/Location' }
+        category: { $ref: '#/components/schemas/CategoryCode' }
+        urgency: { $ref: '#/components/schemas/Urgency' }
+    RequestPatch:
+      type: object
+      additionalProperties: false
+      required: [version]
+      minProperties: 2
+      example: { title: Door of dock 3, version: 1 }
+      properties:
+        title: { $ref: '#/components/schemas/Title' }
+        description: { $ref: '#/components/schemas/Description' }
+        location: { $ref: '#/components/schemas/Location' }
+        category: { $ref: '#/components/schemas/CategoryCode' }
+        urgency: { $ref: '#/components/schemas/Urgency' }
+        status: { $ref: '#/components/schemas/RequestStatus' }
+        note: { $ref: '#/components/schemas/Note' }
+        restore: { type: boolean, enum: [true] }
+        version: { $ref: '#/components/schemas/Version' }
+    RequestList:
+      type: object
+      additionalProperties: false
+      required: [items, next]
+      properties:
+        items: { type: array, maxItems: 200, items: { $ref: '#/components/schemas/Request' } }
+        next: { type: [string, 'null'], maxLength: 400 }
+    FileName:
+      description: The file's name as the user's device gave it; no path separator, no control character (C0, DEL, C1).
+      type: string
+      minLength: 1
+      maxLength: 120
+      pattern: '^[^/\\\u0000-\u001f\u007f-\u009f]+$'
+    Attachment:
+      type: object
+      additionalProperties: false
+      required: [name, media_type, size, created_at]
+      properties:
+        name: { $ref: '#/components/schemas/FileName' }
+        media_type: { type: string, enum: [image/png, image/jpeg, application/pdf] }
+        size: { type: integer }
+        created_at: { type: string, format: date-time }
+    Me:
+      type: object
+      additionalProperties: false
+      required: [id, name, roles]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        roles: { type: array, maxItems: 10, items: { type: string } }
+    Problem:
+      type: object
+      additionalProperties: false
+      properties:
+        type: { type: string }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        instance: { type: string }
+        code: { type: string }
+        error_id: { type: string }
+        errors:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [pointer, message]
+            properties:
+              pointer: { type: string }
+              message: { type: string }
+  responses:
+    Problem:
+      description: RFC 9457 error
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }

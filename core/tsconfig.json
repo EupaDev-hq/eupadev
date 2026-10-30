@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "strict": true,
+    "target": "es2022",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "lib": ["es2022"],
+    "types": ["node"],
+    "noUncheckedIndexedAccess": true,
+    "noFallthroughCasesInSwitch": true,
+    "skipLibCheck": true
+  },
+  "include": ["src/**/*.js", "bin/**/*.js", "kit/**/*.js", "tests/**/*.js"],
+  "exclude": ["tests/example/web", "tests/tmp-*", "tests/**/*.k6.js", "tests/front.test.js", "tests/front-unit.test.js"]
+}

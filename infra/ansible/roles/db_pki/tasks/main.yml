@@ -1,0 +1,90 @@
+# Issues a certificate signed by the database authority (note
+# docs/reflexions/2026-10-15-note-lanceur-service.md, correction 4): the key is generated ON
+# the VM and never leaves it; only the request (CSR) goes to the
+# administration machine, which signs it with the vault's authority (in memory).
+# Issued again when missing, when the key, the name or the authority changed,
+# or when it expires in less than db_pki_renew.
+- name: The cryptography library (community.crypto modules)
+  ansible.builtin.apt:
+    name: python3-cryptography
+    state: present
+
+- name: "Certificate folder ({{ db_pki_name }})"
+  ansible.builtin.file:
+    path: "{{ db_pki_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: "Database authority ({{ db_pki_name }})"
+  ansible.builtin.copy:
+    dest: "{{ db_pki_dir }}/ca.crt"
+    content: "{{ vault_db_pki_ca_crt }}"
+    mode: "0644"
+
+- name: "Private key, generated on the VM ({{ db_pki_name }})"
+  community.crypto.openssl_privatekey:
+    path: "{{ db_pki_dir }}/{{ db_pki_name }}.key"
+    type: ECC
+    curve: secp256r1
+    owner: "{{ db_pki_uid }}"
+    group: "{{ db_pki_uid }}"
+    mode: "0600"
+
+- name: "Certificate request ({{ db_pki_name }})"
+  community.crypto.openssl_csr_pipe:
+    privatekey_path: "{{ db_pki_dir }}/{{ db_pki_name }}.key"
+    common_name: "{{ db_pki_cn }}"
+    subject_alt_name: "{{ db_pki_san if db_pki_san | length > 0 else omit }}"
+    key_usage: [digitalSignature]
+    key_usage_critical: true
+    extended_key_usage: ["{{ db_pki_usage }}"]
+    basic_constraints: ["CA:FALSE"]
+    basic_constraints_critical: true
+  register: db_pki_csr
+  changed_when: false
+
+- name: "Current certificate ({{ db_pki_name }})"
+  ansible.builtin.slurp:
+    src: "{{ db_pki_dir }}/{{ db_pki_name }}.crt"
+  register: db_pki_current
+  failed_when: false
+
+- name: "Validity of the current certificate ({{ db_pki_name }})"
+  community.crypto.x509_certificate_info:
+    content: "{{ db_pki_current.content | b64decode }}"
+    valid_at:
+      renew: "{{ db_pki_renew }}"
+  register: db_pki_info
+  when: db_pki_current.content is defined
+  delegate_to: localhost
+  become: false
+
+# Reuses the current certificate when it matches (same key, same name, same
+# authority, valid long enough): otherwise signs a new one.
+- name: "Sign with the database authority ({{ db_pki_name }})"
+  community.crypto.x509_certificate_pipe:
+    content: >-
+      {{ (db_pki_current.content | b64decode)
+         if (db_pki_current.content is defined and db_pki_info.valid_at.renew | default(false)) else omit }}
+    csr_content: "{{ db_pki_csr.csr }}"
+    provider: ownca
+    ownca_content: "{{ vault_db_pki_ca_crt }}"
+    ownca_privatekey_content: "{{ vault_db_pki_ca_key }}"
+    ownca_not_after: "{{ db_pki_duration }}"
+  register: db_pki_crt
+  delegate_to: localhost
+  become: false
+  no_log: true
+
+- name: "Install the certificate ({{ db_pki_name }})"
+  ansible.builtin.copy:
+    dest: "{{ db_pki_dir }}/{{ db_pki_name }}.crt"
+    content: "{{ db_pki_crt.certificate }}"
+    owner: "{{ db_pki_uid }}"
+    group: "{{ db_pki_uid }}"
+    mode: "0644"
+  register: db_pki_installed
+
+- name: "Remember whether the certificate changed ({{ db_pki_name }})"
+  ansible.builtin.set_fact:
+    db_pki_change: "{{ db_pki_installed.changed }}"

@@ -1,0 +1,85 @@
+# Realm master (D5: named administrators only). The configuration client has
+# no right on master (403, intended); a master account able to appoint an
+# admin there would itself be a super-admin. Hence the bootstrap way:
+# ephemeral temp-admin, created with Keycloak stopped, deleted at the end.
+# Played only when the declaration changes (digest kept in the local fact
+# keycloak.fact): a pass without change does not stop Keycloak.
+- name: Create temp-admin if it does not answer
+  ansible.builtin.include_tasks: temp-admin.yml
+
+- name: Master by temp-admin
+  module_defaults:
+    group/community.general.keycloak:
+      auth_keycloak_url: "{{ keycloak_admin_url }}"
+      auth_realm: master
+      auth_client_id: admin-cli
+      auth_username: temp-admin
+      auth_password: "{{ vault_keycloak_bootstrap_admin_password }}"
+  block:
+    # Brute force: same values as eupadev (realm.yml, D13), temporary
+    # lockout only. OTP: see keycloak_master_otp.
+    # URL of master = the tunnel: otherwise the sign-in page (served by 8180)
+    # posts its form to https://auth.<domain>/realms/master/…, which Caddy
+    # refuses (404, D12); trial of 2026-10-16.
+    - name: Settings of master (tunnel URL, brute force, OTP policy)
+      community.general.keycloak_realm:
+        realm: master
+        id: master
+        enabled: true
+        attributes:
+          frontendUrl: "{{ keycloak_admin_url }}"
+        brute_force_protected: true
+        permanent_lockout: false
+        max_temporary_lockouts: 0
+        failure_factor: 5
+        wait_increment_seconds: 60
+        max_failure_wait_seconds: 900
+        minimum_quick_login_wait_seconds: 60
+        otp_policy_type: "{{ keycloak_master_otp.type }}"
+        otp_policy_algorithm: "{{ keycloak_master_otp.algorithm }}"
+        otp_policy_digits: "{{ keycloak_master_otp.digits }}"
+        otp_policy_period: "{{ keycloak_master_otp.period }}"
+        otp_policy_look_ahead_window: "{{ keycloak_master_otp.look_ahead }}"
+        state: present
+
+    # Temporary password and required actions set at creation only:
+    # replayed, they would overwrite the chosen password and require the
+    # enrolment again.
+    - name: Users of master
+      community.general.keycloak_realm_users_info:
+        realm: master
+      register: keycloak_master_users
+
+    - name: Named administrators of master
+      community.general.keycloak_user:
+        realm: master
+        username: "{{ item.username }}"
+        first_name: "{{ item.first_name }}"
+        last_name: "{{ item.last_name }}"
+        email: "{{ item.email | default(omit) }}"
+        email_verified: true
+        enabled: true
+        credentials: "{{ omit if exists else [{'type': 'password', 'value': lookup('ansible.builtin.vars', item.temporary_password), 'temporary': true}] }}"
+        required_actions: "{{ omit if exists else ['UPDATE_PASSWORD', 'CONFIGURE_TOTP'] }}"
+      vars:
+        exists: "{{ item.username in (keycloak_master_users.users | map(attribute='username')) }}"
+      loop: "{{ keycloak_master_admins }}"
+      loop_control:
+        label: "{{ item.username }}"
+      no_log: true
+
+    - name: Role admin of master
+      community.general.keycloak_user_rolemapping:
+        realm: master
+        target_username: "{{ item.username }}"
+        roles: [{ name: admin }]
+      loop: "{{ keycloak_master_admins }}"
+      loop_control:
+        label: "{{ item.username }}"
+
+  always:
+    - name: Delete temp-admin
+      community.general.keycloak_user:
+        realm: master
+        username: temp-admin
+        state: absent

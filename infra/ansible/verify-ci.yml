@@ -1,0 +1,142 @@
+# Real-conditions check of the CI — can be rerun.
+#   ansible-playbook verify-ci.yml
+# Creates a trial repository holding a small pipeline, waits for the two
+# runners to run it and checks that it turns green, then deletes the repository.
+#   standard job (runner ci-standard, CI golden image): code fetched from the
+#     forge (HTTPS), Node, pnpm, check tools, forge reachable, and NO access
+#     to Docker (no socket, no DOCKER_HOST, no client);
+#   image job (runner ci-image): Docker available.
+- name: Check the CI
+  hosts: forge
+  become: true
+  vars:
+    repo: check-ci
+    workflow: |
+      {% raw %}
+      name: check-ci
+      on: [push]
+      jobs:
+        standard:
+          runs-on: ci-standard
+          container:
+            image: ${{ vars.CI_IMAGE }}
+            credentials: { username: svc-deployment, password: "${{ secrets.REGISTRY_READ_TOKEN }}" }
+          steps:
+            - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+            - name: Code fetched from the forge
+              run: git log -1 --format='commit %h — %s'
+            - name: Node, pnpm and check tools available
+              run: |
+                echo "Node $(node --version), pnpm $(pnpm --version)"
+                echo "Tools: gitleaks $(gitleaks version), $(hadolint --version), Opengrep $(opengrep --version)"
+            - name: No access to Docker
+              run: |
+                SOCKETS="$(find / -path /proc -prune -o -name 'docker.sock' -print 2>/dev/null)"
+                echo "Docker sockets found: ${SOCKETS:-none}; DOCKER_HOST=${DOCKER_HOST:-missing}; client: $(command -v docker || echo missing)"
+                if [ -n "$SOCKETS" ] || [ -n "${DOCKER_HOST:-}" ] || command -v docker; then exit 1; fi
+                echo "OK: no access to Docker in this job"
+            - name: The forge answers over HTTPS (certificate recognised)
+              run: |
+                node -e "fetch(process.env.GITHUB_SERVER_URL + '/api/healthz').then(r => { if (!r.ok) process.exit(1); console.log('Forge reachable: OK'); })"
+        image:
+          runs-on: ci-image
+          steps:
+            - name: Docker available (building the images)
+              run: docker version --format 'Docker {{.Server.Version}}'
+      {% endraw %}
+  module_defaults:
+    ansible.builtin.uri:
+      url_username: "{{ gitea_admin_user }}"
+      url_password: "{{ vault_gitea_admin_password }}"
+      force_basic_auth: true
+      body_format: json
+      return_content: true
+  tasks:
+    - name: Checks
+      block:
+        - name: Create the trial repository
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/orgs/{{ gitea_org }}/repos"
+            method: POST
+            body: { name: "{{ repo }}", private: true, auto_init: true, default_branch: main }
+            status_code: 201
+
+        - name: Add the pipeline (the commit starts the CI)
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/contents/.gitea/workflows/check.yml"
+            method: POST
+            body:
+              message: Check pipeline
+              branch: main
+              content: "{{ workflow | b64encode }}"
+            status_code: 201
+
+        - name: Wait for the end of the pipeline (10 minutes at most)
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/actions/runs"
+          register: runs
+          until: >-
+            runs.json.workflow_runs | default([]) | length > 0 and
+            runs.json.workflow_runs[0].status == 'completed'
+          retries: 60
+          delay: 10
+
+        - name: The pipeline must be green
+          ansible.builtin.assert:
+            that: runs.json.workflow_runs[0].conclusion == 'success'
+            success_msg: "OK — pipeline green"
+            fail_msg: >-
+              FAILED — pipeline {{ runs.json.workflow_runs[0].conclusion }}
+              (details: {{ runs.json.workflow_runs[0].html_url }} — the repository is
+              kept for reading, delete it afterwards)
+
+        # "Green" is not enough: the logs show that each check really ran and
+        # printed what is expected.
+        - name: List the pipeline's jobs
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/actions/runs/{{ runs.json.workflow_runs[0].id }}/jobs"
+          register: jobs
+
+        - name: Read the logs of each job
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/actions/jobs/{{ item.id }}/logs"
+          loop: "{{ jobs.json.jobs }}"
+          loop_control: { label: "{{ item.name }}" }
+          register: job_logs
+
+        - name: Each check left its trace, in the right job
+          ansible.builtin.assert:
+            that: >-
+              (job_logs.results | selectattr('item.name', 'equalto', item.job) | first).content
+              is search(item.pattern)
+            success_msg: "OK — {{ item.label }}"
+            fail_msg: "FAILED — {{ item.label }}: trace missing from the logs of job {{ item.job }}"
+            quiet: true
+          loop:
+            - { job: standard, label: "code fetched from the forge", pattern: "commit [0-9a-f]+ — Check pipeline" }
+            - { job: standard, label: "Node and pnpm (CI golden image)", pattern: "Node v[0-9]+\\.[0-9]+\\.[0-9]+, pnpm [0-9]+\\." }
+            - { job: standard, label: "check tools", pattern: "Tools: gitleaks [0-9.]+, Haskell Dockerfile Linter [0-9.]+, Opengrep [0-9.]+" }
+            - { job: standard, label: "standard job without access to Docker", pattern: "OK: no access to Docker in this job" }
+            - { job: standard, label: "forge reachable over HTTPS", pattern: "Forge reachable: OK" }
+            - { job: image, label: "Docker available in the image job", pattern: "Docker [0-9]+\\." }
+          loop_control: { label: "{{ item.label }}" }
+
+        - name: Each job ran on its runner
+          ansible.builtin.assert:
+            that: item.runner_name is search('-' ~ item.name ~ '$')
+            success_msg: "OK — job {{ item.name }} run by {{ item.runner_name }}"
+            fail_msg: "FAILED — job {{ item.name }} run by {{ item.runner_name | default('?') }}"
+            quiet: true
+          loop: "{{ jobs.json.jobs }}"
+          loop_control: { label: "{{ item.name }}" }
+      rescue:
+        # On failure, the repository is kept so that the logs can be read.
+        - name: Failure
+          ansible.builtin.fail:
+            msg: "CI check failed — repository {{ gitea_org }}/{{ repo }} kept for diagnosis."
+
+    - name: Delete the trial repository
+      ansible.builtin.uri:
+        url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}"
+        method: DELETE
+        status_code: [204, 404]

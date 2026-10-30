@@ -1,0 +1,12 @@
+# Terraform state: holds details of the real infrastructure, never versioned.
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.*
+# Public key specific to each installation.
+terraform/ssh_lab.pub
+# Secrets vault: specific to each installation, never versioned (even encrypted).
+ansible/group_vars/*/vault*.yml
+ansible/group_vars/*/vault*.yml.tmp
+ansible/group_vars/*/vault*.yml.tmp.log
+# Local cache of ansible-lint (downloaded collections).
+ansible/.ansible/

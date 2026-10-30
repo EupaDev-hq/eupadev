@@ -1,0 +1,317 @@
+# Real test of step E4 ("engine for real" note §2, E4 note of 2026-10-14) — can be rerun.
+#   ansible-playbook verify-engine-ci.yml
+# The ENGINE'S CODE, from the orchestrator VM, through https://<gitea_domain>:
+#   1. as verify-engine-integration.yml: creates the tool, the roles push
+#      (svc-agent), integration and squash into main (svc-orchestrator);
+#   2. the watcher (GiteaForge.ciFinished, orchestrator/scripts/trial-ci.ts,
+#      svc-orchestrator token) waits for the end of the REAL CI of main started
+#      by the squash, reads its jobs and, if it is green, asks the registry for
+#      the digest; then reads it again (resumption: same result).
+# Then the admin checks the result against the forge (jobs of the run, digest
+# served by the registry), and everything is cleaned up (repositories, tokens,
+# files), even if a check fails.
+#
+# Prerequisites: those of verify-engine-integration.yml, plus
+#   - site.yml run again with the orchestrator team at repo.actions: write
+#     (group_vars/forge/vars.yml, ROADMAP M6): without read access to Actions,
+#     Gitea hides the runs (404);
+#   - CI runners in service (verify-ci.yml) and the organisation's
+#     REGISTRY_TOKEN badge (the pipeline publishes the image of main).
+# The temporary svc-orchestrator token also has the read:package scope:
+# without it, the registry refuses the token (401), even for a member.
+#
+# Expected:
+#   normal → ci_finished green, every job green, digest = the one the registry
+#            serves for eupadev/<tool>:<squash commit>;
+#   faulty → red (the eval() is refused by the analysis), job "analysis" red,
+#            its Opengrep SARIF results (read in its log) on the eval()'s file,
+#            no digest;
+#   identical resumption in both cases.
+- name: E4 — CI watcher and registry digest on the real forge
+  hosts: forge
+  become: true
+  vars:
+    cycle: 1
+    variants:
+      - { slug: check-engine-e4, file_set: normal }
+      - { slug: check-engine-e4-faulty, file_set: faulty }
+    # Longest wait for a CI by the script (s); the template's CI takes a few minutes.
+    max_ci_wait: 1500
+    token_name: "check-engine-e4-{{ ansible_date_time.epoch }}"
+    orchestrator: "{{ groups['orchestrator'][0] }}"
+    engine_image: "{{ hostvars[orchestrator].orchestrator_image }}"
+    trial_dir: /run/eupadev-check-e4
+    trial_src: "{{ playbook_dir }}/../../orchestrator"
+    lab_ca_crt: /usr/local/share/ca-certificates/eupadev-lab.crt
+    manifest_types: >-
+      application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json,
+      application/vnd.docker.distribution.manifest.v2+json, application/vnd.docker.distribution.manifest.list.v2+json
+  module_defaults:
+    ansible.builtin.uri:
+      url_username: "{{ gitea_admin_user }}"
+      url_password: "{{ vault_gitea_admin_password }}"
+      force_basic_auth: true
+      body_format: json
+      return_content: true
+  tasks:
+    - name: Checks
+      block:
+        - name: Delete the trial repositories of an earlier run
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ item.slug }}"
+            method: DELETE
+            status_code: [204, 404]
+          loop: "{{ variants }}"
+          loop_control: { label: "{{ item.slug }}" }
+
+        - name: Read the teams of the organisation
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/orgs/{{ gitea_org }}/teams?limit=50"
+          register: teams
+
+        - name: Prerequisite — the orchestrator team reads Actions (M6)
+          vars:
+            units: "{{ (teams.json | selectattr('name', 'equalto', 'orchestrator') | first).units_map | default({}, true) }}"
+          ansible.builtin.assert:
+            that: units['repo.actions'] | default('none') in ['read', 'write']
+            success_msg: "OK — orchestrator team: repo.actions {{ units['repo.actions'] }}"
+            fail_msg: "MISSING PREREQUISITE — orchestrator team without repo.actions ({{ units }}): run site.yml again"
+            quiet: true
+
+        - name: The engine image is on the orchestrator VM and contains git
+          ansible.builtin.command:
+            argv: [docker, run, --rm, --network, none, --entrypoint, git, "{{ engine_image }}", --version]
+          delegate_to: "{{ orchestrator }}"
+          register: git_image
+          changed_when: false
+          failed_when: false
+
+        - name: Prerequisite — git in the engine image
+          ansible.builtin.assert:
+            that: git_image.rc == 0
+            success_msg: "OK — {{ git_image.stdout }} in {{ engine_image }}"
+            fail_msg: >-
+              MISSING PREREQUISITE — the engine image has no git or is not on the VM ({{ git_image.stderr | default('') }}):
+              rebuild the image (CI of the engine repository), then engine-digest.yml and site.yml.
+            quiet: true
+
+        - name: Is the lab authority on the orchestrator VM?
+          ansible.builtin.stat:
+            path: "{{ lab_ca_crt }}"
+          delegate_to: "{{ orchestrator }}"
+          register: lab_ca
+
+        - name: Prerequisite — the orchestrator VM trusts the forge (lab)
+          ansible.builtin.assert:
+            that: caddy_tls != 'internal' or lab_ca.stat.exists
+            fail_msg: "MISSING PREREQUISITE — role lab_ca missing on the orchestrator VM ({{ lab_ca_crt }})"
+            quiet: true
+
+        # svc-orchestrator: scopes of E2/E3 + read:package (registry, E4).
+        - name: Temporary tokens of svc-orchestrator and svc-agent
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/users/{{ item.user }}/tokens"
+            method: POST
+            body: { name: "{{ token_name }}", scopes: "{{ item.scopes }}" }
+            status_code: 201
+          loop:
+            - { user: svc-orchestrator, scopes: [write:repository, write:organization, read:package] }
+            - { user: svc-agent, scopes: [write:repository] }
+          register: tokens
+          no_log: true
+
+        - name: Trial directories (memory, orchestrator VM)
+          ansible.builtin.file:
+            path: "{{ trial_dir }}/{{ item }}"
+            state: directory
+            owner: "1000"
+            mode: "0700"
+          loop: ["", src/external, scripts]
+          delegate_to: "{{ orchestrator }}"
+
+        - name: Write the tokens (read through FORGE_TOKEN_FILE and AGENT_TOKEN_FILE)
+          ansible.builtin.copy:
+            dest: "{{ trial_dir }}/{{ item.0 }}"
+            content: "{{ item.1.json.sha1 }}\n"
+            owner: "1000"
+            mode: "0400"
+          loop: "{{ ['orchestrator-token', 'agent-token'] | zip(tokens.results) | list }}"
+          delegate_to: "{{ orchestrator }}"
+          no_log: true
+
+        - name: Copy the forge adapter, the pushing fake and the trial scripts
+          ansible.builtin.copy:
+            src: "{{ trial_src }}/{{ item }}"
+            dest: "{{ trial_dir }}/{{ item }}"
+            owner: "1000"
+            mode: "0400"
+          loop:
+            - src/external/contracts.ts
+            - src/external/fakes.ts
+            - src/external/gitea-forge.ts
+            - src/external/pushing-engine.ts
+            - scripts/trial-integration.ts
+            - scripts/trial-ci.ts
+          delegate_to: "{{ orchestrator }}"
+
+        - name: Module file (ESM)
+          ansible.builtin.copy:
+            dest: "{{ trial_dir }}/package.json"
+            content: '{"type": "module"}'
+            owner: "1000"
+            mode: "0400"
+          delegate_to: "{{ orchestrator }}"
+
+        # Same container as verify-engine-integration.yml (read-only, without
+        # privilege, tokens by file, never as arguments).
+        - name: The engine creates the tool, the roles push, integration and squash, then the watcher waits for the CI
+          ansible.builtin.command:
+            argv: >-
+              {{ ['docker', 'run', '--rm', '--network', 'host', '--read-only', '--tmpfs', '/tmp', '--cap-drop', 'ALL',
+                  '--security-opt', 'no-new-privileges:true', '--user', '1000', '--entrypoint', 'node',
+                  '-v', trial_dir ~ ':/trial:ro',
+                  '-e', 'FORGE_URL=https://' ~ gitea_domain,
+                  '-e', 'FORGE_TOKEN_FILE=/trial/orchestrator-token', '-e', 'AGENT_TOKEN_FILE=/trial/agent-token']
+                 + (['-v', lab_ca_crt ~ ':/lab-ca.crt:ro', '-e', 'NODE_EXTRA_CA_CERTS=/lab-ca.crt', '-e', 'GIT_SSL_CAINFO=/lab-ca.crt']
+                    if lab_ca.stat.exists else [])
+                 + [engine_image, '/trial/scripts/' ~ item.1, item.0.slug, cycle | string] }}
+          # For each tool: first the integration and the squash, then the watcher.
+          loop: "{{ variants | product(['trial-integration.ts', 'trial-ci.ts']) | list }}"
+          loop_control: { label: "{{ item.0.slug }} {{ item.1 }}" }
+          delegate_to: "{{ orchestrator }}"
+          register: trials
+          changed_when: true
+          failed_when: false
+
+        - name: Each trial runs to the end
+          ansible.builtin.assert:
+            that: item.rc == 0
+            success_msg: "OK — {{ item.item.0.file_set }} {{ item.item.1 }}: {{ item.stdout }}"
+            fail_msg: "FAILED — {{ item.item.0.file_set }} {{ item.item.1 }} (rc={{ item.rc }}): {{ item.stderr }}"
+            quiet: true
+          loop: "{{ trials.results }}"
+          loop_control: { label: "{{ item.item.0.slug }} {{ item.item.1 }}" }
+
+        # trials.results: [normal integration, normal watcher, faulty integration, faulty watcher].
+        - name: Keep the engine's results
+          ansible.builtin.set_fact:
+            merges: "{{ trials.results[0::2] | map(attribute='stdout') | map('from_json') | map(attribute='merge') | list }}"
+            watches: "{{ dict(variants | map(attribute='file_set') | zip(trials.results[1::2] | map(attribute='stdout') | map('from_json'))) }}"
+
+        - name: Watcher prerequisite — both tools are merged into main
+          ansible.builtin.assert:
+            that: merges | map(attribute='result') | list == ['ok', 'ok']
+            fail_msg: "FAILED — merge before the CI: {{ merges }}"
+            quiet: true
+
+        # The forge's truth, read by the admin: squash commit, jobs of the last run of main for that commit.
+        - name: Read the PR of the round (squash commit)
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ item.slug }}/pulls/main/integration/{{ cycle }}/1"
+          loop: "{{ variants }}"
+          loop_control: { label: "{{ item.slug }}" }
+          register: prs
+
+        - name: Read the CI runs of main for that commit
+          ansible.builtin.uri:
+            url: >-
+              {{ gitea_api }}/repos/{{ gitea_org }}/{{ item.0.slug }}/actions/workflows/check.yml/runs?branch=main&head_sha={{
+              item.1.json.merge_commit_sha }}
+          loop: "{{ variants | zip(prs.results) | list }}"
+          loop_control: { label: "{{ item.0.slug }}" }
+          register: runs
+
+        - name: Read the jobs of the last run
+          ansible.builtin.uri:
+            url: >-
+              {{ gitea_api }}/repos/{{ gitea_org }}/{{ item.0.slug }}/actions/runs/{{
+              (item.1.json.workflow_runs | sort(attribute='id') | last).id }}/jobs?limit=50
+          loop: "{{ variants | zip(runs.results) | list }}"
+          loop_control: { label: "{{ item.0.slug }}" }
+          register: jobs
+
+        - name: Get a registry read token (admin)
+          ansible.builtin.uri:
+            url: "http://127.0.0.1:3000/v2/token?scope=repository:{{ gitea_org }}/{{ variants[0].slug }}:pull"
+          register: registry_token
+          no_log: true
+
+        - name: Ask the registry for the digest of the squash image (normal tool)
+          ansible.builtin.uri:
+            url: "http://127.0.0.1:3000/v2/{{ gitea_org }}/{{ variants[0].slug }}/manifests/{{ prs.results[0].json.merge_commit_sha }}"
+            method: HEAD
+            force_basic_auth: false
+            headers:
+              Authorization: "Bearer {{ registry_token.json.token }}"
+              Accept: "{{ manifest_types }}"
+          register: manifest
+          no_log: true
+
+        - name: "Normal: green CI, green jobs, digest = the registry's; identical resumption"
+          vars:
+            r: "{{ watches.normal }}"
+            jobs_forge: "{{ jobs.results[0].json.jobs | items2dict(key_name='name', value_name='conclusion') }}"
+          ansible.builtin.assert:
+            that:
+              - r.ci.outcome == 'green'
+              - r.ci.digest == manifest.docker_content_digest
+              - r.ci.checks | map(attribute='result') | unique == ['green']
+              - r.ci.checks | map(attribute='check') | sort == jobs_forge.keys() | sort
+              - jobs_forge.values() | unique == ['success']
+              - r.resume == r.ci
+            success_msg: "OK — normal: green CI in {{ r.wait_s }} s, digest {{ r.ci.digest }} (registry), jobs {{ jobs_forge }}"
+            fail_msg: >-
+              FAILED — normal: watcher {{ r.ci }}, forge jobs {{ jobs_forge }},
+              registry {{ manifest.docker_content_digest | default('?') }}
+            quiet: true
+
+        - name: "Faulty: CI red through the analysis, no digest; identical resumption"
+          vars:
+            r: "{{ watches.faulty }}"
+            jobs_forge: "{{ jobs.results[1].json.jobs | items2dict(key_name='name', value_name='conclusion') }}"
+            red_checks: "{{ r.ci.checks | selectattr('result', 'equalto', 'red') | map(attribute='check') | list }}"
+            analysis_details: "{{ (r.ci.checks | selectattr('check', 'equalto', 'analysis') | first).details | default({}) | to_json }}"
+          ansible.builtin.assert:
+            that:
+              - r.ci.outcome == 'red'
+              - r.ci.digest is not defined
+              - "'analysis' in red_checks"
+              - jobs_forge.analysis == 'failure'
+              # M5: the SARIF results printed by the analysis job, read in its log, name the eval()'s file.
+              - analysis_details is search('"matchBasedId/v1":[ ]"[0-9a-f]+_[0-9]+"')
+              - analysis_details is search('"uri":[ ]"api/lib/trial-[^"]+[.]js"')
+              - red_checks | sort == jobs_forge | dict2items | selectattr('value', 'in', ['failure', 'cancelled']) | map(attribute='key') | sort
+              - r.resume == r.ci
+            success_msg: "OK — faulty: red CI in {{ r.wait_s }} s, red checks {{ red_checks }} (forge: {{ jobs_forge }})"
+            fail_msg: "FAILED — faulty: watcher {{ r.ci }}, forge jobs {{ jobs_forge }}"
+            quiet: true
+
+      always:
+        - name: Delete the temporary tokens
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/users/{{ item }}/tokens/{{ token_name }}"
+            method: DELETE
+            status_code: [204, 404]
+          loop: [svc-orchestrator, svc-agent]
+
+        # Only the admin deletes a repository (the engine never deletes anything);
+        # the trial images of the registry go with their packages.
+        - name: Delete the trial repositories
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ item.slug }}"
+            method: DELETE
+            status_code: [204, 404]
+          loop: "{{ variants }}"
+          loop_control: { label: "{{ item.slug }}" }
+
+        - name: Delete the trial image from the registry
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/packages/{{ gitea_org }}/container/{{ variants[0].slug }}"
+            method: DELETE
+            status_code: [204, 404]
+
+        - name: Delete the trial files (tokens included)
+          ansible.builtin.file:
+            path: "{{ trial_dir }}"
+            state: absent
+          delegate_to: "{{ orchestrator }}"

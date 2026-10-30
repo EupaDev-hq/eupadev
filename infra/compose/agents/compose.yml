@@ -1,0 +1,78 @@
+# Agents VM: the two proxies next to the AI agent containers (ROADMAP §8.16
+# L3-L4, docs/reflexions/2026-10-13-note-proxy-ia.md).
+#
+# Internal network PER TASK, created by the launcher (never here):
+#   docker network create --internal \
+#     -o com.docker.network.bridge.inhibit_ipv4=true \
+#     --label eupadev.task=<task> net-<task>
+#   docker network connect net-<task> agents-ai-proxy-1
+#   docker network connect net-<task> agents-smokescreen-1
+# then the IPs of the two proxies read by `docker inspect` and passed to the
+# container (--runtime=runsc --network net-<task>): ANTHROPIC_BASE_URL=http://<ip>:8080,
+# HTTPS_PROXY=http://<ip>:4750, ANTHROPIC_API_KEY=<fake>. Two tasks
+# share no network: they cannot see each other. inhibit_ipv4: no IP of the
+# VM on the bridge, otherwise a container reaches the VM itself (sshd…)
+# through the gateway address, even on an internal network (seen, Docker 29).
+#
+# So the proxies listen on all their interfaces. Each one is ALONE on its
+# egress network (egress, ai-egress): there, only the VM reaches them.
+# Neither relays packets from one task network to another (ip_forward=0,
+# otherwise inherited from the host, where Docker sets it to 1).
+#
+# Smokescreen has no usable public image (ghcr.io/stripe/smokescreen refuses
+# anonymous downloads, checked on 2026-10-13): its published binary (v0.1.0,
+# static, sha256 checked by Ansible) is mounted into the distroless image its
+# own Dockerfile uses. Nothing is built on the VM.
+# Variables (.env put in place by Ansible, agent_proxies role): SMOKESCREEN_BIN.
+# Secret: anthropic_api_key, decrypted in memory by eupadev-secrets.service
+# (systemd-creds) into SECRETS_DIR; never an environment variable.
+name: agents
+
+services:
+  smokescreen:
+    image: gcr.io/distroless/static:nonroot@sha256:e2e927ec666bae08560abb3c55d0659eceabb657f56b6782ab500a9fc7f555e3
+    entrypoint: ["/smokescreen"]
+    command: ["--config-file=/etc/smokescreen/config.yaml"]
+    volumes:
+      - ${SMOKESCREEN_BIN:?missing}:/smokescreen:ro
+      - ./smokescreen:/etc/smokescreen:ro
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    sysctls: { net.ipv4.ip_forward: 0 }
+    mem_limit: 128m
+    pids_limit: 256
+    restart: unless-stopped
+    networks: [egress]
+
+  # AI proxy: Caddy (same image as the forge) adds the real key
+  # (ai-proxy/Caddyfile). Unprivileged user, read-only root.
+  ai-proxy:
+    image: caddy:2.11.6-alpine@sha256:d44355d3c2149dc580ce2cac735955d1c08d3d00882c30489c241aa51a5c10d9
+    user: "65532:65532"
+    volumes:
+      - ./ai-proxy/Caddyfile:/etc/caddy/Caddyfile:ro
+    secrets: [anthropic_api_key]
+    tmpfs: [/data, /config]
+    read_only: true
+    cap_drop: [ALL]
+    # The image's caddy binary carries the file capability
+    # cap_net_bind_service: without it in the allowed set, exec is refused
+    # ("operation not permitted", seen). Useless on port 8080.
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: ["no-new-privileges:true"]
+    sysctls: { net.ipv4.ip_forward: 0 }
+    mem_limit: 128m
+    pids_limit: 256
+    restart: unless-stopped
+    networks: [ai-egress]
+
+networks:
+  egress: {}
+  ai-egress: {}
+
+# File secret: mounted as it is (owner 65532, 0400, set by
+# eupadev-secrets.service).
+secrets:
+  anthropic_api_key:
+    file: ${SECRETS_DIR:-/run/eupadev/secrets}/anthropic_api_key

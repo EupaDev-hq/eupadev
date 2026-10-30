@@ -1,0 +1,11 @@
+{
+  "api.httpError": "HTTP error {status}",
+  "api.tooManyRequests": "Too many requests. Try again in {seconds} s.",
+  "api.withReference": "{detail} (ref. {id})",
+  "api.noResponse": "The server is not responding. Try again.",
+  "api.networkError": "Network error. Try again.",
+  "form.sending": "Sending…",
+  "form.saved": "Saved.",
+  "chart.description": "Bar chart, {series} series over {categories} categories; the values are in the table that follows.",
+  "chart.series": "Series"
+}

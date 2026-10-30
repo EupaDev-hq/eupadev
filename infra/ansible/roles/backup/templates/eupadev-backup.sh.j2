@@ -1,0 +1,60 @@
+#!/bin/bash
+# Managed by Ansible (backup role) — do not edit by hand.
+# Run every night by eupadev-backup.timer; on demand:
+#   systemctl start eupadev-backup
+# A failure leaves the unit "failed" (systemctl --failed, journalctl -u …).
+set -euo pipefail
+umask 077
+dir={{ backup_dir }}
+date=$(date -u +%Y%m%dT%H%M%SZ)
+rm -f "$dir"/*.partial  # leftover of an interrupted run
+{% if 'forge' in group_names %}
+# Native method: gitea dump (repositories, registry packages, database, app.ini).
+# The Gitea documentation requires Gitea stopped during the dump (database and
+# repositories consistent): PostgreSQL keeps running, the dump runs in a
+# one-off container of the same image and volumes, Gitea restarts whatever happens.
+file=$dir/gitea-$date.tar.gz
+cd /opt/eupadev/forge
+trap 'docker compose start gitea || exit 1' EXIT
+docker compose stop gitea
+docker compose run --rm --no-deps -T gitea gitea dump --file - --type tar.gz --quiet > "$file.partial"
+{% elif 'tools' in group_names %}
+# d5: one pg_dump (custom format, consistent without stopping) per core tool
+# database of the Prod PostgreSQL (tools-db). Roles and passwords are not
+# dumped: register-tools.yml recreates them before a restore.
+dbs=$(docker exec tools-db psql -U postgres -tAc "SELECT datname FROM pg_database WHERE NOT datistemplate AND datname <> 'postgres'")
+for db in $dbs; do
+  file=$dir/tools-$db-$date.dump
+  docker exec tools-db pg_dump -U postgres -d "$db" --format=custom > "$file.partial"
+  test -s "$file.partial"
+  mv "$file.partial" "$file"
+  echo "backup written: $file ($(stat -c %s "$file") bytes)"
+  { ls -1t "$dir"/tools-"$db"-*.dump 2>/dev/null || true; } | tail -n +{{ backup_keep + 1 }} | xargs -r rm -v --
+done
+{% else %}
+# Native method: pg_dump in custom format (consistent without stopping the database).
+# keycloak database (when it exists): it holds the private keys that sign the
+# tokens and the client secrets (D9) — same protection as the rest (root
+# only, 0600).
+cd /opt/eupadev/orchestrator
+dbs=(orchestrator)
+if docker compose exec -T db psql -U orchestrator -d orchestrator -tAc "SELECT 1 FROM pg_database WHERE datname = 'keycloak'" | grep -qx 1; then
+  dbs+=(keycloak)
+fi
+for db in "${dbs[@]}"; do
+  file=$dir/$db-$date.dump
+  docker compose exec -T db pg_dump -U orchestrator -d "$db" --format=custom > "$file.partial"
+  test -s "$file.partial"
+  mv "$file.partial" "$file"
+  echo "backup written: $file ($(stat -c %s "$file") bytes)"
+done
+{% endif %}
+{% if 'forge' in group_names %}
+test -s "$file.partial"
+mv "$file.partial" "$file"
+echo "backup written: $file ($(stat -c %s "$file") bytes)"
+{% endif %}
+# Retention, only after a successful backup, database by database.
+{% for prefix in (['gitea'] if 'forge' in group_names else [] if 'tools' in group_names else ['orchestrator', 'keycloak']) %}
+{ ls -1t "$dir"/{{ prefix }}-*.{{ 'tar.gz' if 'forge' in group_names else 'dump' }} 2>/dev/null || true; } | tail -n +{{ backup_keep + 1 }} | xargs -r rm -v --
+{% endfor %}

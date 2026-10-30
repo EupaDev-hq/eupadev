@@ -1,0 +1,6 @@
+# gitleaks configuration imposed by CI (--config): a .gitleaks.toml slipped
+# into the repository has no effect, and --ignore-gitleaks-allow makes
+# "gitleaks:allow" comments ineffective. Protected file (.gitea/**).
+# gitleaks default rules, without any exception.
+[extend]
+useDefault = true

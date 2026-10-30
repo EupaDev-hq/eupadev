@@ -1,0 +1,510 @@
+# Real test of the Preview deployment (ADR-014, step E5d, plain template) —
+# rerunnable, leaves nothing behind.
+#   ansible-playbook verify-deployer.yml </dev/null
+# On the CI VM, a test image (golden run image + a tiny server answering 200
+# with a cookie carrying Domain=) is published four times in the forge
+# registry: signed with the TOOLS key, unsigned, signed with a throwaway key,
+# signed with the PLATFORM key. Then, through SSH with the engine key, from
+# the engine VM (the real path):
+# 1. unsigned, other key, platform key → refused (code 2), nothing started;
+# 2. tools key → healthy, `digest` = RepoDigests of the running image,
+#    `served` gives the same digest and the cycle;
+# 3. same digest again → nothing touched (same container, same start time);
+# 4. another cycle: `remove` has no effect, `deploy` is refused;
+#    then the same through the ENGINE's code (SshDeployer built by
+#    externalWorld, in the engine image, with the key and known_hosts the
+#    service gets from systemd-creds): served, already-done deploy, refusal
+#    for another cycle, served on the tools VM (nothing there);
+# 5. the container: uid 1000, read-only, no capability, no-new-privileges,
+#    no port, no host mount; reaches neither Internet nor the forge nor the
+#    VM's sshd; Caddy strips Domain from its Set-Cookie (ADR-015);
+# 6. the script killed (SIGKILL) in the middle of a deploy, then called
+#    again → same end state as a clean deploy;
+# 7. `remove` of the right cycle → container, network, image gone, Caddy
+#    unplugged.
+- name: Deployer — real Preview on the CI VM
+  hosts: ci
+  become: true
+  gather_facts: false
+  vars:
+    check_forge: "{{ hostvars[groups['forge'][0]] }}"
+    check_engine: "{{ groups['orchestrator'][0] }}"
+    check_tool: check-deployer
+    check_variants: [check-deployer, check-deployer-ns, check-deployer-ak, check-deployer-pf]
+    check_dir: /run/eupadev/check-deployer
+    check_docker: { DOCKER_CONFIG: /run/eupadev/check-deployer }
+    check_host: "{{ check_tool }}.preview.{{ base_domain }}"
+    check_server: >-
+      require('http').createServer((q, r) => { r.setHeader('Set-Cookie', 'check=1; Domain={{ base_domain }}; Path=/; Secure');
+      r.end('ok'); }).listen(3000)
+  module_defaults:
+    ansible.builtin.uri:
+      url_username: "{{ gitea_admin_user }}"
+      url_password: "{{ vault_gitea_admin_password }}"
+      force_basic_auth: true
+  tasks:
+    - name: Trials (cleanup guaranteed)
+      block:
+        # ── Test images ────────────────────────────────────────────────────
+        - name: Remove an old throwaway svc-ci badge (interrupted run)
+          ansible.builtin.uri:
+            url: "{{ check_forge.gitea_api }}/users/svc-ci/tokens/check-deployer"
+            method: DELETE
+            status_code: [204, 404]
+          delegate_to: "{{ groups['forge'][0] }}"
+
+        - name: Throwaway publishing badge (svc-ci)
+          ansible.builtin.uri:
+            url: "{{ check_forge.gitea_api }}/users/svc-ci/tokens"
+            method: POST
+            body_format: json
+            body: { name: check-deployer, scopes: ["write:package"] }
+            status_code: 201
+          delegate_to: "{{ groups['forge'][0] }}"
+          register: check_badge
+          changed_when: false
+          no_log: true
+
+        - name: Work folder (memory)
+          ansible.builtin.file:
+            path: "{{ check_dir }}"
+            state: directory
+            mode: "0700"
+
+        - name: Log in to the registry
+          ansible.builtin.command:
+            argv: [docker, login, "{{ gitea_domain }}", -u, svc-ci, --password-stdin]
+            stdin: "{{ check_badge.json.sha1 }}"
+          environment: "{{ check_docker }}"
+          changed_when: false
+          no_log: true
+
+        - name: Run golden image
+          ansible.builtin.command:
+            argv: [docker, pull, -q, "{{ check_forge.gitea_org_variables.BASE_IMAGE_RUN }}"]
+          environment: "{{ check_docker }}"
+          changed_when: false
+
+        - name: Base container of the trial image
+          ansible.builtin.command:
+            argv: [docker, create, --name, check-deployer-base, "{{ check_forge.gitea_org_variables.BASE_IMAGE_RUN }}"]
+          changed_when: false
+
+        # No build tool on the VM (no buildx): `docker commit` gives the
+        # image its command. Same content under four names.
+        - name: Trial image (tiny server, cookie with Domain)
+          ansible.builtin.command:
+            argv: [docker, commit, --change, 'CMD ["node", "-e", {{ check_server | to_json }}]',
+                   check-deployer-base, "{{ gitea_domain }}/eupadev/{{ check_variants[0] }}:trial"]
+          changed_when: false
+
+        - name: Same bytes under the four names
+          ansible.builtin.command:
+            argv: [docker, tag, "{{ gitea_domain }}/eupadev/{{ check_variants[0] }}:trial", "{{ gitea_domain }}/eupadev/{{ item }}:trial"]
+          loop: "{{ check_variants[1:] }}"
+          changed_when: false
+
+        - name: Publish
+          ansible.builtin.command:
+            argv: [docker, push, -q, "{{ gitea_domain }}/eupadev/{{ item }}:trial"]
+          environment: "{{ check_docker }}"
+          loop: "{{ check_variants }}"
+          changed_when: false
+
+        # One image under four names: its RepoDigests lists all four.
+        - name: Digests given by the registry
+          ansible.builtin.command:
+            argv: [docker, image, inspect, --format, "{{ '{{' }}json .RepoDigests{{ '}}' }}", "{{ gitea_domain }}/eupadev/{{ check_tool }}:trial"]
+          register: check_digests
+          changed_when: false
+
+        - name: Images named by digest
+          ansible.builtin.set_fact:
+            check_images: "{{ check_images | default({}) | combine({item.split('@')[0].split('/')[-1]: item}) }}"
+          loop: "{{ check_digests.stdout | from_json }}"
+
+        - name: Digest of the trial image
+          ansible.builtin.set_fact:
+            check_digest: "{{ check_images[check_tool].split('@')[1] }}"
+          failed_when: check_images.keys() | sort != check_variants | sort
+
+        - name: Signing configuration without any service (neither Rekor nor timestamp authority)
+          ansible.builtin.command:
+            argv: [cosign, signing-config, create, --out, "{{ check_dir }}/signing-config.json"]
+          changed_when: false
+
+        - name: Throwaway key (another key)
+          ansible.builtin.command:
+            argv: [cosign, generate-key-pair, --output-key-prefix, "{{ check_dir }}/other"]
+            stdin: ""
+          environment: { COSIGN_PASSWORD: "" }
+          changed_when: false
+
+        - name: Sign with the tools key, the platform key, the throwaway key
+          ansible.builtin.command:
+            argv: [cosign, sign, --yes, --key, "{{ item.key }}", --signing-config, "{{ check_dir }}/signing-config.json",
+                   "{{ check_images[item.name] }}"]
+          environment: "{{ check_docker | combine(item.env) }}"
+          loop:
+            - name: check-deployer
+              key: env://COSIGN_PRIVATE_KEY
+              env:
+                COSIGN_PRIVATE_KEY: "{{ check_forge.vault_cosign_tools_private_key }}"
+                COSIGN_PASSWORD: "{{ check_forge.vault_cosign_tools_password }}"
+            - name: check-deployer-pf
+              key: env://COSIGN_PRIVATE_KEY
+              env:
+                COSIGN_PRIVATE_KEY: "{{ check_forge.vault_cosign_private_key }}"
+                COSIGN_PASSWORD: "{{ check_forge.vault_cosign_password }}"
+            - name: check-deployer-ak
+              key: "{{ check_dir }}/other.key"
+              env: { COSIGN_PASSWORD: "" }
+          changed_when: false
+          no_log: true
+
+        - name: Local images removed (the deployer must pull them itself)
+          ansible.builtin.command:
+            argv: [docker, image, rm, "{{ gitea_domain }}/eupadev/{{ item }}:trial"]
+          loop: "{{ check_variants }}"
+          changed_when: false
+
+        # ── Through SSH from the engine VM, with the engine key ───────────
+        - name: Temporary files on the engine (key, SSH host keys)
+          ansible.builtin.tempfile:
+            suffix: "{{ item }}"
+          loop: [-key, -known-hosts, -trial.ts]
+          register: check_tmp
+          delegate_to: "{{ check_engine }}"
+
+        - name: Engine key in the temporary file
+          ansible.builtin.copy:
+            dest: "{{ check_tmp.results[0].path }}"
+            content: "{{ vault_deployer_ssh_private_key }}"
+            mode: "0600"
+          delegate_to: "{{ check_engine }}"
+          no_log: true
+
+        - name: The engine's SSH command
+          ansible.builtin.set_fact:
+            check_ssh: [ssh, -i, "{{ check_tmp.results[0].path }}", -o, BatchMode=yes, -o, IdentitiesOnly=yes,
+                        -o, StrictHostKeyChecking=accept-new, -o, "UserKnownHostsFile={{ check_tmp.results[1].path }}",
+                        "deployment@{{ ansible_host }}"]
+
+        - name: Unsigned, other-key and platform-key images → refused
+          ansible.builtin.command:
+            argv: "{{ check_ssh + ['deploy preview ' ~ item ~ ' 1 ' ~ check_images[item]] }}"
+            stdin: ""
+          loop: [check-deployer-ns, check-deployer-ak, check-deployer-pf]
+          delegate_to: "{{ check_engine }}"
+          register: check_refusal
+          changed_when: false
+          failed_when: check_refusal.rc != 2 or check_refusal.stdout is not search('signature refused')
+
+        - name: Nothing started
+          ansible.builtin.command: docker ps -aq --filter label=eupadev.env=preview
+          register: check_nothing
+          changed_when: false
+          failed_when: check_nothing.stdout != ''
+
+        - name: Image signed with the tools key → deployed
+          ansible.builtin.command:
+            argv: "{{ check_ssh + ['deploy preview ' ~ check_tool ~ ' 1 ' ~ check_images[check_tool]] }}"
+            stdin: ""
+          delegate_to: "{{ check_engine }}"
+          register: check_deployment
+          changed_when: true
+          failed_when: >-
+            check_deployment.rc != 0
+            or (check_deployment.stdout | from_json) != {'digest': check_digest, 'url': 'https://' ~ check_host, 'health': 'ok'}
+
+        - name: Container after the first deployment
+          ansible.builtin.command: docker inspect preview-{{ check_tool }}
+          register: check_inspect_1
+          changed_when: false
+
+        - name: Same digest a second time → nothing touched
+          ansible.builtin.command:
+            argv: "{{ check_ssh + ['deploy preview ' ~ check_tool ~ ' 1 ' ~ check_images[check_tool]] }}"
+            stdin: ""
+          delegate_to: "{{ check_engine }}"
+          register: check_deployment_2
+          changed_when: false
+          failed_when: check_deployment_2.rc != 0 or check_deployment_2.stdout != check_deployment.stdout
+
+        - name: Container after the second call
+          ansible.builtin.command: docker inspect preview-{{ check_tool }}
+          register: check_inspect_2
+          changed_when: false
+
+        - name: Same container, same start
+          vars:
+            c1: "{{ (check_inspect_1.stdout | from_json)[0] }}"
+            c2: "{{ (check_inspect_2.stdout | from_json)[0] }}"
+          ansible.builtin.assert:
+            that:
+              - c1.Id == c2.Id
+              - c1.State.StartedAt == c2.State.StartedAt
+            fail_msg: "The second call remade the container: {{ c1.Id[:12] }} {{ c1.State.StartedAt }} → {{ c2.Id[:12] }} {{ c2.State.StartedAt }}"
+
+        - name: Served = real digest and cycle
+          ansible.builtin.command:
+            argv: "{{ check_ssh + ['served preview ' ~ check_tool] }}"
+            stdin: ""
+          delegate_to: "{{ check_engine }}"
+          register: check_served
+          changed_when: false
+          failed_when: >-
+            check_served.rc != 0 or (check_served.stdout | from_json) != {'digest': check_digest, 'cycle': 1}
+
+        - name: Another cycle — remove without effect, deploy refused
+          ansible.builtin.command:
+            argv: "{{ check_ssh + [item.line] }}"
+            stdin: ""
+          loop:
+            - { line: "remove preview {{ check_tool }} 2", rc: 0 }
+            - { line: "deploy preview {{ check_tool }} 2 {{ check_images[check_tool] }}", rc: 2 }
+          delegate_to: "{{ check_engine }}"
+          register: check_other_cycle
+          changed_when: false
+          failed_when: check_other_cycle.rc != item.rc or check_other_cycle.stdout is not search('owned by cycle 1')
+
+        - name: The container of cycle 1 still runs
+          ansible.builtin.command: docker inspect --format {{ '{{' }}.Id{{ '}}' }}/{{ '{{' }}.State.Running{{ '}}' }} preview-{{ check_tool }}
+          register: check_always
+          changed_when: false
+          failed_when: check_always.stdout != (check_inspect_1.stdout | from_json)[0].Id ~ '/true'
+
+        # ── The ENGINE's code (SshDeployer, built by externalWorld), in the
+        # engine image, with the key and known_hosts the service gets
+        # (systemd-creds, /run/eupadev/secrets) ─────────────────────────
+        - name: The engine's trial script
+          ansible.builtin.copy:
+            src: "{{ playbook_dir }}/../../orchestrator/scripts/trial-deployment.ts"
+            dest: "{{ check_tmp.results[2].path }}"
+            mode: "0444"
+          delegate_to: "{{ check_engine }}"
+
+        - name: The engine serves, redeploys (already done), is refused for another cycle; served on the tools VM
+          vars:
+            check_secrets: /run/eupadev/secrets
+            check_engine_vars: "{{ hostvars[check_engine] }}"
+          ansible.builtin.command:
+            argv: >-
+              {{ ['docker', 'run', '--rm', '--read-only', '--tmpfs', '/tmp', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true',
+                  '--user', '1000', '--entrypoint', 'node',
+                  '-v', check_tmp.results[2].path ~ ':/app/scripts/trial-deployment.ts:ro',
+                  '-v', check_secrets ~ '/deployer_key:/run/secrets/deployer_key:ro',
+                  '-v', check_secrets ~ '/deployer_known_hosts:/run/secrets/deployer_known_hosts:ro',
+                  '-e', 'EUPADEV_EXTERNAL=forge=gitea,deployer=ssh', '-e', 'FORGE_URL=https://' ~ gitea_domain, '-e', 'FORGE_TOKEN=unused',
+                  '-e', 'DEPLOYER_HOSTS=mockup=' ~ ansible_host ~ ',preview=' ~ ansible_host ~ ',prod=' ~ hostvars[groups['tools'][0]].ansible_host,
+                  '-e', 'DEPLOYER_KEY_FILE=/run/secrets/deployer_key', '-e', 'DEPLOYER_KNOWN_HOSTS_FILE=/run/secrets/deployer_known_hosts',
+                  check_engine_vars.orchestrator_image, '/app/scripts/trial-deployment.ts'] + item.args }}
+          loop:
+            - args: [served, preview, "{{ check_tool }}"]
+              expected: { digest: "{{ check_digest }}", cycleId: 1 }
+            - args: [deploy, preview, "{{ check_tool }}", "1", "{{ check_digest }}"]
+              expected: { digest: "{{ check_digest }}", url: "https://{{ check_host }}", health: ok }
+            - args: [deploy, preview, "{{ check_tool }}", "2", "{{ check_digest }}"]
+              expected: { digest: "{{ check_digest }}", url: "", health: failed, reason: "refused by the target: owned by cycle 1" }
+            # Prod is on the tools VM (its own address and host key): nothing served there.
+            - args: [served, prod, "{{ check_tool }}"]
+              expected: null
+          loop_control:
+            label: "{{ item.args | join(' ') }}"
+          delegate_to: "{{ check_engine }}"
+          register: check_by_engine
+          changed_when: false
+          failed_when: check_by_engine.rc != 0 or (check_by_engine.stdout | from_json) != item.expected
+
+        - name: Still the same container after the engine's calls
+          ansible.builtin.command: docker inspect --format {{ '{{' }}.Id{{ '}}' }}/{{ '{{' }}.State.Running{{ '}}' }} preview-{{ check_tool }}
+          register: check_always_2
+          changed_when: false
+          failed_when: check_always_2.stdout != check_always.stdout
+
+        # ── The Compose model, as Docker applied it ───────────────────────
+        - name: Model applied (non-root, read-only, no capability, no port nor host mount)
+          vars:
+            c: "{{ (check_inspect_1.stdout | from_json)[0] }}"
+          ansible.builtin.assert:
+            that:
+              - c.Config.User == '1000:1000'
+              - c.HostConfig.ReadonlyRootfs
+              - c.HostConfig.CapDrop == ['ALL']
+              - c.HostConfig.CapAdd in [none, []]
+              - "'no-new-privileges:true' in c.HostConfig.SecurityOpt"
+              - not c.HostConfig.Privileged
+              - c.HostConfig.PortBindings in [none, {}]
+              - c.Mounts | selectattr('Type', 'eq', 'bind') | list | length == 0
+              - c.HostConfig.Memory == 268435456
+              - c.HostConfig.PidsLimit == 128
+              - c.NetworkSettings.Networks.keys() | list == ['preview-' ~ check_tool]
+            fail_msg: >-
+              Model not applied: {{ c.Config.User }} {{ c.HostConfig.CapDrop }} {{ c.HostConfig.SecurityOpt }}
+              {{ c.NetworkSettings.Networks.keys() | list }}
+
+        - name: User seen in the container
+          ansible.builtin.command: docker exec preview-{{ check_tool }} id -u
+          register: check_uid
+          changed_when: false
+          failed_when: check_uid.stdout != '1000'
+
+        - name: No egress (Internet, forge, the VM's sshd)
+          ansible.builtin.command:
+            argv:
+              - docker
+              - exec
+              - preview-{{ check_tool }}
+              - node
+              - -e
+              - >-
+                const s = require('net').connect({{ item.port }}, '{{ item.host }}');
+                s.on('connect', () => process.exit(0)); s.on('error', () => process.exit(1));
+                setTimeout(() => process.exit(2), 5000)
+          loop:
+            - { host: "1.1.1.1", port: 443 }
+            - { host: "{{ forge_ip }}", port: 443 }
+            - { host: "{{ ansible_host }}", port: 22 }
+          register: check_output
+          changed_when: false
+          failed_when: check_output.rc == 0
+
+        - name: The tool does send a cookie with Domain (otherwise the next trial proves nothing)
+          ansible.builtin.command:
+            argv: [docker, exec, "preview-{{ check_tool }}", node, -e,
+                   "fetch('http://127.0.0.1:3000/').then(r => console.log(r.headers.get('set-cookie')))"]
+          register: check_cookie_direct
+          changed_when: false
+          failed_when: check_cookie_direct.stdout is not search('Domain=', ignorecase=true)
+
+        - name: Through Caddy, from the engine (generic DNS, valid certificate)
+          ansible.builtin.command:
+            argv: [curl, -sS, -D, "-", -o, /dev/null, --max-time, "20", "https://{{ check_host }}/"]
+          delegate_to: "{{ check_engine }}"
+          register: check_cookie_caddy
+          changed_when: false
+          failed_when: >-
+            check_cookie_caddy.rc != 0
+            or check_cookie_caddy.stdout is not search('(?im)^set-cookie: check=1')
+            or check_cookie_caddy.stdout is search('(?i)domain=')
+
+        # ── Crash in the middle of a deploy, then replay ──────────────────
+        - name: Remove (cycle 1) before the crash trial
+          ansible.builtin.command:
+            argv: "{{ check_ssh + ['remove preview ' ~ check_tool ~ ' 1'] }}"
+            stdin: ""
+          delegate_to: "{{ check_engine }}"
+          register: check_removal_1
+          changed_when: true
+          failed_when: >-
+            check_removal_1.rc != 0 or (check_removal_1.stdout | from_json) != {'done': true}
+
+        # A deploy takes ≈ 2 s here: killed at three points in a row, each
+        # call starting from what the previous one left half done.
+        - name: Script killed (SIGKILL) in the middle of a deployment
+          ansible.builtin.command:
+            argv: [timeout, -s, KILL, "{{ item }}", /usr/local/sbin/eupadev-deployer]
+          environment:
+            SSH_ORIGINAL_COMMAND: "deploy preview {{ check_tool }} 1 {{ check_images[check_tool] }}"
+          loop: ["0.5", "1", "1.5"]
+          register: check_killed
+          changed_when: true
+          # timeout re-raises SIGKILL on itself: the caller sees a killed process (-9).
+          failed_when: check_killed.rc not in [0, -9]
+
+        - name: At least one call was indeed killed
+          ansible.builtin.assert:
+            that: check_killed.results | selectattr('rc', 'eq', -9) | list | length > 0
+            fail_msg: "No call killed: {{ check_killed.results | map(attribute='rc') | list }}"
+
+        - name: Replay after the crash → same end state
+          ansible.builtin.command:
+            argv: "{{ check_ssh + ['deploy preview ' ~ check_tool ~ ' 1 ' ~ check_images[check_tool]] }}"
+            stdin: ""
+          delegate_to: "{{ check_engine }}"
+          register: check_replay
+          changed_when: true
+          failed_when: check_replay.rc != 0 or check_replay.stdout != check_deployment.stdout
+
+        - name: A single container, running, and the same one served
+          ansible.builtin.command: docker ps -a --filter label=eupadev.env=preview --format {{ '{{' }}.Names{{ '}}' }}/{{ '{{' }}.State{{ '}}' }}
+          register: check_after_replay
+          changed_when: false
+          failed_when: check_after_replay.stdout_lines != ['preview-' ~ check_tool ~ '/running']
+
+        # ── Removal ────────────────────────────────────────────────────────
+        - name: Remove (cycle 1)
+          ansible.builtin.command:
+            argv: "{{ check_ssh + ['remove preview ' ~ check_tool ~ ' 1'] }}"
+            stdin: ""
+          delegate_to: "{{ check_engine }}"
+          register: check_removal
+          changed_when: true
+          failed_when: >-
+            check_removal.rc != 0 or (check_removal.stdout | from_json) != {'done': true}
+
+        - name: No container, no network, no image; Caddy unplugged
+          ansible.builtin.command:
+            argv: [docker, "{{ item.object }}", inspect, "{{ item.name }}"]
+          loop:
+            - { object: container, name: "preview-{{ check_tool }}" }
+            - { object: network, name: "preview-{{ check_tool }}" }
+            - { object: image, name: "{{ check_images[check_tool] }}" }
+          register: check_gone
+          changed_when: false
+          failed_when: check_gone.rc == 0
+
+        - name: Caddy is only on its own network any more
+          ansible.builtin.command:
+            argv: [docker, inspect, --format, "{{ '{{' }}json .NetworkSettings.Networks{{ '}}' }}", deployer-caddy-1]
+          register: check_caddy
+          changed_when: false
+          failed_when: (check_caddy.stdout | from_json).keys() | list != ['deployer_default']
+
+      always:
+        - name: Remove what would be left (cycle 1)
+          ansible.builtin.command: /usr/local/sbin/eupadev-deployer
+          environment: { SSH_ORIGINAL_COMMAND: "remove preview {{ check_tool }} 1" }
+          changed_when: false
+          failed_when: false
+
+        - name: Base container
+          ansible.builtin.command: docker rm -f check-deployer-base
+          changed_when: false
+          failed_when: false
+
+        - name: Trial images left on the VM
+          ansible.builtin.command:
+            argv: [docker, image, rm, -f, "{{ gitea_domain }}/eupadev/{{ item }}:trial"]
+          loop: "{{ check_variants }}"
+          changed_when: false
+          failed_when: false
+
+        - name: Trial packages of the registry
+          ansible.builtin.uri:
+            url: "{{ check_forge.gitea_api }}/packages/eupadev/container/{{ item }}"
+            method: DELETE
+            status_code: [204, 404]
+          loop: "{{ check_variants }}"
+          delegate_to: "{{ groups['forge'][0] }}"
+
+        - name: Throwaway svc-ci badge
+          ansible.builtin.uri:
+            url: "{{ check_forge.gitea_api }}/users/svc-ci/tokens/check-deployer"
+            method: DELETE
+            status_code: [204, 404]
+          delegate_to: "{{ groups['forge'][0] }}"
+
+        - name: Work folder (registry login, keys)
+          ansible.builtin.file:
+            path: "{{ check_dir }}"
+            state: absent
+
+        - name: Temporary files of the engine
+          ansible.builtin.file:
+            path: "{{ item.path }}"
+            state: absent
+          loop: "{{ check_tmp.results | default([]) }}"
+          loop_control:
+            label: "{{ item.path }}"
+          delegate_to: "{{ check_engine }}"

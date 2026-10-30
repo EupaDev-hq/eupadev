@@ -1,0 +1,133 @@
+# Non-secret settings of the orchestrator VM (the secrets are in the vaults
+# vault*.yml of this folder, under the names vault_*).
+
+# Engine image, BY DIGEST (registry/eupadev/engine@sha256:…): last line
+# "Engine digest: …" of the pipeline of the forge's `engine` repository.
+# Empty: only the database is deployed (before the first image).
+orchestrator_image: "git.eupadev.org/eupadev/engine@sha256:f085bcdc248085ec66f30fa2c1c1b96305b6be021073b0a94bf7fc15b7e08c96"
+
+# Keycloak image, BY DIGEST: last line "Keycloak digest: …" of the pipeline of
+# the `keycloak` repository (engine-digest.yml -e repo=keycloak).
+# Empty: Keycloak is not deployed.
+keycloak_image: "git.eupadev.org/eupadev/keycloak@sha256:55f07b91c5ddbaec4531cfcd8d13e7d8d46a9e07bfccf4bfdffb89ee63515ff6"
+
+# Public name of Keycloak (issuer = https://<keycloak_domain>/realms/eupadev,
+# fixed: D2); Docker network of caddy-auth and keycloak, fixed address of Caddy
+# (the only source whose X-Forwarded-* headers Keycloak trusts).
+keycloak_domain: "auth.{{ base_domain }}"
+keycloak_network: 172.30.42.0/29
+keycloak_proxy_ip: 172.30.42.2
+keycloak_ip: 172.30.42.3
+
+# Contract with the engine (step A of the identity work, wired at its merge):
+#   fixed issuer (D2) → OIDC_ISSUER; JWKS through the Compose network (D7);
+#   token from the VM (playbooks, service accounts of the lab): local port
+#   8180 (8080 is the engine's API) — the `iss` stays the public issuer.
+keycloak_issuer: "https://{{ keycloak_domain }}/realms/eupadev"
+keycloak_internal_jwks_url: http://keycloak:8080/realms/eupadev/protocol/openid-connect/certs
+keycloak_internal_token_url: http://127.0.0.1:8180/realms/eupadev/protocol/openid-connect/token
+# `email` claim of the check-requester token (the engine writes to the requester).
+keycloak_check_requester_mail: "check-requester@{{ base_domain }}"
+# Four-eyes exemption (lab): Keycloak `sub` of ilan, written by the keycloak
+# role into the local fact /etc/ansible/facts.d/keycloak.fact (read at the
+# start of each pass, so before the orchestrator role); empty on the very
+# first pass of a new installation, then filled in.
+orchestrator_four_eyes_exemption_subject: "{{ ansible_local.keycloak.ilan_subject | default('') }}"
+
+# The engine's end-user texts in the lab language, read by the verify
+# playbooks that wait for a mail or a chat message (never a French literal).
+engine_texts: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../../orchestrator/lang/' ~ eupadev_language ~ '.json') | from_json }}"
+
+# 443: caddy-auth (https://auth.<domain>, Keycloak; https://<chat_domain>, the engine's page).
+ufw_allowed_ports: [22, 443]
+
+# Lab: Mailpit (mail trap, nothing goes out) started with the engine; page
+# and API on 127.0.0.1:8025 of the VM (SSH tunnel). At a client: false, and
+# SMTP_URL (or SMTP_URL_FILE, secret) towards their relay.
+orchestrator_mailpit: true
+
+# Non-secret configuration of the engine, written into the Compose variables
+# file. The dashboard does not exist yet: the local API (SSH tunnel).
+# E5 full cycle (explicit, reversible): true = the pilot works with the real
+# forge and the real deployer, and the executor with the pushing fake (no
+# AI, D-E2). Turned on for a run with -e orchestrator_real_world=true;
+# site.yml without it goes back to the fakes.
+orchestrator_real_world: false
+
+orchestrator_config:
+  ADMIN_ESCALATION_ADDRESS: "{{ gitea_admin_email }}"
+  # E1: real mails to Mailpit (lab); the rest with automatic fakes.
+  EUPADEV_EXTERNAL: "{{ 'forge=gitea,deployer=ssh,notifications=smtp' if orchestrator_real_world | bool else 'notifications=smtp' }}"
+  FORGE_URL: "https://{{ gitea_domain }}"
+  SMTP_URL: "smtp://mailpit:1025"
+  MAIL_FROM: "eupadev@{{ base_domain }}"
+  TOOL_DOMAIN: "{{ base_domain }}"
+  DASHBOARD_URL: "https://{{ chat_domain }}"
+  # A single source: the executor (agents VM) reads this same value.
+  AGENT_CONCURRENCY: "1"
+  # The agent tasks run on the agents VM (executor role, same image).
+  EUPADEV_ROLE: pilot
+  # End-user texts in French on the lab (L10, ADR-025).
+  EUPADEV_LANGUAGE: "{{ eupadev_language }}"
+  # E5d: deployment targets (ADR-014), used once deployer=ssh is switched on.
+  DEPLOYER_HOSTS: >-
+    {{ 'mockup=' ~ hostvars[groups['ci'][0]].ansible_host ~ ',preview=' ~ hostvars[groups['ci'][0]].ansible_host
+       ~ ',prod=' ~ hostvars[groups['tools'][0]].ansible_host }}
+
+# Secrets of the orchestrator (ROADMAP §8.16 M1): encrypted on the VM by
+# systemd-creds, decrypted at boot into /run/eupadev/secrets/<name>
+# (memory), owner = user of the container that reads it (uid), 0400.
+#   70   : postgres of the postgres:*-alpine image
+#   1000 : node of the engine image; keycloak of the Keycloak image
+# A secret added here must also be declared in the Compose file (secrets:).
+# Connections of the Compose services to the database: verified TLS (name
+# "db" of the server certificate), authority mounted read-only (compose.yml).
+orchestrator_tls_url: "sslmode=verify-full&sslrootcert=/run/tls/ca.crt"
+orchestrator_secrets:
+  - name: orch_db_password
+    uid: 70
+    value: "{{ vault_orch_db_password }}"
+  - name: orch_database_url
+    uid: 1000
+    value: "postgresql://orch_engine:{{ vault_orch_engine_password | urlencode }}@db:5432/orchestrator?{{ orchestrator_tls_url }}"
+  - name: orch_migration_database_url
+    uid: 1000
+    value: "postgresql://orch_owner:{{ vault_orch_owner_password | urlencode }}@db:5432/orchestrator?{{ orchestrator_tls_url }}"
+  # Keycloak (vault vault-keycloak.yml): password of the PostgreSQL account
+  # `keycloak`, and the one of temp-admin, read only by the bootstrap.
+  - name: keycloak_db_password
+    uid: 1000
+    value: "{{ vault_keycloak_db_password }}"
+  - name: keycloak_bootstrap_admin_password
+    uid: 1000
+    value: "{{ vault_keycloak_bootstrap_admin_password }}"
+  # Chat step 2 (ADR-024): secret of the Keycloak client eupadev-web, read
+  # by the engine as OIDC_WEB_CLIENT_SECRET_FILE (vault vault-keycloak-web.yml).
+  - name: oidc_web_client_secret
+    uid: 1000
+    value: "{{ vault_keycloak_web_secret }}"
+  # E5d, real deployer (SshDeployer, ADR-014): the engine key (vault
+  # vault-deployer.yml; ssh wants a final newline) and the host keys of the
+  # targets, read by the orchestrator role (orchestrator_known_hosts).
+  - name: deployer_key
+    uid: 1000
+    value: "{{ vault_deployer_ssh_private_key | trim }}\n"
+  - name: deployer_known_hosts
+    uid: 1000
+    value: "{{ orchestrator_known_hosts | default('') }}"
+  # Durable token of svc-orchestrator (forge=gitea), created and kept by the
+  # orchestrator role (tasks/forge-token.yml), never written in the vault.
+  - name: orch_forge_token
+    uid: 1000
+    value: "{{ orchestrator_forge_token | default('') }}"
+  # OVH credentials of caddy-auth (Let's Encrypt DNS-01, vault-ovh.yml; uid
+  # 0: the Caddy image runs as root). Same three on the CI and tools VMs.
+  - name: ovh_application_key
+    uid: 0
+    value: "{{ vault_ovh_application_key | default('') }}"
+  - name: ovh_application_secret
+    uid: 0
+    value: "{{ vault_ovh_application_secret | default('') }}"
+  - name: ovh_consumer_key
+    uid: 0
+    value: "{{ vault_ovh_consumer_key | default('') }}"

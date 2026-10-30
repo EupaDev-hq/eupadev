@@ -1,0 +1,436 @@
+# Real test of the agents VM (ROADMAP §8.16 L1-L4; launcher, steps 1 and 3)
+# — rerunnable, leaves nothing behind.
+#   ansible-playbook verify-agents.yml
+#   ansible-playbook verify-agents.yml -e ai_call=true   (paid call, see 7)
+# Two simulated tasks, each on its internal network created the way the
+# launcher will (compose/agents/compose.yml), proxies connected; containers
+# under runsc, hardened like the agents' ones.
+# 1. gVisor: runsc declared to Docker, runc stays the default; a container
+#    started with --runtime=runsc really runs under gVisor (dmesg, kernel).
+# 2. Network isolation: from task A, neither the forge, nor the orchestrator,
+#    nor its database, nor the VM, nor the Internet (not even DNS), nor the
+#    proxies through their egress network; no Docker socket.
+# 3. Two simultaneous tasks do not reach each other (B listens; witness: B
+#    reaches itself); A does not reach the proxies through B's network.
+# 4. Smokescreen: registry.npmjs.org passes; example.com, api.anthropic.com,
+#    the forge and the database are refused (407).
+# 5. AI proxy: the real key appears neither in the environment, nor in
+#    `docker inspect`, nor in the file system of the task containers, nor in
+#    the proxy's `docker inspect` (secret in a file); compared on the VM (grep
+#    of the key file), under no_log; witnesses: the key is readable in the
+#    proxy, and the search finds it when it is written in the container.
+# 6. AI proxy, free: GET /v1/models through the proxy with the fake key
+#    → 200 (the real key was added and accepted).
+# 7. -e ai_call=true (a few cents): minimal POST /v1/messages
+#    (max_tokens 1, smallest Haiku model of the list) → 200.
+# 8. Measure (no assertion, to decide L2): cold `pnpm install` of a small
+#    project under runc then under runsc, durations printed.
+- name: Verify the agents VM
+  hosts: agents
+  become: true
+  gather_facts: false
+  vars:
+    ai_call: false
+    # Node image of the golden image (images/base-node), by digest.
+    check_image: node:24.22.1-trixie-slim@sha256:43b9ba1142b8dcf33fa8f922ca1be85714adc444e0586c7cf7726daaeabc1bea
+    check_pnpm: 12.16.1
+    check_forge: "{{ hostvars[groups['forge'][0]].ansible_host }}"
+    check_orch: "{{ hostvars[groups['orchestrator'][0]].ansible_host }}"
+    check_proxies: [agents-ai-proxy-1, agents-smokescreen-1]
+    check_key: /run/eupadev/secrets/anthropic_api_key
+    # Common flags of the trial containers (those planned for the agents),
+    # plus runtime and network.
+    check_hardened:
+      - --read-only
+      - --tmpfs=/tmp:rw,exec,size=512m
+      - --cap-drop=ALL
+      - --security-opt=no-new-privileges
+      - --user=1000:1000
+      - --memory=1g
+      - --pids-limit=512
+      - --label=eupadev.task=check
+  tasks:
+    - name: Trials (cleanup guaranteed)
+      block:
+        - name: Runtimes declared to Docker
+          ansible.builtin.command:
+            cmd: docker info --format '{{ "{{" }}json .Runtimes{{ "}}" }} {{ "{{" }}.DefaultRuntime{{ "}}" }}'
+          register: check_runtimes
+          changed_when: false
+
+        - name: Runtime runsc declared (systrap platform), runc stays the default runtime
+          ansible.builtin.assert:
+            that:
+              - (check_runtimes.stdout.split(' ')[0] | from_json).runsc is defined
+              - "'--platform=systrap' in (check_runtimes.stdout.split(' ')[0] | from_json).runsc.runtimeArgs"
+              - check_runtimes.stdout.split(' ')[1] == 'runc'
+            fail_msg: "Unexpected runtimes: {{ check_runtimes.stdout }}"
+
+        # Network of a task, as the launcher will create it (compose/agents).
+        - name: Create the internal networks of tasks A and B
+          ansible.builtin.command:
+            argv: [docker, network, create, --internal, -o, com.docker.network.bridge.inhibit_ipv4=true,
+                   --label, eupadev.task=check, "net-check-{{ item }}"]
+          loop: [a, b]
+          changed_when: true
+
+        - name: Connect both proxies to each task network
+          ansible.builtin.command:
+            argv: [docker, network, connect, "net-check-{{ item.0 }}", "{{ item.1 }}"]
+          loop: "{{ ['a', 'b'] | product(check_proxies) | list }}"
+          changed_when: true
+
+        - name: Networks of the proxies
+          ansible.builtin.command:
+            argv: [docker, inspect, --format, "{{ '{{' }}json .NetworkSettings.Networks{{ '}}' }}", "{{ item }}"]
+          loop: "{{ check_proxies }}"
+          register: check_proxy_networks
+          changed_when: false
+
+        - name: Addresses of the proxies (networks A and B, egress network)
+          ansible.builtin.set_fact:
+            check_ai: "{{ check_proxy_networks.results[0].stdout | from_json }}"
+            check_smk: "{{ check_proxy_networks.results[1].stdout | from_json }}"
+
+        - name: Internal task networks, without a VM address on the bridge
+          ansible.builtin.command:
+            argv: [docker, network, inspect, --format, "{{ check_format }}", net-check-a, net-check-b]
+          vars:
+            check_format: >-
+              {{ '{{' }}.Internal{{ '}}' }} {{ '{{' }}index .Options "com.docker.network.bridge.inhibit_ipv4"{{ '}}' }}
+          register: check_task_networks
+          changed_when: false
+          failed_when: check_task_networks.stdout_lines != ['true true', 'true true']
+
+        - name: Directory of the probes (readable by the containers' user)
+          ansible.builtin.tempfile:
+            state: directory
+            prefix: check-agents-
+          register: check_dir
+
+        - name: Copy the probes
+          ansible.builtin.copy:
+            src: "{{ item }}"
+            dest: "{{ check_dir.path }}/{{ item }}"
+            mode: "0644"
+          loop: [network-probe.js, measure-pnpm.sh]
+
+        - name: Directory of the probes traversable
+          ansible.builtin.file:
+            path: "{{ check_dir.path }}"
+            mode: "0755"
+
+        # Example of the gVisor docs: gVisor's dmesg starts with
+        # "Starting gVisor..." (can be imitated: hence the kernel version too).
+        - name: Kernel messages (dmesg) of a container under runsc
+          ansible.builtin.command:
+            argv: [docker, run, --rm, --runtime=runsc, --network=none, "{{ check_image }}", dmesg]
+          register: check_dmesg
+          changed_when: false
+
+        - name: Kernel of the VM
+          ansible.builtin.command:
+            cmd: uname -r
+          register: check_vm_kernel
+          changed_when: false
+
+        # Task A: the environment the launcher will give an agent.
+        - name: Start the container of task A (proxies by IP, fake key)
+          ansible.builtin.command:
+            argv: >-
+              {{ ['docker', 'run', '-d', '--name', 'check-agents-a', '--runtime=runsc', '--network=net-check-a',
+                  '-e', 'ANTHROPIC_BASE_URL=http://' ~ check_ai['net-check-a'].IPAddress ~ ':8080',
+                  '-e', 'ANTHROPIC_API_KEY=fake',
+                  '-e', 'HTTPS_PROXY=http://' ~ check_smk['net-check-a'].IPAddress ~ ':4750',
+                  '-v', check_dir.path ~ '/network-probe.js:/probe/network-probe.js:ro']
+                 + check_hardened + [check_image, 'sleep', '900'] }}
+          changed_when: true
+
+        - name: Start the container of task B (listening on 9000)
+          ansible.builtin.command:
+            argv: >-
+              {{ ['docker', 'run', '-d', '--name', 'check-agents-b', '--runtime=runsc', '--network=net-check-b',
+                  '-v', check_dir.path ~ '/network-probe.js:/probe/network-probe.js:ro']
+                 + check_hardened + [check_image, 'node', '/probe/network-probe.js', 'listen', '9000'] }}
+          changed_when: true
+
+        - name: Address of task B
+          ansible.builtin.command:
+            argv: [docker, inspect, --format, "{{ '{{' }}(index .NetworkSettings.Networks \"net-check-b\").IPAddress{{ '}}' }}", check-agents-b]
+          register: check_ip_b
+          changed_when: false
+
+        - name: Kernel and system seen from the container of task A
+          ansible.builtin.command:
+            cmd: docker exec check-agents-a uname -a
+          register: check_uname
+          changed_when: false
+
+        - name: The container runs under gVisor
+          ansible.builtin.assert:
+            that:
+              - check_dmesg.stdout is search('gVisor')
+              - check_uname.stdout.split(' ')[2] != check_vm_kernel.stdout
+            fail_msg: "Not gVisor? uname: {{ check_uname.stdout }}; dmesg: {{ check_dmesg.stdout_lines[:3] }}"
+
+        - name: Show uname and dmesg under gVisor
+          ansible.builtin.debug:
+            msg: ["{{ check_uname.stdout }}", "{{ check_dmesg.stdout_lines[:3] }}"]
+
+        # Witnesses: without them, a refusal could come from a broken probe.
+        - name: Witnesses — B reaches itself, A reaches its two proxies
+          ansible.builtin.command:
+            argv: [docker, exec, "{{ item.0 }}", node, /probe/network-probe.js, direct, "{{ item.1 }}", "{{ item.2 }}"]
+          loop:
+            - [check-agents-b, "{{ check_ip_b.stdout }}", "9000"]
+            - [check-agents-a, "{{ check_ai['net-check-a'].IPAddress }}", "8080"]
+            - [check-agents-a, "{{ check_smk['net-check-a'].IPAddress }}", "4750"]
+          changed_when: false
+
+        # The target port is open on the target (forge 443, sshd everywhere,
+        # task B, proxies): a refusal proves there is no route.
+        - name: Direct connections from task A
+          ansible.builtin.command:
+            argv: [docker, exec, check-agents-a, node, /probe/network-probe.js, direct, "{{ item.0 }}", "{{ item.1 }}"]
+          loop:
+            - ["{{ check_forge }}", "443"]       # forge (Caddy)
+            - ["{{ check_forge }}", "22"]
+            - ["{{ check_orch }}", "22"]        # orchestrator
+            - ["{{ check_orch }}", "5432"]      # its database
+            - ["{{ ansible_host }}", "22"]      # the agents VM itself
+            - ["172.17.0.1", "22"]              # default Docker bridge
+            - ["1.1.1.1", "443"]                # direct Internet
+            - ["{{ check_ip_b.stdout }}", "9000"]  # the other task
+            - ["{{ check_ai['net-check-b'].IPAddress }}", "8080"]   # AI proxy through B's network
+            - ["{{ check_ai['agents_ai-egress'].IPAddress }}", "8080"]  # AI proxy through its egress
+            - ["{{ check_smk['agents_egress'].IPAddress }}", "4750"]    # Smokescreen through its egress
+          register: check_direct
+          changed_when: false
+          failed_when: false
+
+        - name: No direct connection gets through
+          ansible.builtin.assert:
+            that: check_direct.results | selectattr('rc', 'equalto', 0) | list | length == 0
+            fail_msg: >-
+              Reached without a proxy: {{ check_direct.results | selectattr('rc', 'equalto', 0)
+              | map(attribute='item') | list }}
+
+        - name: DNS resolution of an Internet name from task A
+          ansible.builtin.command:
+            cmd: docker exec check-agents-a getent hosts example.com
+          register: check_dns
+          changed_when: false
+          failed_when: false
+
+        - name: Docker socket in task A
+          ansible.builtin.command:
+            cmd: docker exec check-agents-a ls /var/run/docker.sock
+          register: check_socket
+          changed_when: false
+          failed_when: false
+
+        - name: Neither Internet DNS (leak channel) nor Docker socket
+          ansible.builtin.assert:
+            that:
+              - check_dns.rc != 0
+              - check_socket.rc != 0
+            fail_msg: "DNS: {{ check_dns.stdout }}; socket: {{ check_socket.stdout }}"
+
+        - name: CONNECT requests to Smokescreen from task A
+          ansible.builtin.command:
+            argv: [docker, exec, check-agents-a, node, /probe/network-probe.js, proxy, "{{ check_smk['net-check-a'].IPAddress }}", "4750", "{{ item }}"]
+          loop:
+            - registry.npmjs.org:443
+            - example.com:443
+            - api.anthropic.com:443
+            - "{{ check_forge }}:443"
+            - "{{ check_orch }}:5432"
+          register: check_proxy_trials
+          changed_when: false
+          failed_when: false
+
+        - name: The npm registry is allowed, everything else refused by Smokescreen (407)
+          ansible.builtin.assert:
+            that:
+              - check_proxy_trials.results[0].rc == 0
+              - check_proxy_trials.results[1:] | map(attribute='stdout') | reject('match', '407 ') | list == []
+            fail_msg: >-
+              Answers of Smokescreen: {{ check_proxy_trials.results | map(attribute='item')
+              | zip(check_proxy_trials.results | map(attribute='stdout')) | list }}
+
+        # The key never leaves the VM: grep -F -f <key file>, and only labels
+        # ("env:…") come out. Minimum size first: an empty file would find
+        # nothing (false success). Archive of the file system read by the
+        # container's user: what the agent sees.
+        # No pipefail on purpose: grep -q stops at the 1st result and tar then
+        # dies of SIGPIPE; with pipefail, a key found would go unnoticed.
+        - name: Look for the real key in the tasks and in the proxy's inspect  # noqa: risky-shell-pipe
+          ansible.builtin.shell:
+            cmd: |
+              k={{ check_key }}
+              test "$(stat -c %s "$k")" -ge 20 || { echo "key missing or too short"; exit 2; }
+              for c in check-agents-a check-agents-b; do
+                docker exec "$c" env | grep -qF -f "$k" && echo "env:$c"
+                docker inspect "$c" | grep -qF -f "$k" && echo "inspect:$c"
+                docker exec "$c" tar -cf - --exclude=./proc --exclude=./sys --exclude=./dev -C / . 2>/dev/null \
+                  | grep -qaF -f "$k" && echo "fs:$c"
+              done
+              docker inspect agents-ai-proxy-1 | grep -qF -f "$k" && echo "inspect:ai-proxy"
+              docker exec agents-ai-proxy-1 cat /run/secrets/anthropic_api_key | grep -qF -f "$k" || echo "witness:ai-proxy-without-key"
+              exit 0
+          register: check_leaks
+          changed_when: false
+          no_log: true
+
+        - name: Witness of the search — key written in the /tmp of task A, then found again  # noqa: risky-shell-pipe (same)
+          ansible.builtin.shell:
+            cmd: |
+              docker exec -i check-agents-a sh -c 'cat > /tmp/witness' < {{ check_key }}
+              docker exec check-agents-a tar -cf - --exclude=./proc --exclude=./sys --exclude=./dev -C / . 2>/dev/null \
+                | grep -qaF -f {{ check_key }} && echo found
+              docker exec check-agents-a rm -f /tmp/witness
+          register: check_leak_witness
+          changed_when: false
+          no_log: true
+
+        - name: The real key is visible nowhere on the task side (and the search works)
+          ansible.builtin.assert:
+            that:
+              - check_leaks.rc | default(1) == 0
+              - check_leaks.stdout | default('?') == ''
+              - check_leak_witness.stdout | default('') == 'found'
+            fail_msg: >-
+              Key found or invalid search: {{ check_leaks.stdout_lines | default(['?']) }}
+              (code {{ check_leaks.rc | default('?') }}); witness: {{ check_leak_witness.stdout | default('?') }}
+            success_msg: "OK — key absent from env, inspect and file system of the tasks, and from the proxy's inspect"
+
+        - name: AI proxy, free — list of the models with the fake key
+          ansible.builtin.command:
+            argv: [docker, exec, check-agents-a, node, /probe/network-probe.js, http,
+                   "http://{{ check_ai['net-check-a'].IPAddress }}:8080/v1/models?limit=100"]
+          register: check_models
+          changed_when: false
+          failed_when: false
+
+        - name: The real key is added and accepted (200)
+          ansible.builtin.assert:
+            that: check_models.rc == 0 and check_models.stdout_lines[0] == '200'
+            fail_msg: "Answer of the AI proxy: {{ check_models.stdout[:500] }}"
+
+        - name: Minimal real call (paid, -e ai_call=true)
+          when: ai_call | bool
+          block:
+            - name: Smallest Haiku model available
+              ansible.builtin.set_fact:
+                check_model: >-
+                  {{ (check_models.stdout_lines[1:] | join('\n') | from_json).data | map(attribute='id')
+                     | select('search', 'haiku') | sort | first }}
+
+            - name: POST /v1/messages through the proxy (max_tokens 1)
+              ansible.builtin.command:
+                argv: [docker, exec, check-agents-a, node, /probe/network-probe.js, http,
+                       "http://{{ check_ai['net-check-a'].IPAddress }}:8080/v1/messages",
+                       "{{ {'model': check_model, 'max_tokens': 1, 'messages': [{'role': 'user', 'content': 'Answer OK.'}]} | to_json }}"]
+              register: check_call
+              changed_when: false
+              failed_when: check_call.rc != 0
+
+            - name: Show the answer (model, usage)
+              ansible.builtin.debug:
+                msg: "{{ (check_call.stdout_lines[1] | from_json).model }} — {{ (check_call.stdout_lines[1] | from_json).usage }}"
+
+        # Measure only (decision L2): cold pnpm store, same network path
+        # (Smokescreen on the network of task A) for both runtimes.
+        - name: Measure pnpm install under runc then under runsc
+          ansible.builtin.command:
+            argv: >-
+              {{ ['docker', 'run', '--rm', '--name', 'check-agents-' ~ item, '--network=net-check-a',
+                  '-e', 'HTTPS_PROXY=' ~ check_proxy, '-e', 'HTTP_PROXY=' ~ check_proxy,
+                  '-v', check_dir.path ~ '/measure-pnpm.sh:/probe/measure-pnpm.sh:ro']
+                 + check_hardened + ['--runtime=' ~ item, check_image, 'sh', '/probe/measure-pnpm.sh', check_pnpm] }}
+          vars:
+            check_proxy: "http://{{ check_smk['net-check-a'].IPAddress }}:4750"
+          loop: [runc, runsc]
+          register: check_measures
+          changed_when: false
+          failed_when: false
+
+        - name: Measured durations
+          ansible.builtin.debug:
+            msg: "{{ check_measures.results | map(attribute='item') | zip(check_measures.results | map(attribute='stdout'),
+              check_measures.results | map(attribute='stderr')) | list }}"
+
+      always:
+        - name: Logs of the proxies (last 30 lines)
+          ansible.builtin.command:
+            argv: [docker, logs, --tail, "30", "{{ item }}"]
+          loop: "{{ check_proxies }}"
+          register: check_journal
+          changed_when: false
+          failed_when: false
+
+        - name: Show the logs of the proxies
+          ansible.builtin.debug:
+            msg: "{{ item.stdout_lines + item.stderr_lines }}"
+          loop: "{{ check_journal.results }}"
+          loop_control: { label: "{{ item.item }}" }
+
+        - name: Remove the trial containers
+          ansible.builtin.command:
+            cmd: docker rm -f check-agents-a check-agents-b check-agents-runc check-agents-runsc
+          changed_when: false
+          failed_when: false
+
+        - name: Disconnect the proxies from the task networks
+          ansible.builtin.command:
+            argv: [docker, network, disconnect, -f, "net-check-{{ item.0 }}", "{{ item.1 }}"]
+          loop: "{{ ['a', 'b'] | product(check_proxies) | list }}"
+          changed_when: false
+          failed_when: false
+
+        - name: Remove the task networks
+          ansible.builtin.command:
+            cmd: docker network rm net-check-a net-check-b
+          changed_when: false
+          failed_when: false
+
+        - name: Remove the directory of the probes
+          ansible.builtin.file:
+            path: "{{ check_dir.path }}"
+            state: absent
+          when: check_dir.path is defined
+
+# DBOS executor in service (docs/reflexions/2026-10-15-note-lanceur-service.md):
+# what the Claude Code engine needs, seen from its container.
+- name: Verify the executor of the agents VM
+  hosts: agents
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read the configuration of the executor container
+      ansible.builtin.command:
+        argv: [docker, inspect, --format, "{{ exec_format }}", executor-executor-1]
+      vars:
+        exec_format: >-
+          {{ '{{' }}.HostConfig.ReadonlyRootfs{{ '}}' }}|{{ '{{' }}.HostConfig.CapDrop{{ '}}' }}|{{ '{{'
+          }}.HostConfig.SecurityOpt{{ '}}' }}|{{ '{{' }}.State.Status{{ '}}' }}
+      register: exec_conf
+      changed_when: false
+
+    - name: "Executor: running, read-only root, no capability, no-new-privileges"
+      ansible.builtin.assert:
+        that: exec_conf.stdout | trim == 'true|[ALL]|[no-new-privileges:true]|running'
+        fail_msg: "Configuration of the executor: {{ exec_conf.stdout }}"
+
+    - name: Identity, Docker and signature of the agents image from the executor
+      ansible.builtin.command:
+        argv: [docker, exec, executor-executor-1, sh, -c,
+               "id -u; docker version --format '{{ '{{' }}.Server.Version{{ '}}' }}' >/dev/null && echo docker-ok;
+                cosign verify --key /etc/eupadev/cosign.pub --insecure-ignore-tlog=true \"$AGENT_IMAGE\" >/dev/null 2>&1 && echo signature-ok"]
+      register: exec_trial
+      changed_when: false
+
+    - name: "Executor: non-root, Docker reached, signature of the agents image checked on the forge"
+      ansible.builtin.assert:
+        that: exec_trial.stdout_lines == ['1000', 'docker-ok', 'signature-ok']
+        fail_msg: "From the executor: {{ exec_trial.stdout_lines }} {{ exec_trial.stderr }}"
