@@ -1,0 +1,188 @@
+# Real test of chat step 6 (docs/reflexions/2026-10-25-note-chat.md §6) — rerunnable.
+#   ansible-playbook verify-engine-chat.yml
+# The requesters' page at https://<chat_domain>, second site block of
+# caddy-auth, reverse proxy to the engine. Checked from the CI VM, as by an
+# outside browser:
+#   1. the page loads over HTTPS with the engine's CSP and Caddy's HSTS;
+#   2. a wrong Host never gets an answer from the engine (through Caddy), and
+#      the engine itself answers 421 (on the VM, port 8080);
+#   3. a real sign-in by files/check-keycloak.py (mode page): /auth/login?lang=fr
+#      → Keycloak with ui_locales=fr, login page in French → /auth/callback →
+#      session cookie → GET /requests 200 with the requester hat → sign-out →
+#      the cookie no longer works.
+# Not covered here: submit, answer and opinion through the page (Playwright
+# tests of the engine, features/chat.feature) and a full cycle from the page.
+# Creates a test user (check-chat, eupadev-requesters group, throwaway
+# password) and deletes it at the end; its actor row stays in the engine's
+# database (nothing is deleted there, by design).
+- name: Chat step 6 — the engine's page through HTTPS
+  hosts: orchestrator
+  become: true
+  gather_facts: false
+  vars:
+    page: "https://{{ chat_domain }}"
+    public: "https://{{ keycloak_domain }}"
+    kc_admin: http://127.0.0.1:8180/admin/realms/eupadev
+    client_ci: "{{ groups['ci'][0] }}"
+    person: check-chat
+  module_defaults:
+    ansible.builtin.uri:
+      return_content: true
+  tasks:
+    - name: The engine and Keycloak are deployed
+      ansible.builtin.assert:
+        that:
+          - orchestrator_image | length > 0
+          - keycloak_image | default('') | length > 0
+        fail_msg: "orchestrator_image and keycloak_image (group_vars/orchestrator/vars.yml): nothing to test."
+        quiet: true
+
+    - name: Throwaway password of the test user
+      ansible.builtin.set_fact:
+        person_password: "{{ lookup('ansible.builtin.password', '/dev/null', length=24, chars=['ascii_letters', 'digits']) }}"
+      no_log: true
+
+    - name: Checks
+      block:
+        - name: The page over HTTPS
+          ansible.builtin.uri:
+            url: "{{ page }}/"
+          delegate_to: "{{ client_ci }}"
+          register: home
+
+        - name: The engine's CSP (sign-out form to the IdP) and Caddy's HSTS
+          ansible.builtin.assert:
+            that:
+              - "'default-src' in home.content_security_policy | default('')"
+              - "public in home.content_security_policy | default('')"
+              - home.strict_transport_security | default('') == 'max-age=31536000'
+            fail_msg: "Headers: CSP {{ home.content_security_policy | default('absent') }}, HSTS {{ home.strict_transport_security | default('absent') }}"
+
+        # Caddy routes by Host: a name other than chat_domain matches no site
+        # (empty answer) or, if it ever reached the engine, gets 421.
+        - name: A wrong Host through HTTPS gets nothing from the engine
+          ansible.builtin.uri:
+            url: "{{ page }}/health"
+            headers: { Host: "evil-forge.{{ base_domain }}" }
+            status_code: [200, 421]
+          delegate_to: "{{ client_ci }}"
+          register: elsewhere
+          failed_when: elsewhere.status == -1 or (elsewhere.status != 421 and elsewhere.content | length > 0)
+
+        - name: The engine itself answers 421 to a wrong Host
+          ansible.builtin.uri:
+            url: http://127.0.0.1:8080/health
+            headers: { Host: "evil-forge.{{ base_domain }}" }
+            status_code: 421
+
+        - name: Token of the configuration client
+          ansible.builtin.uri:
+            url: "{{ keycloak_internal_token_url }}"
+            method: POST
+            body_format: form-urlencoded
+            body:
+              grant_type: client_credentials
+              client_id: eupadev-config
+              client_secret: "{{ vault_keycloak_config_secret }}"
+          register: cfg
+          no_log: true
+
+        - name: Create the test user (requesters group)
+          ansible.builtin.uri:
+            url: "{{ kc_admin }}/users"
+            method: POST
+            headers: { Authorization: "Bearer {{ cfg.json.access_token }}" }
+            body_format: json
+            body:
+              username: "{{ person }}"
+              enabled: true
+              email: "{{ person }}@{{ base_domain }}"
+              emailVerified: true
+              firstName: Check
+              lastName: Chat
+              groups: [eupadev-requesters]
+              credentials: [{ type: password, value: "{{ person_password }}", temporary: false }]
+            status_code: 201
+          register: created
+          changed_when: true
+          no_log: true
+
+        - name: Keep the test user's id
+          ansible.builtin.set_fact:
+            person_id: "{{ created.location | regex_replace('^.*/', '') }}"
+
+        - name: Put the check script on the CI VM
+          ansible.builtin.copy:
+            src: files/check-keycloak.py
+            dest: /tmp/check-keycloak.py
+            mode: "0755"
+          delegate_to: "{{ client_ci }}"
+
+        - name: Sign-in, API call with the cookie, sign-out (through HTTPS)
+          ansible.builtin.command:
+            argv: [python3, /tmp/check-keycloak.py]
+            stdin: "{{ {'mode': 'page', 'page': page, 'base': public, 'user': person, 'password': person_password} | to_json }}"
+          delegate_to: "{{ client_ci }}"
+          register: flows
+          changed_when: false
+          no_log: true
+
+        - name: Findings of the sign-in
+          ansible.builtin.debug:
+            msg: "{{ flows.stdout | from_json }}"
+
+        - name: To Keycloak in French, back with a session, the API answers, sign-out ends it
+          ansible.builtin.assert:
+            that:
+              - f.login.status == 303 and f.login.to_idp and f.login.ui_locales == 'fr'
+              - f.idp_page.status == 200 and f.idp_page.lang == 'fr'
+              - f.return.to_callback
+              - f.callback.status == 303
+              - f.requests.status == 200 and f.requests.roles == ['requester']
+              - f.logout.status == 303 and f.logout.to_idp
+              - f.after_logout == 401
+            fail_msg: "Sign-in through the page: see \"Findings of the sign-in\" above"
+          vars:
+            f: "{{ flows.stdout | from_json }}"
+
+      rescue:
+        - name: Logs of the engine and caddy-auth
+          ansible.builtin.command:
+            argv: [docker, compose, logs, --no-log-prefix, --tail, "30", engine, caddy-auth]
+            chdir: /opt/eupadev/orchestrator
+          register: logs
+          changed_when: false
+
+        - name: Failure
+          ansible.builtin.fail:
+            msg: "FAILED: \"{{ ansible_failed_task.name }}\": {{ ansible_failed_result.msg | default('?') }} — logs: {{ logs.stdout_lines }}"
+
+      always:
+        - name: Token for the cleanup
+          ansible.builtin.uri:
+            url: "{{ keycloak_internal_token_url }}"
+            method: POST
+            body_format: form-urlencoded
+            body:
+              grant_type: client_credentials
+              client_id: eupadev-config
+              client_secret: "{{ vault_keycloak_config_secret }}"
+          register: cfg_end
+          when: person_id is defined
+          no_log: true
+
+        - name: Delete the test user
+          ansible.builtin.uri:
+            url: "{{ kc_admin }}/users/{{ person_id }}"
+            method: DELETE
+            headers: { Authorization: "Bearer {{ cfg_end.json.access_token }}" }
+            status_code: 204
+          when: person_id is defined
+          changed_when: true
+          no_log: true
+
+        - name: Remove the script from the CI VM
+          ansible.builtin.file:
+            path: /tmp/check-keycloak.py
+            state: absent
+          delegate_to: "{{ client_ci }}"

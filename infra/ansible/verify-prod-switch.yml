@@ -1,0 +1,306 @@
+# Real test of the Prod switch (E5g, ADR-022) — rerunnable, leaves nothing
+# behind.
+#   ansible-playbook verify-prod-switch.yml </dev/null
+# Three test images are published on the CI VM (golden run image + a tiny
+# server), all signed with the tools key: v1 and v2 healthy, v3 answering
+# 500 on /health. Through SSH with the engine key, on the tools VM:
+# 1. creation: v1 serves https://<tool>.<domain>;
+# 2. v2: started beside v1, gets the traffic, v1 is removed (one container);
+# 3. v3 (unhealthy): refused with `failed` and the attempted digest, v2 never
+#    stopped serving;
+# 4. rollback = deploying v1 again: its image is still on the VM (no
+#    download), v1 serves again;
+# 5. remove: nothing left.
+- name: Prod — side-by-side switch on the tools VM
+  hosts: tools
+  become: true
+  gather_facts: false
+  vars:
+    check_forge: "{{ hostvars[groups['forge'][0]] }}"
+    check_engine: "{{ groups['orchestrator'][0] }}"
+    check_ci: "{{ groups['ci'][0] }}"
+    check_tool: check-switch
+    check_dir: /run/eupadev/check-switch
+    check_docker: { DOCKER_CONFIG: /run/eupadev/check-switch }
+    check_url: "https://{{ check_tool }}.{{ base_domain }}"
+    check_versions:
+      - { name: v1, health: 200 }
+      - { name: v2, health: 200 }
+      - { name: v3, health: 500 }
+  module_defaults:
+    ansible.builtin.uri:
+      url_username: "{{ gitea_admin_user }}"
+      url_password: "{{ vault_gitea_admin_password }}"
+      force_basic_auth: true
+  tasks:
+    - name: Trials (cleanup guaranteed)
+      block:
+        # ── Test images, built and signed on the CI VM ────────────────────
+        - name: Remove an old throwaway svc-ci badge
+          ansible.builtin.uri:
+            url: "{{ check_forge.gitea_api }}/users/svc-ci/tokens/check-switch"
+            method: DELETE
+            status_code: [204, 404]
+          delegate_to: "{{ groups['forge'][0] }}"
+
+        - name: Throwaway publishing badge (svc-ci)
+          ansible.builtin.uri:
+            url: "{{ check_forge.gitea_api }}/users/svc-ci/tokens"
+            method: POST
+            body_format: json
+            body: { name: check-switch, scopes: ["write:package"] }
+            status_code: 201
+          delegate_to: "{{ groups['forge'][0] }}"
+          register: check_badge
+          changed_when: false
+          no_log: true
+
+        - name: Work folder on the CI VM
+          ansible.builtin.file:
+            path: "{{ check_dir }}"
+            state: directory
+            mode: "0700"
+          delegate_to: "{{ check_ci }}"
+
+        - name: Log in to the registry (CI VM)
+          ansible.builtin.command:
+            argv: [docker, login, "{{ gitea_domain }}", -u, svc-ci, --password-stdin]
+            stdin: "{{ check_badge.json.sha1 }}"
+          environment: "{{ check_docker }}"
+          delegate_to: "{{ check_ci }}"
+          changed_when: false
+          no_log: true
+
+        - name: Run golden image
+          ansible.builtin.command:
+            argv: [docker, pull, -q, "{{ check_forge.gitea_org_variables.BASE_IMAGE_RUN }}"]
+          environment: "{{ check_docker }}"
+          delegate_to: "{{ check_ci }}"
+          changed_when: false
+
+        - name: Base container
+          ansible.builtin.command:
+            argv: [docker, create, --name, check-switch-base, "{{ check_forge.gitea_org_variables.BASE_IMAGE_RUN }}"]
+          delegate_to: "{{ check_ci }}"
+          changed_when: false
+
+        - name: Three versions (page = version, /health by version)
+          vars:
+            check_server: >-
+              require('http').createServer((q, r) => { r.statusCode = q.url === '/health' ? {{ item.health }} : 200;
+              r.end('{{ item.name }}'); }).listen(3000)
+          ansible.builtin.command:
+            argv: [docker, commit, --change, 'CMD ["node", "-e", {{ check_server | to_json }}]',
+                   check-switch-base, "{{ gitea_domain }}/eupadev/{{ check_tool }}:{{ item.name }}"]
+          loop: "{{ check_versions }}"
+          delegate_to: "{{ check_ci }}"
+          changed_when: false
+
+        - name: Publish
+          ansible.builtin.command:
+            argv: [docker, push, -q, "{{ gitea_domain }}/eupadev/{{ check_tool }}:{{ item.name }}"]
+          environment: "{{ check_docker }}"
+          loop: "{{ check_versions }}"
+          delegate_to: "{{ check_ci }}"
+          changed_when: false
+
+        - name: Digests
+          ansible.builtin.command:
+            argv: [docker, image, inspect, --format, "{{ '{{' }}json .RepoDigests{{ '}}' }}", "{{ gitea_domain }}/eupadev/{{ check_tool }}:{{ item.name }}"]
+          loop: "{{ check_versions }}"
+          delegate_to: "{{ check_ci }}"
+          register: check_digests
+          changed_when: false
+
+        - name: Images named by digest
+          ansible.builtin.set_fact:
+            check_images: >-
+              {{ dict(check_versions | map(attribute='name') | zip(check_digests.results | map(attribute='stdout') | map('from_json')
+                 | map('select', 'search', '/eupadev/' ~ check_tool ~ '@') | map('first'))) }}
+
+        - name: Signing configuration without any service
+          ansible.builtin.command:
+            argv: [cosign, signing-config, create, --out, "{{ check_dir }}/signing-config.json"]
+          delegate_to: "{{ check_ci }}"
+          changed_when: false
+
+        - name: Sign with the tools key
+          ansible.builtin.command:
+            argv: [cosign, sign, --yes, --key, env://COSIGN_PRIVATE_KEY, --signing-config, "{{ check_dir }}/signing-config.json", "{{ item.value }}"]
+          environment:
+            DOCKER_CONFIG: "{{ check_dir }}"
+            COSIGN_PRIVATE_KEY: "{{ check_forge.vault_cosign_tools_private_key }}"
+            COSIGN_PASSWORD: "{{ check_forge.vault_cosign_tools_password }}"
+          loop: "{{ check_images | dict2items }}"
+          delegate_to: "{{ check_ci }}"
+          changed_when: false
+          no_log: true
+
+        # ── Through SSH from the engine VM, with the engine key ───────────
+        - name: Temporary files on the engine (key, SSH host keys)
+          ansible.builtin.tempfile:
+            suffix: "{{ item }}"
+          loop: [-key, -known-hosts]
+          register: check_tmp
+          delegate_to: "{{ check_engine }}"
+
+        - name: Engine key in the temporary file
+          ansible.builtin.copy:
+            dest: "{{ check_tmp.results[0].path }}"
+            content: "{{ vault_deployer_ssh_private_key }}"
+            mode: "0600"
+          delegate_to: "{{ check_engine }}"
+          no_log: true
+
+        - name: The engine's SSH command
+          ansible.builtin.set_fact:
+            check_ssh: [ssh, -i, "{{ check_tmp.results[0].path }}", -o, BatchMode=yes, -o, IdentitiesOnly=yes,
+                        -o, StrictHostKeyChecking=accept-new, -o, "UserKnownHostsFile={{ check_tmp.results[1].path }}",
+                        "deployment@{{ ansible_host }}"]
+
+        - name: 1-2. Creation (v1), then v2 beside it, which takes the traffic
+          ansible.builtin.command:
+            argv: "{{ check_ssh + ['deploy prod ' ~ check_tool ~ ' ' ~ item.cycle ~ ' ' ~ check_images[item.v]] }}"
+            stdin: ""
+          loop:
+            - { v: v1, cycle: 1 }
+            - { v: v2, cycle: 2 }
+          delegate_to: "{{ check_engine }}"
+          register: check_switch
+          changed_when: true
+          failed_when: >-
+            check_switch.rc != 0 or (check_switch.stdout | from_json) !=
+            {'digest': check_images[item.v].split('@')[1], 'url': check_url, 'health': 'ok'}
+
+        - name: A single container, v2's (named after its digest)
+          ansible.builtin.command:
+            argv: [docker, ps, -a, --filter, "name=prod-{{ check_tool }}", --format, "{{ '{{' }}.Names{{ '}}' }}"]
+          register: check_ps_v2
+          changed_when: false
+          failed_when: check_ps_v2.stdout_lines != ['prod-' ~ check_tool ~ '-' ~ check_images['v2'].split(':')[-1][:12]]
+
+        - name: 3. Unhealthy version v3 → failed, attempted digest
+          ansible.builtin.command:
+            argv: "{{ check_ssh + ['deploy prod ' ~ check_tool ~ ' 3 ' ~ check_images['v3']] }}"
+            stdin: ""
+          delegate_to: "{{ check_engine }}"
+          register: check_unhealthy
+          changed_when: true
+          failed_when: >-
+            check_unhealthy.rc != 0 or (check_unhealthy.stdout | from_json).health != 'failed'
+            or (check_unhealthy.stdout | from_json).digest != check_images['v3'].split('@')[1]
+
+        - name: Version v2 still serves (through Caddy, from the engine)
+          ansible.builtin.command:
+            argv: [curl, -sS, --max-time, "20", "{{ check_url }}/"]
+          delegate_to: "{{ check_engine }}"
+          register: check_page
+          changed_when: false
+          failed_when: check_page.stdout != 'v2'
+
+        - name: Still a single container (v3 removed)
+          ansible.builtin.command:
+            argv: [docker, ps, -a, --filter, "name=prod-{{ check_tool }}", --format, "{{ '{{' }}.Names{{ '}}' }}"]
+          register: check_ps_v3
+          changed_when: false
+          failed_when: check_ps_v3.stdout_lines != ['prod-' ~ check_tool ~ '-' ~ check_images['v2'].split(':')[-1][:12]]
+
+        - name: 4. The v1 image is still on the VM (rollback without download)
+          ansible.builtin.command:
+            argv: [docker, image, inspect, "{{ check_images['v1'] }}"]
+          changed_when: false
+
+        - name: 4. Rollback = redeploying v1
+          ansible.builtin.command:
+            argv: "{{ check_ssh + ['deploy prod ' ~ check_tool ~ ' 4 ' ~ check_images['v1']] }}"
+            stdin: ""
+          delegate_to: "{{ check_engine }}"
+          register: check_return
+          changed_when: true
+          failed_when: check_return.rc != 0 or (check_return.stdout | from_json).health != 'ok'
+
+        - name: Version v1 serves again
+          ansible.builtin.command:
+            argv: [curl, -sS, --max-time, "20", "{{ check_url }}/"]
+          delegate_to: "{{ check_engine }}"
+          register: check_page_v1
+          changed_when: false
+          failed_when: check_page_v1.stdout != 'v1'
+
+        - name: Served = v1, cycle 4
+          ansible.builtin.command:
+            argv: "{{ check_ssh + ['served prod ' ~ check_tool] }}"
+            stdin: ""
+          delegate_to: "{{ check_engine }}"
+          register: check_served
+          changed_when: false
+          failed_when: >-
+            (check_served.stdout | from_json) != {'digest': check_images['v1'].split('@')[1], 'cycle': 4}
+
+        - name: 5. Remove (cycle 4)
+          ansible.builtin.command:
+            argv: "{{ check_ssh + ['remove prod ' ~ check_tool ~ ' 4'] }}"
+            stdin: ""
+          delegate_to: "{{ check_engine }}"
+          register: check_removal
+          changed_when: true
+          failed_when: >-
+            check_removal.rc != 0 or not (check_removal.stdout | from_json).done
+
+        - name: Nothing left
+          ansible.builtin.command:
+            argv: [docker, ps, -aq, --filter, "name=prod-{{ check_tool }}"]
+          register: check_empty
+          changed_when: false
+          failed_when: check_empty.stdout != ''
+
+      always:
+        - name: Remove what would be left (script of the tools VM, every cycle of the trial)
+          ansible.builtin.command: /usr/local/sbin/eupadev-deployer
+          environment: { SSH_ORIGINAL_COMMAND: "remove prod {{ check_tool }} {{ item }}" }
+          loop: [1, 2, 3, 4]
+          changed_when: false
+          failed_when: false
+
+        - name: Trial images (tools VM)
+          ansible.builtin.command:
+            argv: [docker, image, rm, -f, "{{ item.value }}"]
+          loop: "{{ (check_images | default({})) | dict2items }}"
+          changed_when: false
+          failed_when: false
+
+        - name: Images and base container (CI VM)
+          ansible.builtin.command:
+            argv: "{{ item }}"
+          loop:
+            - [docker, rm, -f, check-switch-base]
+            - [docker, image, rm, -f, "{{ gitea_domain }}/eupadev/{{ check_tool }}:v1", "{{ gitea_domain }}/eupadev/{{ check_tool }}:v2",
+               "{{ gitea_domain }}/eupadev/{{ check_tool }}:v3"]
+          delegate_to: "{{ check_ci }}"
+          changed_when: false
+          failed_when: false
+
+        - name: Trial package and throwaway badge
+          ansible.builtin.uri:
+            url: "{{ check_forge.gitea_api }}{{ item }}"
+            method: DELETE
+            status_code: [204, 404]
+          loop:
+            - "/packages/eupadev/container/{{ check_tool }}"
+            - /users/svc-ci/tokens/check-switch
+          delegate_to: "{{ groups['forge'][0] }}"
+
+        - name: Work folder (CI VM)
+          ansible.builtin.file:
+            path: "{{ check_dir }}"
+            state: absent
+          delegate_to: "{{ check_ci }}"
+
+        - name: Temporary files of the engine
+          ansible.builtin.file:
+            path: "{{ item.path }}"
+            state: absent
+          loop: "{{ check_tmp.results | default([]) }}"
+          loop_control:
+            label: "{{ item.path }}"
+          delegate_to: "{{ check_engine }}"

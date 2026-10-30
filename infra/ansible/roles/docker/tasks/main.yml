@@ -1,0 +1,88 @@
+# Docker from Ubuntu's official packages: maintained with the distribution's
+# security updates, no third-party repository to manage.
+- name: Install Docker and Docker Compose
+  ansible.builtin.apt:
+    name: [docker.io, docker-compose-v2]
+    state: present
+
+# Docker 29 keeps images and containers in containerd's storage
+# (/var/lib/containerd), which `data-root` does not move: without this official
+# containerd setting (`root`), they would fill the system disk instead of the
+# separate Docker disk (docs.docker.com/engine/daemon).
+- name: Is the containerd data already on the Docker disk?
+  ansible.builtin.stat:
+    path: "{{ containerd_root }}"
+  register: docker_containerd_root
+
+- name: Move the containerd data to the Docker disk, once
+  when: not docker_containerd_root.stat.exists
+  block:
+    - name: Stop Docker and containerd during the move
+      ansible.builtin.service:
+        name: "{{ item }}"
+        state: stopped
+      loop: [docker.socket, docker, containerd]
+
+    - name: Copy the existing data (images, containers) to the Docker disk
+      ansible.builtin.command:  # noqa: command-instead-of-module (one-off local copy; synchronize targets a remote host)
+        cmd: rsync -aHAX /var/lib/containerd/ {{ containerd_root }}/
+        removes: /var/lib/containerd
+      changed_when: true
+
+    - name: Create the folder when there was nothing to copy
+      ansible.builtin.file:
+        path: "{{ containerd_root }}"
+        state: directory
+        mode: "0711"
+
+    - name: Free the system disk
+      ansible.builtin.file:
+        path: /var/lib/containerd
+        state: absent
+
+- name: Configuration folder of containerd (absent by default)
+  ansible.builtin.file:
+    path: /etc/containerd
+    state: directory
+    mode: "0755"
+
+- name: Configuration of containerd (only `root` changes, the rest by default)
+  ansible.builtin.copy:
+    dest: /etc/containerd/config.toml
+    content: |
+      # Managed by Ansible (docker role).
+      version = 3
+      root = "{{ containerd_root }}"
+    mode: "0644"
+  register: docker_containerd_config
+
+- name: Restart containerd then Docker when the configuration changed
+  ansible.builtin.service:
+    name: "{{ item }}"
+    state: restarted
+  loop: [containerd, docker]
+  when: docker_containerd_config.changed  # noqa: no-handler (order containerd then Docker, before the services)
+
+# Without a cap, the logs of a chatty container end up filling the disk.
+# The build cache (BuildKit) is emptied by its built-in garbage collector
+# beyond `docker_buildkit_cache_max` (docs.docker.com/build/cache/garbage-collection).
+# Additional runtimes (gVisor on the agents VM): `docker_runtimes`.
+- name: Cap the container logs and the build cache
+  vars:
+    docker_daemon: >-
+      {{ {'log-driver': 'local', 'log-opts': {'max-size': '10m', 'max-file': '3'},
+          'builder': {'gc': {'enabled': true, 'defaultKeepStorage': docker_buildkit_cache_max}}}
+         | combine({'runtimes': docker_runtimes} if docker_runtimes else {}) }}
+  ansible.builtin.copy:
+    dest: /etc/docker/daemon.json
+    # JSON produced by to_json (one line, fixed order): identical whatever the
+    # Ansible version (2.16 rewrote a JSON text on one line, 2.19+ does not).
+    content: "{{ docker_daemon | to_json }}"
+    mode: "0644"
+  notify: Restart Docker
+
+- name: Docker starts with the machine
+  ansible.builtin.service:
+    name: docker
+    state: started
+    enabled: true

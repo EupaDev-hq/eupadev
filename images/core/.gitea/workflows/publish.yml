@@ -1,0 +1,62 @@
+# Tests, then publishes @eupadev/core to the forge's npm registry
+# under its own owner <org>-core, where only svc-core writes packages (ADR-023;
+# docs/reflexions/2026-10-22-note-socle-registry.md). Runs on each change of
+# the `core` platform repository (synced by Ansible from EupaDev, core/
+# at its original path) or by hand. Tools depend on an exact version (G4,
+# checked by the tool template's package check); Renovate proposes updates.
+# A published version is never overwritten (Gitea answers 409): a version
+# already in the registry is skipped, so a sync without a new "version" in
+# core/package.json publishes nothing and the pipeline stays green.
+name: Core
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  publish:
+    # No Docker needed: ci-standard, golden CI image pulled with the read-only badge.
+    runs-on: ci-standard
+    container:
+      image: ${{ vars.CI_IMAGE }}
+      credentials: { username: svc-deployment, password: "${{ secrets.REGISTRY_READ_TOKEN }}" }
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: core
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # Only the checks that need neither PostgreSQL, Keycloak nor a browser
+      # (no Docker on this runner); the others run in EupaDev's own checks
+      # before a version is bumped.
+      - name: Dependencies, types, unit tests
+        run: |
+          pnpm install --frozen-lockfile --ignore-scripts
+          pnpm typecheck
+          pnpm test
+
+      # Publication badge (svc-core, write:package), a secret of THIS
+      # repository only (never the organisation's: no tool pipeline sees it),
+      # given to this step only, in a temporary user config keyed by the
+      # registry's host and path (never sent elsewhere), deleted at the end.
+      - name: Publish this version (skipped if already published)
+        env:
+          REGISTRY_TOKEN: ${{ secrets.CORE_PUBLISH_TOKEN }}
+        run: |
+          VERSION="$(node -p 'require("./package.json").version')"
+          REG="$GITHUB_SERVER_URL/api/packages/${GITHUB_REPOSITORY%%/*}-core/npm/"
+          STATUS="$(node -e 'fetch(process.argv[1], { headers: { authorization: `token ${process.env.REGISTRY_TOKEN}` } })
+            .then((r) => console.log(r.status), (e) => console.log(`network error: ${e.cause?.code ?? e.message}`))' \
+            "${REG}@eupadev/core/$VERSION")"
+          case "$STATUS" in
+            200) echo "@eupadev/core@$VERSION already published: nothing to do."; exit 0 ;;
+            404) ;;
+            *) echo "Registry check failed for @eupadev/core@$VERSION ($STATUS)."; exit 1 ;;
+          esac
+          NPMRC="$(mktemp)"
+          trap 'rm -f "$NPMRC"' EXIT
+          printf '@eupadev:registry=%s\n%s:_authToken=%s\n' "$REG" "${REG#*:}" "$REGISTRY_TOKEN" > "$NPMRC"
+          NPM_CONFIG_USERCONFIG="$NPMRC" pnpm publish --no-git-checks --ignore-scripts
+          echo "Published: @eupadev/core@$VERSION ($REG)"

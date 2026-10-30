@@ -1,0 +1,4 @@
+# Tools VM: the Prod of the generated tools (ADR-014), alone on its kernel.
+# Caddy publishes 443 (deployer role).
+ufw_allowed_ports: [22, 443]
+deployer_envs: [prod]

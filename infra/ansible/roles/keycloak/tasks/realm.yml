@@ -1,0 +1,211 @@
+# Realm eupadev as code (D4-D15), through the configuration client
+# eupadev-config (D5). Ansible does not delete what is not declared:
+# verify-keycloak.yml compares the realm's inventory with this list (drift).
+- name: Realm eupadev through the configuration client
+  module_defaults:
+    group/community.general.keycloak:
+      auth_keycloak_url: "{{ keycloak_admin_url }}"
+      auth_realm: eupadev
+      auth_client_id: eupadev-config
+      auth_client_secret: "{{ vault_keycloak_config_secret }}"
+  block:
+    # Lifespans D8, events D11 (400 days), temporary brute force D13,
+    # "forgotten password" and registration off; offline_access removed from
+    # the scopes offered by default (D8: never expired by lifespan); languages
+    # of Keycloak's screens (keycloak_locales, chat step 5).
+    - name: Realm settings
+      community.general.keycloak_realm:
+        realm: eupadev
+        id: eupadev
+        enabled: true
+        ssl_required: external
+        internationalization_enabled: true
+        supported_locales: "{{ keycloak_locales.supported }}"
+        default_locale: "{{ keycloak_locales.default }}"
+        registration_allowed: false
+        reset_password_allowed: false
+        remember_me: false
+        access_token_lifespan: 300
+        sso_session_idle_timeout: 1800
+        sso_session_max_lifespan: 36000
+        revoke_refresh_token: true
+        refresh_token_max_reuse: 0
+        events_enabled: true
+        events_expiration: 34560000
+        events_listeners: [jboss-logging]
+        admin_events_enabled: true
+        admin_events_details_enabled: true
+        attributes:
+          adminEventsExpiration: "34560000"
+        brute_force_protected: true
+        permanent_lockout: false
+        max_temporary_lockouts: 0
+        failure_factor: 5
+        wait_increment_seconds: 60
+        max_failure_wait_seconds: 900
+        minimum_quick_login_wait_seconds: 60
+        state: present
+
+    # offline_access out of the scopes offered to new clients (D8).
+    # keycloak_realm does not do it: the realm PUT ignores
+    # defaultOptionalClientScopes, without error nor "changed" (trial of
+    # 2026-10-16); dedicated endpoint of the administration API.
+    - name: Token of the configuration client
+      ansible.builtin.uri:
+        url: "{{ keycloak_admin_url }}/realms/eupadev/protocol/openid-connect/token"
+        method: POST
+        body_format: form-urlencoded
+        body:
+          grant_type: client_credentials
+          client_id: eupadev-config
+          client_secret: "{{ vault_keycloak_config_secret }}"
+      register: keycloak_cfg
+      no_log: true
+
+    - name: Default optional scopes of the realm
+      ansible.builtin.uri:
+        url: "{{ keycloak_admin_url }}/admin/realms/eupadev/default-optional-client-scopes"
+        headers: { Authorization: "Bearer {{ keycloak_cfg.json.access_token }}" }
+      register: keycloak_scopes_opt
+      no_log: true
+
+    - name: Remove offline_access from the default optional scopes
+      ansible.builtin.uri:
+        url: "{{ keycloak_admin_url }}/admin/realms/eupadev/default-optional-client-scopes/{{ item.id }}"
+        method: DELETE
+        headers: { Authorization: "Bearer {{ keycloak_cfg.json.access_token }}" }
+        status_code: 204
+      loop: "{{ keycloak_scopes_opt.json | rejectattr('name', 'in', keycloak_optional_scopes) }}"
+      loop_control:
+        label: "{{ item.name }}"
+      changed_when: true
+      no_log: true
+
+    # Clients (D4, D7, D8, D15): full scope off everywhere, no direct password
+    # nor implicit flow; `at+jwt` on every client that issues tokens.
+    - name: Clients of the realm
+      community.general.keycloak_client:
+        realm: "{{ keycloak_common_client.realm }}"
+        state: "{{ keycloak_common_client.state }}"
+        full_scope_allowed: "{{ keycloak_common_client.full_scope_allowed }}"
+        direct_access_grants_enabled: "{{ keycloak_common_client.direct_access_grants_enabled }}"
+        implicit_flow_enabled: "{{ keycloak_common_client.implicit_flow_enabled }}"
+        client_id: "{{ item.client_id }}"
+        description: "{{ item.description | default(omit) }}"
+        public_client: "{{ item.public_client | default(omit) }}"
+        standard_flow_enabled: "{{ item.standard_flow_enabled | default(omit) }}"
+        service_accounts_enabled: "{{ item.service_accounts_enabled | default(omit) }}"
+        redirect_uris: "{{ item.redirect_uris | default(omit) }}"
+        web_origins: "{{ item.web_origins | default(omit) }}"
+        attributes: "{{ item.attributes | default(omit) }}"
+        secret: "{{ item.secret | default(omit) }}"
+        client_scopes_behavior: "{{ item.client_scopes_behavior | default(omit) }}"
+        default_client_scopes: "{{ item.default_client_scopes | default(omit) }}"
+        optional_client_scopes: "{{ item.optional_client_scopes | default(omit) }}"
+      loop: "{{ keycloak_clients }}"
+      loop_control:
+        label: "{{ item.client_id }}"
+      no_log: true
+
+    - name: Roles of the API (client roles, D4)
+      community.general.keycloak_role:
+        realm: eupadev
+        client_id: eupadev-api
+        name: "{{ item.role }}"
+        description: "{{ item.description }}"
+      loop: "{{ keycloak_api_roles }}"
+
+    - name: Groups that carry the roles
+      community.general.keycloak_group:
+        realm: eupadev
+        name: "{{ item.group }}"
+      loop: "{{ keycloak_api_roles }}"
+
+    - name: Role of each group
+      community.general.keycloak_client_rolemapping:
+        realm: eupadev
+        group_name: "{{ item.group }}"
+        client_id: eupadev-api
+        roles: [{ name: "{{ item.role }}" }]
+      loop: "{{ keycloak_api_roles }}"
+
+    # Full scope off: a role enters a token only if it is in the scope of the
+    # client that asks for it.
+    - name: Scope of the clients (scope mappings)
+      community.general.keycloak_client_rolescope:
+        realm: eupadev
+        client_id: "{{ item.client }}"
+        client_scope_id: "{{ item.from }}"
+        role_names: "{{ item.roles }}"
+      loop: "{{ keycloak_scope_mappings }}"
+      loop_control:
+        label: "{{ item.client }}"
+
+    - name: Roles of the service accounts
+      community.general.keycloak_user_rolemapping:
+        realm: eupadev
+        service_account_user_client_id: "{{ item.client }}"
+        client_id: "{{ item.from }}"
+        roles: "{{ item.roles | map('community.general.dict_kv', 'name') | list }}"
+      loop: "{{ keycloak_scope_mappings | selectattr('service_account', 'defined') }}"
+      loop_control:
+        label: "{{ item.client }}"
+
+    # Claim `email` (default scope `email`) of the check-requester token: the
+    # engine writes to the requester of a tool.
+    - name: Address of the service account check-requester
+      community.general.keycloak_user:
+        realm: eupadev
+        username: service-account-check-requester
+        email: "{{ keycloak_check_requester_mail }}"
+        email_verified: true
+
+    # Temporary password (vault) and required change set at creation only:
+    # replayed, they would overwrite the chosen password.
+    - name: Existing users
+      community.general.keycloak_realm_users_info:
+        realm: eupadev
+      register: keycloak_users
+
+    - name: Accounts of the people
+      community.general.keycloak_user:
+        realm: eupadev
+        username: "{{ item.username }}"
+        first_name: "{{ item.first_name }}"
+        last_name: "{{ item.last_name }}"
+        email: "{{ item.email }}"
+        email_verified: true
+        enabled: true
+        groups: "{{ item.groups | map('community.general.dict_kv', 'name') | list }}"
+        credentials: "{{ omit if exists else [{'type': 'password', 'value': lookup('ansible.builtin.vars', item.temporary_password), 'temporary': true}] }}"
+        required_actions: "{{ omit if exists else ['UPDATE_PASSWORD'] }}"
+      vars:
+        exists: "{{ item.username in (keycloak_users.users | map(attribute='username')) }}"
+      loop: "{{ keycloak_people }}"
+      loop_control:
+        label: "{{ item.username }}"
+      no_log: true
+
+    # Ilan's `sub` (four-eyes exemption on the lab, engine contract) kept in a
+    # local fact: read at the start of every pass, before the role
+    # orchestrator (orchestrator_four_eyes_exemption_subject).
+    - name: OIDC subject of ilan
+      community.general.keycloak_realm_users_info:
+        realm: eupadev
+      register: keycloak_users_after
+
+    - name: Directory of the local facts
+      ansible.builtin.file:
+        path: /etc/ansible/facts.d
+        state: directory
+        mode: "0755"
+
+    - name: Local fact keycloak (ilan's subject, digest of the applied master)
+      ansible.builtin.copy:
+        dest: /etc/ansible/facts.d/keycloak.fact
+        # Leading line break: otherwise Ansible reads the JSON back as a dictionary
+        # (known trap, infra/CLAUDE.md).
+        content: "\n{{ {'ilan_subject': subject, 'master': keycloak_master_digest} | to_nice_json }}\n"
+        mode: "0644"
+      vars:
+        subject: "{{ keycloak_users_after.users | selectattr('username', 'equalto', 'ilan') | map(attribute='id') | first }}"

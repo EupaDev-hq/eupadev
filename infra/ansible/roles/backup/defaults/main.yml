@@ -1,0 +1,5 @@
+# Number of backups kept (the most recent; a count, not an age: a series of
+# failures never deletes the last good ones).
+backup_keep: 7
+# UTC hour (systemd OnCalendar); the golden images are built on Monday at 04:00.
+backup_hour: "*-*-* 02:30:00 UTC"

@@ -1,0 +1,9 @@
+# Managed by Ansible (role deployer).
+[Unit]
+Description=EupaDev: purge of the core tools in Prod (retentions of Gate 1)
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/eupadev-purge

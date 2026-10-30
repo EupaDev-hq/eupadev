@@ -1,0 +1,9 @@
+{
+  "name": "trial-core-tool",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@12.16.1",
+  "dependencies": {
+    "pg": "8.23.1"
+  }
+}

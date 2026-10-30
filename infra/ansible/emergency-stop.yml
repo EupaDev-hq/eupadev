@@ -1,0 +1,203 @@
+# Emergency stop of the engine ("engine for real" note §3.7), from the softest
+# to the strongest. Always with -e confirm=yes (otherwise nothing is done).
+#   ansible-playbook emergency-stop.yml -e level=1 -e confirm=yes
+#     → agents paused: PAUSE_AGENTS=1, engine restarted; it takes no agent
+#       task any more, the cycles go on (messages, gates).
+#   ansible-playbook emergency-stop.yml -e level=2 -e confirm=yes
+#     → engine stopped cleanly, and kept stopped (neither site.yml nor a VM
+#       reboot restarts it). Deadlines keep running during the stop (reminders
+#       sent all at once on return).
+#   ansible-playbook emergency-stop.yml -e level=3 -e confirm=yes
+#     → level 2 + deletion of ALL the tokens of svc-orchestrator and svc-agent
+#       through the forge's admin API (no write possible any more, even by a
+#       forgotten process). Also revoke the AI API key in the provider's
+#       console (reminder printed).
+#   ansible-playbook emergency-stop.yml -e level=0 -e confirm=yes
+#     → resume after a level 1 or 2 (pause lifted, engine restarted). After a
+#       level 3: site.yml first (new tokens), then level=0.
+# Nothing is deleted in the database: everything resumes on restart (DBOS).
+# Two processes (docs/reflexions/2026-10-15-note-lanceur-service.md): the pilot
+# (orchestrator VM, service engine) and the executor (agents VM, service
+# executor, which takes the agent tasks); each level applies to both.
+- name: Emergency stop of the engine
+  hosts: orchestrator:agents
+  become: true
+  gather_facts: false
+  vars:
+    level: ""
+    confirm: ""
+    executor: "{{ inventory_hostname in groups['agents'] }}"
+    service_dir: "{{ '/opt/eupadev/executor' if executor else '/opt/eupadev/orchestrator' }}"
+    service: "{{ 'executor' if executor else 'engine' }}"
+  module_defaults:
+    ansible.builtin.command:
+      chdir: "{{ service_dir }}"
+  tasks:
+    - name: Explicit level and confirmation
+      ansible.builtin.assert:
+        that:
+          - level | string in ['0', '1', '2', '3']
+          - confirm == 'yes'
+        fail_msg: "Usage: ansible-playbook emergency-stop.yml -e level=<0|1|2|3> -e confirm=yes (see the header)"
+        quiet: true
+
+    - name: Is a stop (level 2 or 3) already in place?
+      ansible.builtin.stat:
+        path: "{{ service_dir }}/EMERGENCY-STOP"
+      register: stop_marker
+
+    # ---------- Level 1: agents paused ----------
+    - name: Level 1 — agents paused
+      when: level | string == '1'
+      block:
+        - name: No pause during a stop (resume first with level=0)
+          ansible.builtin.assert:
+            that: not stop_marker.stat.exists
+            fail_msg: "Engine stopped (level 2 or 3): level=0 first, then level=1."
+            quiet: true
+
+        # A file apart from Ansible's variables file: a run of site.yml does not
+        # lift the pause.
+        - name: Set PAUSE_AGENTS=1
+          ansible.builtin.copy:
+            dest: "{{ service_dir }}/pause-agents.conf"
+            content: "PAUSE_AGENTS=1\n"
+            mode: "0640"
+
+        - name: Restart the engine with the pause
+          ansible.builtin.command:
+            argv: [docker, compose, up, -d, --wait, --wait-timeout, "300", --no-deps, engine]
+          changed_when: true
+          when: not executor
+
+        # No Docker health check on the executor (no API): --wait would fail;
+        # same start and same check as the executor role.
+        - name: Restart the executor with the pause
+          ansible.builtin.include_role:
+            name: executor
+            tasks_from: start
+          when: executor
+
+    # ---------- Levels 2 and 3: engine stopped ----------
+    - name: Level 2 — engine stopped and kept stopped
+      when: level | string in ['2', '3']
+      block:
+        - name: Mark the stop (read by the orchestrator role)
+          ansible.builtin.copy:
+            dest: "{{ service_dir }}/EMERGENCY-STOP"
+            content: "Emergency stop level {{ level }} — resume: emergency-stop.yml -e level=0 -e confirm=yes\n"
+            mode: "0640"
+
+        # Clean stop (SIGTERM, 60 s); a container stopped by hand is not
+        # restarted by Docker, even when the VM reboots.
+        - name: Stop the engine
+          ansible.builtin.command:
+            argv: [docker, compose, stop, "{{ service }}"]
+          changed_when: true
+
+        # Agent containers still alive (label set by the engine on each task),
+        # their volumes included; DBOS resumes the tasks.
+        - name: List the remaining agent containers
+          ansible.builtin.command:
+            argv: [docker, ps, -aq, --filter, label=eupadev.task]
+          register: remaining_agents
+          changed_when: false
+          when: executor
+
+        - name: Remove the remaining agent containers
+          ansible.builtin.command:
+            argv: "{{ ['docker', 'rm', '-f', '-v'] + remaining_agents.stdout_lines }}"
+          changed_when: true
+          when: executor and remaining_agents.stdout_lines | length > 0
+
+    # ---------- Level 3: robot tokens deleted ----------
+    - name: Level 3 — tokens of svc-orchestrator and svc-agent deleted
+      when: level | string == '3'
+      # Once only (forge tokens); linear strategy, never "free".
+      run_once: true  # noqa: run-once[task]
+      delegate_to: "{{ groups['forge'][0] }}"
+      vars:
+        forge: "{{ hostvars[groups['forge'][0]] }}"
+      module_defaults:
+        ansible.builtin.uri:
+          url_username: "{{ gitea_admin_user }}"
+          url_password: "{{ vault_gitea_admin_password }}"
+          force_basic_auth: true
+          return_content: true
+      block:
+        - name: List the robots' tokens
+          ansible.builtin.uri:
+            url: "{{ forge.gitea_api }}/users/{{ item }}/tokens?limit=50"
+          loop: [svc-orchestrator, svc-agent]
+          register: tokens
+
+        - name: Delete each token
+          ansible.builtin.uri:
+            url: "{{ forge.gitea_api }}/users/{{ item.0.item }}/tokens/{{ item.1.id }}"
+            method: DELETE
+            status_code: [204, 404]
+          # The loop is computed BEFORE the block's `when`: outside level 3, the
+          # skipped results have no `json` (otherwise a failure at every level).
+          loop: "{{ tokens.results | selectattr('json', 'defined') | subelements('json') }}"
+          loop_control: { label: "{{ item.0.item }} : {{ item.1.name }}" }
+          changed_when: true
+
+        - name: Read the remaining tokens again
+          ansible.builtin.uri:
+            url: "{{ forge.gitea_api }}/users/{{ item }}/tokens?limit=50"
+          loop: [svc-orchestrator, svc-agent]
+          register: remaining
+
+        - name: No token left for these robots
+          ansible.builtin.assert:
+            that: remaining.results | map(attribute='json') | map('length') | sum == 0
+            fail_msg: "Tokens remain: {{ remaining.results | map(attribute='json') | flatten | map(attribute='name') | list }}"
+
+        - name: Reminder
+          ansible.builtin.debug:
+            msg: >-
+              Tokens deleted. To do by hand: revoke the AI API key in the provider's console.
+              Resume: site.yml (new tokens), then emergency-stop.yml -e level=0 -e confirm=yes.
+
+    # ---------- Level 0: resume ----------
+    - name: Level 0 — resume
+      when: level | string == '0'
+      block:
+        - name: Lift the pause and the stop
+          ansible.builtin.file:
+            path: "{{ service_dir }}/{{ item }}"
+            state: absent
+          loop: [pause-agents.conf, EMERGENCY-STOP]
+
+        - name: Restart the engine
+          ansible.builtin.command:
+            argv: [docker, compose, up, -d, --wait, --wait-timeout, "300", --no-deps, engine]
+          changed_when: true
+          when: not executor
+
+        # No Docker health check on the executor (no API): --wait would fail;
+        # same start and same check as the executor role.
+        - name: Restart the executor
+          ansible.builtin.include_role:
+            name: executor
+            tasks_from: start
+          when: executor
+
+    - name: State of the engine after the operation
+      ansible.builtin.command:
+        argv: [docker, compose, ps, -a, --format, "{{ '{{' }}.Service{{ '}}' }} {{ '{{' }}.Status{{ '}}' }}", "{{ service }}"]
+      register: service_state
+      changed_when: false
+
+    - name: Show the state
+      ansible.builtin.debug:
+        msg: "Level {{ level }} applied — {{ service_state.stdout }}"
+
+    - name: Health of the API (pause visible in pause_agents)
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8080/health
+        headers: { X-EupaDev: "1" }
+        return_content: true
+      register: health
+      when: level | string in ['0', '1'] and not executor
+      failed_when: health.status != 200 or health.json.pause_agents != (level | string == '1')

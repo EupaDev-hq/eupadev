@@ -1,0 +1,19 @@
+# Context of `docker build -f orchestrator/Dockerfile .` (repository root):
+# whitelist, nothing else enters (no .git, no node_modules, no secrets).
+*
+!orchestrator/package.json
+!orchestrator/pnpm-lock.yaml
+!orchestrator/migrations/
+!orchestrator/src/
+!orchestrator/lang/
+!orchestrator/web/
+!tool-template/agents/report.schema.json
+!tool-template/AGENTS.md
+!tool-template/agents/*.md
+!tool-template/.claude/rules/*.md
+!examples/requests/README.md
+!examples/requests/openapi.yaml
+!examples/requests/api/
+!examples/requests/db/
+!examples/requests/web/
+!examples/requests/tests/

@@ -1,0 +1,62 @@
+# Written by Ansible (role deployer, ADR-014): do not edit on the VM.
+# Generic routing without reload: the host name gives the container name
+# ({labels.N}: N-th label of the name counting from the end, 0 = the last
+# one), resolved by Docker's DNS on the only networks Caddy is plugged into.
+# Unknown name → 502. Checked with Caddy 2.11.6 (local trial, 2026-10-14).
+# caddy_tls != internal: Let's Encrypt by DNS-01 at OVH (group_vars/all
+# caddy_acme_global; wildcard certificates), credentials in the Compose secrets.
+{
+	admin off
+{% if caddy_tls != 'internal' %}
+{{ caddy_acme_global | indent('\t', first=true) }}
+{% endif %}
+}
+{% if 'preview' in deployer_envs %}
+
+*.preview.{{ base_domain }} {
+	tls {{ caddy_tls }}
+	header X-Robots-Tag "noindex, nofollow"
+	reverse_proxy preview-{labels.{{ base_domain.split('.') | length + 1 }}}:3000 {
+		lb_try_duration 5s
+		# ADR-015: a Preview never sets a cookie for the parent domain.
+		header_down Set-Cookie "(?i); *domain=[^;]*" ""
+	}
+}
+{% endif %}
+{% if 'mockup' in deployer_envs %}
+
+# Mock-ups (ADR-009, ADR-022): static files of /srv/mockups/<sha256>/,
+# written by eupadev-deployer. A mock-up page is served only to a frame
+# (Sec-Fetch-Dest: iframe) or as a sub-resource; a top-level navigation, or
+# a request without the header, gets the platform frame page, whose iframe
+# loads the same path. The path pattern keeps the placeholder safe in HTML.
+mockup.{{ base_domain }} {
+	tls {{ caddy_tls }}
+	header X-Robots-Tag "noindex, nofollow"
+	@mockup path_regexp ^/[0-9a-f]{64}/[A-Za-z0-9._/-]*$
+	@frame {
+		path_regexp ^/[0-9a-f]{64}/[A-Za-z0-9._/-]*$
+		expression `{http.request.header.Sec-Fetch-Dest} in ["", "document", "frame", "object", "embed"]`
+	}
+	handle @frame {
+		header Content-Security-Policy "default-src 'none'; frame-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"
+		header Content-Type "text/html; charset=utf-8"
+		respond `<!doctype html><html lang="{{ deployer_language }}"><meta charset="utf-8"><title>{{ deployer_texts['mockup.title'] }}</title><body style="margin:0;font-family:sans-serif"><div style="background:#b00020;color:#fff;padding:6px 12px;font-weight:bold">{{ deployer_texts['mockup.banner'] }}</div><iframe title="{{ deployer_texts['mockup.title'] }}" sandbox="allow-scripts allow-forms" src="{http.request.uri.path}" style="border:0;width:100%;height:calc(100vh - 34px)"></iframe></body></html>` 200
+	}
+	handle @mockup {
+		root * /srv/mockups
+		header Content-Security-Policy "sandbox allow-scripts allow-forms; default-src 'self'; connect-src 'none'; form-action 'none'; frame-ancestors 'self'"
+		file_server
+	}
+	respond 404
+}
+{% endif %}
+{% if 'prod' in deployer_envs %}
+
+*.{{ base_domain }} {
+	tls {{ caddy_tls }}
+	reverse_proxy prod-{labels.{{ base_domain.split('.') | length }}}:3000 {
+		lb_try_duration 5s
+	}
+}
+{% endif %}

@@ -1,0 +1,33 @@
+# DBOS executor of the agents VM (note docs/reflexions/2026-10-15-note-lanceur-service.md).
+# Same image as the pilot, same digest (deployed together): a single source,
+# the variable of the orchestrator group.
+executor_image: "{{ hostvars[groups['orchestrator'][0]].orchestrator_image }}"
+executor_orch: "{{ hostvars[groups['orchestrator'][0]] }}"
+
+# Agent engine: fake by default (no paid call when a cycle runs,
+# verify-engine.yml included); true = real Claude Code (paid), an explicit
+# decision.
+executor_claude_engine: false
+# Free full cycle (D-E2): the pushing fake (engine=pushing) pushes real files
+# with svc-agent's token, without AI. Ignored when executor_claude_engine.
+executor_pushing_engine: "{{ executor_orch.orchestrator_real_world | default(false) | bool }}"
+
+# Non-secret configuration: the pilot's (E10: same values, same concurrency
+# of the agent-tasks queue), without what only the pilot uses.
+executor_config:
+  EUPADEV_ROLE: executor
+  EUPADEV_EXTERNAL: "{{ 'engine=claude' if executor_claude_engine else ('engine=pushing' if executor_pushing_engine | bool else 'fake-auto') }}"
+  ADMIN_ESCALATION_ADDRESS: "{{ executor_orch.orchestrator_config.ADMIN_ESCALATION_ADDRESS }}"
+  TOOL_DOMAIN: "{{ executor_orch.orchestrator_config.TOOL_DOMAIN }}"
+  DASHBOARD_URL: "{{ executor_orch.orchestrator_config.DASHBOARD_URL }}"
+  AGENT_CONCURRENCY: "{{ executor_orch.orchestrator_config.AGENT_CONCURRENCY }}"
+  FORGE_URL: "https://{{ gitea_domain }}"
+  AGENT_IMAGE: "{{ agents_image }}"
+  AGENT_AI_PROXY: agents-ai-proxy-1:8080
+  AGENT_EGRESS_PROXY: agents-smokescreen-1:4750
+  AGENT_PROXIES: agents-smokescreen-1
+  # Core store (ADR-023): the fetch container reaches the forge directly
+  # (default bridge network, never the task's), name and lab CA given here.
+  AGENT_CORE_REGISTRY: "https://{{ gitea_domain }}/api/packages/{{ hostvars[groups['forge'][0]].gitea_core_org.org }}/npm/"
+  AGENT_CORE_HOST: "{{ gitea_domain }}:{{ forge_ip }}"
+  AGENT_CORE_CA: /etc/ssl/certs/ca-certificates.crt

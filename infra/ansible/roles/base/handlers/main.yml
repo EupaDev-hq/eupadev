@@ -1,0 +1,9 @@
+- name: Restart journald
+  ansible.builtin.service:
+    name: systemd-journald
+    state: restarted
+
+- name: Reload SSH
+  ansible.builtin.systemd_service:
+    name: ssh
+    state: reloaded

@@ -1,0 +1,4 @@
+# Keycloak's administration API seen from the VM (port published on
+# 127.0.0.1 only): the community.general.keycloak_* modules run on the
+# orchestrator VM.
+keycloak_admin_url: http://127.0.0.1:8180

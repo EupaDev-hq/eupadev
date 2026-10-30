@@ -1,0 +1,9 @@
+# Managed by Ansible (backup role).
+[Unit]
+Description=EupaDev backup ({{ 'gitea dump' if 'forge' in group_names else 'pg_dump' }})
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/eupadev-backup

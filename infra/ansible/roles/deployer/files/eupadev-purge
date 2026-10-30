@@ -1,0 +1,12 @@
+#!/bin/sh
+# Managed by Ansible (role deployer) — do not edit on the VM.
+# S7: daily purge of the core tools in Prod, one call of the deployer per
+# Gate 1 entry (the deployer runs bin/purge.js of the served version).
+# Exit code 1 if any purge failed: the unit is "failed" (systemctl --failed).
+code=0
+for f in /etc/eupadev/tools/*.json; do
+  [ -e "$f" ] || continue
+  slug=$(basename "$f" .json)
+  SSH_ORIGINAL_COMMAND="purge prod $slug" /usr/local/sbin/eupadev-deployer || code=1
+done
+exit $code

@@ -1,0 +1,97 @@
+# CI of the example tool "requests" (examples/requests/, step 8 of the core,
+# docs/reflexions/2026-10-19-note-exemple-demandes.md §10). Job `tests`:
+# contract and handlers checked by the core's entry point (--verify), Squawk
+# on the tool's migrations, throwaway database (catalogue, privileges,
+# transitions, purge), unit tests; later steps add the types. Job `kit`: the
+# core's test Compose stack on this tool, twelve SEC-*, then the acceptance suite.
+name: Example requests — tests and kit
+
+on:
+  push:
+    paths: ["examples/requests/**", "core/**", ".github/workflows/examples-requests.yml"]
+  pull_request:
+    paths: ["examples/requests/**", "core/**", ".github/workflows/examples-requests.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+        working-directory: examples/requests
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.22.1
+
+      - name: Pinned pnpm
+        run: |
+          npm install -g corepack@0.36.0
+          corepack enable
+          pnpm --version
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Contract and handlers (bin/start.js --verify)
+        run: pnpm verify
+
+      - name: Unit tests (transition rules)
+        run: pnpm test:unit
+
+      # Same binary, digest and excluded rules as core.yml (ADR-004, ADR-005).
+      - name: Squawk on the tool's migrations
+        run: |
+          curl -fsSLo "$RUNNER_TEMP/squawk" "https://github.com/sbdchd/squawk/releases/download/v2.70.0/squawk-linux-x64"
+          echo "836ba2ab0c0ec30ae02c9f2cec065b341ff853765ceaa3965c22109c2f53eb1c  $RUNNER_TEMP/squawk" | sha256sum -c -
+          chmod 0755 "$RUNNER_TEMP/squawk"
+          "$RUNNER_TEMP/squawk" --exclude prefer-robust-stmts,require-concurrent-index-creation,require-concurrent-index-deletion db/migrations/*.sql
+
+      - name: Throwaway database (PostgreSQL of the core's kit)
+        run: pnpm test:db
+
+  kit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+        working-directory: examples/requests
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.22.1
+
+      - name: Pinned pnpm
+        run: |
+          npm install -g corepack@0.36.0
+          corepack enable
+          pnpm --version
+
+      - run: pnpm install --frozen-lockfile
+
+      # The core's test Compose stack started on this tool (TOOL_* variables), reference list, drafts and transitions on
+      # the real database, two-user specs (SEC-IDOR, SEC-URL, Chromium), then the twelve SEC-* of the kit, SEC-ERR among
+      # them on a read the database really refuses. Then k6 (tests/perf/load.k6.js, thresholds) and Schemathesis on
+      # openapi.yaml with schemathesis.toml, blocking at zero failures (step 8).
+      - name: Kit SEC-* and two-user specs (the core's test Compose)
+        env:
+          KIT_KEEP: "1" # the acceptance step reuses the stack, then stops it
+        run: |
+          pnpm exec playwright install --with-deps chromium
+          pnpm test:kit
+
+      # Gherkin scenarios of docs/spec.md (playwright-bdd), axe on every page visited, SEC-XSS; same stack.
+      - name: Acceptance (Gherkin scenarios, axe, SEC-XSS)
+        run: pnpm test:acceptance

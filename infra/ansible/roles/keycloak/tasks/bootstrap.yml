@@ -1,0 +1,61 @@
+# Bootstrap (D5) of a realm and its configuration client: only when this
+# client does not answer (first installation, or database restored without it).
+# Variables: bootstrap_realm, bootstrap_client, bootstrap_secret (main.yml).
+#   1. temp-admin (realm master), by temp-admin.yml.
+#   2. temp-admin creates the realm and its configuration client (service
+#      account, realm-management/realm-admin of the bootstrapped realm only).
+#   3. temp-admin is deleted; Ansible then uses only the client.
+- name: Create temp-admin if it does not answer
+  ansible.builtin.include_tasks: temp-admin.yml
+
+- name: Realm and configuration client, by temp-admin
+  module_defaults:
+    group/community.general.keycloak:
+      auth_keycloak_url: "{{ keycloak_admin_url }}"
+      auth_realm: master
+      auth_client_id: admin-cli
+      auth_username: temp-admin
+      auth_password: "{{ vault_keycloak_bootstrap_admin_password }}"
+  block:
+    - name: Realm {{ bootstrap_realm }}
+      community.general.keycloak_realm:
+        realm: "{{ bootstrap_realm }}"
+        id: "{{ bootstrap_realm }}"
+        enabled: true
+        state: present
+
+    - name: Configuration client {{ bootstrap_client }}
+      community.general.keycloak_client:
+        realm: "{{ bootstrap_realm }}"
+        client_id: "{{ bootstrap_client }}"
+        description: Ansible (realm configuration as code)
+        public_client: false
+        service_accounts_enabled: true
+        standard_flow_enabled: false
+        implicit_flow_enabled: false
+        direct_access_grants_enabled: false
+        full_scope_allowed: false
+        secret: "{{ bootstrap_secret }}"
+      no_log: true
+
+    - name: Role realm-admin of the realm for its service account
+      community.general.keycloak_user_rolemapping:
+        realm: "{{ bootstrap_realm }}"
+        service_account_user_client_id: "{{ bootstrap_client }}"
+        client_id: realm-management
+        roles: [{ name: realm-admin }]
+
+    # Full scope off (D4): the role must also be in the client's scope.
+    - name: Role realm-admin in the scope of the configuration client
+      community.general.keycloak_client_rolescope:
+        realm: "{{ bootstrap_realm }}"
+        client_id: "{{ bootstrap_client }}"
+        client_scope_id: realm-management
+        role_names: [realm-admin]
+
+  always:
+    - name: Delete temp-admin
+      community.general.keycloak_user:
+        realm: master
+        username: temp-admin
+        state: absent

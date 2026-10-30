@@ -1,0 +1,40 @@
+# Build context of the fixed Dockerfile (read by BuildKit only, which takes it
+# over any .dockerignore at the root). Protected file (.gitea/**).
+# Never leak a secret or an unnecessary file into an image layer: only what
+# the tool needs at runtime is copied.
+.env
+.env.*
+!.env.example
+.git
+# Every node_modules, at any depth: a committed node_modules/ would be copied
+# over the installed dependencies and preferred by Node's resolution.
+**/node_modules
+
+# Files pnpm reads or executes: forbidden in the repository, and kept out of
+# the build in any case — except the root pnpm-workspace.yaml, the platform's
+# own (protected) pnpm settings, read by the fixed Dockerfile's install.
+**/.pnpmfile.*
+**/.npmrc
+**/pnpm-workspace.yaml
+!pnpm-workspace.yaml
+
+# Agent rules, CI, analysis rules and documentation: not needed at runtime.
+.claude/
+agents/
+AGENTS.md
+AGENTS.fr.md
+CLAUDE.md
+.gitea/
+.opengrep/
+design/
+docs/
+scripts/
+README.md
+**/Dockerfile
+**/.dockerignore
+
+# Tests.
+test/
+tests/
+**/*.test.js
+**/__tests__/

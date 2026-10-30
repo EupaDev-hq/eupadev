@@ -1,0 +1,24 @@
+# Refuses any Docker image not pinned by digest (name:tag@sha256:…) and any
+# CI action (`uses:`) not pinned on a full commit SHA, ROADMAP §8.14 B: a
+# public tag can be moved to a booby-trapped content. No path filter: an
+# image or an action can appear in any file of the repository (infra,
+# images, template, orchestrator).
+name: Images and actions pinned by digest
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  digests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: The check refuses an unpinned action
+        run: python3 .github/scripts/test_verify_digests.py
+      - name: Every image and action has a digest
+        run: python3 .github/scripts/verify-digests.py

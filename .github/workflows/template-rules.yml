@@ -1,0 +1,94 @@
+# Replays the test cases of the template's Opengrep rules (tests/opengrep/):
+# a weakened rule (a "ruleid" case missed) or a too broad one (an "ok" case
+# flagged) turns CI red. The cases live outside the template so that they are
+# neither copied into the tools nor flagged by their own analysis.
+# Also reviews the tools' fixed Dockerfile (hadolint): it belongs to the
+# platform (A-R0), so it is reviewed here, once, not in every tool.
+# Job image (step 9.4): the fixed Dockerfile builds the template, as a core
+# tool, from golden images built here, and the image passes the template's own
+# boot check (.gitea/checks/boot-check.sh).
+name: Template — Opengrep rules and fixed Dockerfile
+
+on:
+  push:
+    paths: ["tool-template/**", "core/**", "images/base-node/**", "tests/opengrep/**", ".github/workflows/template-rules.yml"]
+  pull_request:
+    paths: ["tool-template/**", "core/**", "images/base-node/**", "tests/opengrep/**", ".github/workflows/template-rules.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  opengrep-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      # Otherwise Opengrep reads the rules as ASCII and fails on the first non-ASCII character.
+      LANG: C.UTF-8
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Same binary and same digest as the CI golden image
+      # (images/base-node/Dockerfile).
+      - name: pinned Opengrep
+        run: |
+          curl -fsSLo "$RUNNER_TEMP/opengrep" "https://github.com/opengrep/opengrep/releases/download/v1.30.0/opengrep_manylinux_x86"
+          echo "35779bdd72e92129c8df2a77f0c55e8c08356801ea92591ef32108d6b28d564c  $RUNNER_TEMP/opengrep" | sha256sum -c -
+          chmod 0755 "$RUNNER_TEMP/opengrep"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+
+      # File by file: in test mode, Opengrep ignores the rules of a hidden
+      # directory (.opengrep/) given as --config.
+      - name: Test cases of the rules
+        run: opengrep --test --config tool-template/.opengrep/starter-rules.yml tests/opengrep/starter-rules.js
+
+  hadolint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Same image and same digest as the former review in the tools;
+      # default configuration, "hadolint ignore" comments without effect.
+      - name: Review of the fixed Dockerfile (hadolint)
+        run: docker run --rm -i hadolint/hadolint:v2.15.1@sha256:32dac94127fd60b7b7e3fbfc65e1383b9b5e25c9bfd7b8536de7a539fe68a12d hadolint --disable-ignore-pragma - < tool-template/.gitea/image/Dockerfile
+
+  image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.22.1
+      - name: pinned pnpm
+        run: |
+          npm install -g corepack@0.36.0
+          corepack enable
+          pnpm --version
+
+      # The forge's npm registry is out of GitHub's reach: the core of this
+      # commit is packed and served over HTTP on the runner's Docker bridge,
+      # and a copy of the template points at it (lockfile regenerated). The
+      # fixed Dockerfile and the boot check are the template's, unchanged.
+      - name: Fixed Dockerfile builds the template from the golden images; the image boots read-only
+        run: |
+          docker build -q --target build -t base-build images/base-node
+          docker build -q --target run -t base-run images/base-node
+          VERSION="$(node -p 'require("./core/package.json").version')"
+          (cd core && pnpm pack --pack-destination "$RUNNER_TEMP/core")
+          BRIDGE="$(docker network inspect bridge -f '{{(index .IPAM.Config 0).Gateway}}')"
+          python3 -m http.server 8000 --bind "$BRIDGE" --directory "$RUNNER_TEMP/core" > /dev/null 2>&1 &
+          cp -r tool-template "$RUNNER_TEMP/tool"
+          cd "$RUNNER_TEMP/tool"
+          node -e 'const f = "package.json"; const p = JSON.parse(require("fs").readFileSync(f)); p.dependencies["@eupadev/core"] = process.argv[1]; require("fs").writeFileSync(f, JSON.stringify(p, null, 2))' \
+            "http://$BRIDGE:8000/eupadev-core-$VERSION.tgz"
+          # The template's lockfile resolves the core from the forge's
+          # registry: kept, pnpm would check that entry against npmjs (404).
+          rm pnpm-lock.yaml
+          pnpm install --lockfile-only --ignore-scripts
+          : > "$RUNNER_TEMP/empty"
+          DOCKER_BUILDKIT=1 docker build -f .gitea/image/Dockerfile -t tool:trial \
+            --secret id=npmrc,src="$RUNNER_TEMP/empty" --secret id=ca,src="$RUNNER_TEMP/empty" \
+            --build-arg BASE_IMAGE_BUILD=base-build --build-arg BASE_IMAGE_RUN=base-run --build-arg CORE_VERSION="$VERSION" .
+          test "$(docker image inspect tool:trial -f '{{index .Config.Labels "eupadev.core"}}')" = "$VERSION"
+          sh .gitea/checks/boot-check.sh tool:trial

@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>EupaDev</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/app.css">
+<!-- deep-chat vendored by content hash (ADR-024): an ES module bundle, the engine fills the path at startup. -->
+<script src="__DEEP_CHAT__" type="module"></script>
+<script src="/app.js" type="module"></script>
+</head>
+<body>
+<aside class="side">
+  <a href="/" class="brand" data-i18n="app.title">EupaDev</a>
+  <nav id="requests" class="requests" hidden></nav>
+</aside>
+<div class="column">
+  <header class="top">
+    <span id="account" class="account"></span>
+    <label><span class="sr-only" data-i18n="lang.label">Language</span>
+      <select id="lang"><option value="fr">FR</option><option value="en">EN</option></select>
+    </label>
+    <label><span class="sr-only" data-i18n="theme.label">Theme</span>
+      <select id="theme"><option value="auto" data-i18n="theme.auto">Auto</option><option value="light" data-i18n="theme.light">Light</option><option value="dark" data-i18n="theme.dark">Dark</option></select>
+    </label>
+    <form method="post" action="/auth/logout" id="logout" hidden><button type="submit" data-i18n="auth.logout">Sign out</button></form>
+  </header>
+  <main id="main" class="main"></main>
+  <footer class="notice"><p data-i18n="ai.notice"></p></footer>
+</div>
+</body>
+</html>

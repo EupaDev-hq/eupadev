@@ -1,0 +1,85 @@
+# Builds, checks, publishes (by digest) and SIGNS the Caddy image of the
+# platform (OVH DNS module) in the forge registry (ADR-005), like the
+# `keycloak` repository. Run at each change of the `caddy` repository
+# (synchronised by Ansible from EupaDev) or by hand. The image is never
+# deployed by this pipeline: Ansible pulls it by its digest (`caddy_image`)
+# after verifying the signature.
+name: Caddy image
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  publish:
+    # Runner "image": the only one with access to the Docker of the CI VM.
+    runs-on: ci-image
+    timeout-minutes: 30
+    env:
+      # Official cosign binary, verified by its sha256 (the one of
+      # cosign_checksums.txt of the version published on GitHub).
+      COSIGN_VERSION: v3.1.3
+      COSIGN_SHA256: 4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71
+      CADDY_VERSION: v2.11.6
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Build the image
+        run: |
+          REG="${GITHUB_SERVER_URL#https://}"
+          IMAGE="$(echo "$REG/${GITHUB_REPOSITORY%%/*}/caddy" | tr '[:upper:]' '[:lower:]')"
+          TAG="$(echo "$GITHUB_SHA" | cut -c1-12)"
+          { echo "REG=$REG"; echo "IMAGE=$IMAGE"; echo "TAG=$TAG"; } >> "$GITHUB_ENV"
+          docker build -q --pull --no-cache -t "$IMAGE:$TAG" .
+
+      - name: Known vulnerabilities (Trivy)
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            -v trivy-cache:/root/.cache/ aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa image \
+            --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed "$IMAGE:$TAG"
+
+      - name: Check the promises of the image
+        run: |
+          docker run --rm "$IMAGE:$TAG" caddy version | grep -q "^$CADDY_VERSION "
+          echo "OK: Caddy $CADDY_VERSION."
+          docker run --rm "$IMAGE:$TAG" caddy list-modules | grep -qx 'dns.providers.ovh'
+          echo "OK: OVH DNS module present."
+
+      # Tag = short commit (trace); the digest is the only reference used to
+      # sign and deploy.
+      - name: Publish in the forge registry
+        env:
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+        run: |
+          echo "$REGISTRY_TOKEN" | docker login "$REG" -u svc-ci --password-stdin
+          docker push -q "$IMAGE:$TAG"
+          REF="$(docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$IMAGE:$TAG" | grep "^$IMAGE@sha256:")"
+          echo "REF=$REF" >> "$GITHUB_ENV"
+
+      # Signature by the cosign key of the installation (secrets of the `caddy`
+      # repository, set by Ansible from the vault, the same as `engine`).
+      # Signing configuration WITHOUT any service: nothing is sent to the
+      # public transparency log (Rekor) nor to a timestamp authority.
+      - name: Sign the image (cosign)
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+        run: |
+          curl -fsSLo /tmp/cosign "https://github.com/sigstore/cosign/releases/download/$COSIGN_VERSION/cosign-linux-amd64"
+          echo "$COSIGN_SHA256  /tmp/cosign" | sha256sum -c -
+          chmod 0755 /tmp/cosign
+          /tmp/cosign signing-config create --out /tmp/signing-config.json
+          /tmp/cosign sign --yes --key env://COSIGN_PRIVATE_KEY --signing-config /tmp/signing-config.json "$REF"
+          # The versioned public key of the installation (images/engine/cosign.pub,
+          # copied at its original path) is the one the deployment uses.
+          /tmp/cosign verify --key images/engine/cosign.pub --insecure-ignore-tlog=true "$REF" > /dev/null
+          echo "OK: signature verified with the public key of the repository."
+          echo "Caddy digest: $REF"
+
+      - name: Clean up
+        if: always()
+        run: |
+          docker logout "$REG" > /dev/null 2>&1 || true
+          docker rmi "$IMAGE:$TAG" > /dev/null 2>&1 || true
+          rm -f /tmp/cosign /tmp/signing-config.json

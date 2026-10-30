@@ -1,0 +1,94 @@
+# Real-conditions check of the golden image — can be rerun.
+#   ansible-playbook verify-base-image.yml
+#   ansible-playbook verify-base-image.yml -e rebuild=true
+#     → first reruns a build (e.g. a security fix has just come out) and
+#       checks this new build.
+# Waits for the pipeline of the last commit of the base-image repository, then checks:
+#   1. the pipeline is green;
+#   2. its checks really ran (non-root, no package manager in the run image,
+#      pnpm present in the build image, check tools present and no Docker
+#      client in the CI image);
+#   3. the three variants are in the registry, and the digest printed by the
+#      pipeline is the one the registry serves.
+- name: Check the golden image
+  hosts: forge
+  become: true
+  vars:
+    repo: base-image
+    rebuild: false
+  module_defaults:
+    ansible.builtin.uri:
+      url_username: "{{ gitea_admin_user }}"
+      url_password: "{{ vault_gitea_admin_password }}"
+      force_basic_auth: true
+      body_format: json
+      return_content: true
+  tasks:
+    - name: Read the last commit of base-image
+      ansible.builtin.uri:
+        url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/branches/main"
+      register: main_branch
+
+    - name: Rerun a build on demand
+      ansible.builtin.include_tasks: tasks/rebuild-pipeline.yml
+      when: rebuild | bool
+
+    - name: Wait for the pipeline of the last commit
+      ansible.builtin.include_tasks: tasks/wait-for-pipeline.yml
+      vars:
+        commit_sha: "{{ main_branch.json.commit.id }}"
+      when: not (rebuild | bool)
+
+    - name: "1. The golden image pipeline is green"
+      ansible.builtin.assert:
+        that: pipeline.conclusion == 'success'
+        success_msg: "OK — pipeline green"
+        fail_msg: "FAILED — {{ pipeline.conclusion }} ({{ pipeline_jobs }}) — {{ pipeline.html_url }}"
+
+    - name: Read the job log
+      ansible.builtin.uri:
+        url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/actions/jobs/{{ (jobs_response.json.jobs | first).id }}/logs"
+      register: log_job
+
+    - name: "2. The image checks really ran"
+      ansible.builtin.assert:
+        that: log_job.content is search(item.pattern)
+        success_msg: "OK — {{ item.label }}"
+        fail_msg: "FAILED — {{ item.label }}: trace missing from the log"
+        quiet: true
+      loop:
+        - { label: "non-root", pattern: "OK: the run image runs as a non-root user" }
+        - { label: "no package manager", pattern: "OK: no package manager" }
+        - { label: "pnpm in the build image", pattern: "OK: pnpm [0-9]+\\.[0-9]+" }
+        - label: "check tools in the CI image"
+          pattern: "OK: CI image — gitleaks [0-9.]+, Haskell Dockerfile Linter [0-9.]+, Opengrep [0-9.]+, pnpm [0-9.]+"
+        - { label: "no Docker client in the CI image", pattern: "OK: no Docker client in the CI image" }
+      loop_control: { label: "{{ item.label }}" }
+
+    - name: Get a registry read token
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:3000/v2/token?scope=repository:{{ gitea_org }}/base-node:pull"
+      register: registry_token
+      no_log: true
+
+    - name: Ask the registry for the digest of each variant
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:3000/v2/{{ gitea_org }}/base-node/manifests/{{ item }}"
+        method: HEAD
+        force_basic_auth: false
+        headers:
+          Authorization: "Bearer {{ registry_token.json.token }}"
+          Accept: >-
+            application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json,
+            application/vnd.docker.distribution.manifest.v2+json, application/vnd.docker.distribution.manifest.list.v2+json
+      loop: [build-24, run-24, ci-24]
+      register: manifests
+
+    - name: "3. The three variants are in the registry, with the printed digest"
+      ansible.builtin.assert:
+        that: log_job.content is search(item.docker_content_digest)
+        success_msg: "OK — {{ item.item }}: {{ item.docker_content_digest }}"
+        fail_msg: "FAILED — {{ item.item }}: the registry serves {{ item.docker_content_digest }}, missing from the log"
+        quiet: true
+      loop: "{{ manifests.results }}"
+      loop_control: { label: "{{ item.item }}" }

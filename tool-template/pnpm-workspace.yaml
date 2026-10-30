@@ -1,0 +1,14 @@
+# pnpm settings of the tool, set by the platform. Protected file (refused at
+# push on agent/**), copied by the fixed Dockerfile before `pnpm install`.
+# Same supply-chain settings as the core (core/pnpm-workspace.yaml): no
+# build script, no exotic sub-dependency, a public package must be a day old.
+packages: []
+allowBuilds: {}
+strictDepBuilds: true
+blockExoticSubdeps: true
+minimumReleaseAge: 1440
+# @eupadev/core is published by the platform's own CI to the forge's npm
+# registry, where a version is never overwritten: pnpm's minimum release age,
+# a guard against compromised public packages, does not apply to it (ADR-023).
+minimumReleaseAgeExclude:
+  - "@eupadev/core"

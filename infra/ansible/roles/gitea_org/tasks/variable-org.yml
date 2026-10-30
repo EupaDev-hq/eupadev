@@ -1,0 +1,24 @@
+# Creates or corrects a CI variable of the organisation. Lesson of v1: a
+# missing variable becomes an empty string, without any visible error.
+- name: "Read the CI variable: {{ gitea_org_var.key }}"
+  ansible.builtin.uri:
+    url: "{{ gitea_api }}/orgs/{{ gitea_org }}/actions/variables/{{ gitea_org_var.key }}"
+    url_username: "{{ gitea_admin_user }}"
+    url_password: "{{ vault_gitea_admin_password }}"
+    force_basic_auth: true
+    return_content: true
+    status_code: [200, 404]
+  register: gitea_org_var_read
+
+- name: "Create or correct the CI variable: {{ gitea_org_var.key }}"
+  ansible.builtin.uri:
+    url: "{{ gitea_api }}/orgs/{{ gitea_org }}/actions/variables/{{ gitea_org_var.key }}"
+    method: "{{ 'POST' if gitea_org_var_read.status == 404 else 'PUT' }}"
+    url_username: "{{ gitea_admin_user }}"
+    url_password: "{{ vault_gitea_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body: { value: "{{ gitea_org_var.value }}" }
+    status_code: [201, 204]
+  when: gitea_org_var_read.status == 404 or gitea_org_var_read.json.data != gitea_org_var.value
+  changed_when: true

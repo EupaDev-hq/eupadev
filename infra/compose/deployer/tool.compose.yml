@@ -1,0 +1,37 @@
+# Platform Compose model for a generated tool (ADR-014, "admission policy"):
+# posed by Ansible in /etc/eupadev/tool.compose.yml, run only by
+# eupadev-deployer with `docker compose -p <env>-<slug> -f <this file>`.
+# The tool's own Compose and Dockerfile are never read on the target. The
+# variables come from the script, built from validated values only.
+services:
+  tool:
+    image: ${IMAGE:?}
+    # Pulled by the script after its cosign check: Compose never pulls.
+    pull_policy: never
+    container_name: ${NAME:?}
+    user: "1000:1000"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,uid=1000,gid=1000,mode=0700
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    # ponytail: same limits for Preview and Prod; per-environment values when a tool needs more.
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 128
+    restart: unless-stopped
+    labels:
+      eupadev.env: ${ENV:?}
+      eupadev.tool: ${TOOL:?}
+      eupadev.cycle: ${CYCLE:?}
+    networks: [tool]
+
+# One network per tool (preview-<slug>, prod-<slug>), created by the script
+# before `up`: internal, without the bridge address that would let the
+# container reach the VM's own services (infra/CLAUDE.md, "Docker network
+# internal"), shared by the old and the new Prod during a switch. The script
+# plugs Caddy into it.
+networks:
+  tool:
+    name: ${NETWORK:?}
+    external: true

@@ -1,0 +1,87 @@
+# Included by verify-deployer-access.yml, from the orchestrator VM, for one
+# target (variable `target`: inventory name). Engine key in check_key, SSH
+# host keys in check_known_hosts (temporary files).
+- name: "Prepare the trials: {{ target }}"
+  ansible.builtin.set_fact:
+    check_ssh:
+      - ssh
+      - -i
+      - "{{ check_key.path }}"
+      - -o
+      - BatchMode=yes
+      - -o
+      - IdentitiesOnly=yes
+      - -o
+      - StrictHostKeyChecking=accept-new
+      - -o
+      - "UserKnownHostsFile={{ check_known_hosts.path }}"
+    check_account: "deployment@{{ hostvars[target].ansible_host }}"
+    check_env: "{{ hostvars[target].deployer_envs | difference(['mockup']) | first }}"
+    check_other_env: "{{ 'prod' if 'preview' in hostvars[target].deployer_envs else 'preview' }}"
+
+- name: "Valid request, served answers null (nothing deployed): {{ target }}"
+  ansible.builtin.command:
+    argv: "{{ check_ssh + [check_account, 'served ' ~ check_env ~ ' check-access'] }}"
+  register: check_served
+  changed_when: false
+  failed_when: check_served.rc != 0 or check_served.stdout != 'null'
+
+- name: "Requests refused by the script, code 2: {{ target }}"
+  ansible.builtin.command:
+    argv: "{{ check_ssh + [check_account] + ([item] if item else []) }}"
+    stdin: ""
+  loop:
+    - ""
+    - bash
+    - id
+    - "served {{ check_env }} check-access; id"
+    - "served {{ check_env }} $(id)"
+    - "served {{ check_env }} ../x"
+    - "served  {{ check_env }} check-access"
+    - "served {{ check_other_env }} check-access"
+    - "served {{ check_env }} git"
+    - "served {{ check_env }} {{ 'a' * 41 }}"
+    - "remove {{ check_env }} check-access 0"
+    - "deploy {{ check_env }} check-access 1 {{ gitea_domain }}/eupadev/check-access:latest"
+    - "deploy {{ check_env }} check-access 1 elsewhere.example/eupadev/check-access@sha256:{{ 'a' * 64 }}"
+  register: check_refusal
+  changed_when: false
+  failed_when: check_refusal.rc != 2 or check_refusal.stdout is not search('"refusal"')
+
+- name: "Forwarding refused by sshd (restrict): {{ target }}"
+  ansible.builtin.command:
+    argv: "{{ check_ssh + item.options + [check_account] + item.command }}"
+    stdin: ""
+  loop:
+    - { name: "-R", options: [-o, ExitOnForwardFailure=yes, -R, "127.0.0.1:9998:127.0.0.1:22"], command: ["served {{ check_env }} check-access"] }
+    - { name: "-W (like -L)", options: [-W, "127.0.0.1:22"], command: [] }
+  loop_control:
+    label: "{{ item.name }}"
+  register: check_redir
+  changed_when: false
+  failed_when: check_redir.rc != 255 or check_redir.stderr is not search('forwarding failed')
+
+- name: "Scp and sftp replaced by the forced command: {{ target }}"
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail;
+      {{ item }}
+    executable: /bin/bash
+  loop:
+    - >-
+      scp -i {{ check_key.path }} -o BatchMode=yes -o IdentitiesOnly=yes
+      -o UserKnownHostsFile={{ check_known_hosts.path }} /etc/hostname {{ check_account }}:/tmp/check-access-scp
+    - >-
+      echo 'put /etc/hostname /tmp/check-access-sftp' | sftp -i {{ check_key.path }} -o BatchMode=yes
+      -o IdentitiesOnly=yes -o UserKnownHostsFile={{ check_known_hosts.path }} -b - {{ check_account }}
+  register: check_copy
+  changed_when: false
+  failed_when: check_copy.rc == 0
+
+- name: "No file copied: {{ target }}"
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop: [/tmp/check-access-scp, /tmp/check-access-sftp]
+  delegate_to: "{{ target }}"
+  register: check_copy_stat
+  failed_when: check_copy_stat.stat.exists

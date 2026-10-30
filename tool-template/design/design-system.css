@@ -1,0 +1,327 @@
+/* ============================================================
+   design-system.css — EupaDev's shared design system
+   ============================================================
+   Extracted and consolidated from real production applications on the
+   same infrastructure — not a from-scratch creation. Vanilla CSS, zero
+   dependency, zero build step — sticks to what's actually already
+   running, see `.claude/rules/frontend.md`.
+
+   This file is duplicated as-is into every generated tool (same
+   mechanism as backend.md/quality.md), copied at the Design step of the
+   cycle (AGENTS.md §2) to the tool's actual frontend location
+   (`web/styles/design-system.css` or equivalent). Extend by ADDING
+   classes, never by changing the value of the tokens below — otherwise
+   two generated tools drift apart visually for no reason (the
+   "Christmas tree" effect).
+   ============================================================ */
+
+/* The `hidden` attribute always hides, even on a class that sets `display`
+   (`.nav-item` is `display: flex`). */
+[hidden] { display: none !important; }
+
+:root {
+  /* Brand color — neutral action, links, focus, active nav items.
+     Is NOT "the only allowed color": see the status palette below, each
+     one has a precise meaning and must be used for THAT precise meaning,
+     not just for visual variety. */
+  --blue: #0b3d63;
+  --blue-light: #e8f1f8;
+  --blue-dark: #0a3455;
+
+  --border: #dde3ea;
+  --text: #182430;
+  --text-soft: #5c6b78;
+  --text-faint: #8b98a3;
+  --background: #f2f5f8;
+  --surface: #ffffff;
+
+  /* Status palette — each color has a fixed meaning, reused identically
+     everywhere. Never repurpose a color for "looking nice" (e.g. red for
+     anything other than an error/rejection/failure). */
+  --green: #1e7a4c;        /* success / approved / confirmed */
+  --green-light: #e9f6ee;
+  --orange: #a15c00;       /* warning / pending / partial */
+  --orange-light: #fbf0e0;
+  --red: #c23b32;          /* error / rejected / failure */
+  --red-light: #fdf0ee;
+
+  --shadow-card: 0 1px 2px rgba(15, 35, 58, 0.05), 0 1px 1px rgba(15, 35, 58, 0.04);
+  --shadow-hover: 0 6px 16px rgba(15, 35, 58, 0.1);
+
+  /* Categorical palette (6 series max, fixed order — never recycled onto
+     a 7th series) for any chart/dataviz: validated colorblind-safe by
+     the dataviz skill's scripts/validate_palette.js (delta E adjacent
+     >= 8 CVD / >= 15 normal vision). A 7th+ series falls back to
+     --series-other, never a newly invented hue. */
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
+  --series-5: #e87ba4;
+  --series-6: #008300;
+  --series-other: #8b98a3;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: -apple-system, "Segoe UI", system-ui, Roboto, sans-serif;
+  color: var(--text);
+  background: var(--background);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---------------------------------------------------------------------
+   Default layout — sidebar + content (default). Reserved for the
+   "workstation" application layout. A distinct mobile/field sub-flow
+   (BYOD, standing/quick use, not office use) can keep a lighter chrome —
+   see `.topbar` below, to document explicitly in the generated tool's
+   docs/DECISIONS.md if used.
+   --------------------------------------------------------------------- */
+.app-shell {
+  display: flex;
+  align-items: stretch;
+  min-height: 100vh;
+}
+
+.sidebar {
+  flex: 0 0 232px;
+  position: sticky;
+  top: 0;
+  align-self: flex-start;
+  height: 100vh;
+  background: linear-gradient(185deg, rgba(11, 61, 99, 0.93) 0%, rgba(8, 42, 70, 0.96) 100%);
+  color: rgba(255, 255, 255, 0.78);
+  display: flex;
+  flex-direction: column;
+  padding: 1.5rem 1.1rem;
+}
+
+.sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.3rem 0.5rem 1.75rem;
+  color: white;
+}
+
+.sidebar-brand-logo {
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  background: #fff;
+  object-fit: contain;
+  padding: 3px;
+  flex-shrink: 0;
+}
+
+.sidebar-brand-text { display: flex; flex-direction: column; line-height: 1.2; }
+.sidebar-brand-name { font-weight: 700; font-size: 0.98rem; }
+.sidebar-brand-sub { font-size: 0.72rem; color: rgba(255, 255, 255, 0.55); }
+
+.sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.sidebar-nav .nav-item {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.6rem 0.7rem;
+  border-radius: 8px;
+  border: none;
+  background: none;
+  width: 100%;
+  color: rgba(255, 255, 255, 0.72);
+  text-decoration: none;
+  font: inherit;
+  font-size: 0.88rem;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.sidebar-nav .nav-item svg { width: 18px; height: 18px; flex-shrink: 0; opacity: 0.9; }
+
+/* Solid colors rather than a semi-transparent white overlay: an
+   automated contrast-checking tool can't resolve the composition of a
+   rgba(255,255,255,X) over its ancestor background — with a solid color,
+   contrast is directly verifiable. */
+.sidebar-nav .nav-item:hover { background: #153a5c; color: white; }
+.sidebar-nav .nav-item.active {
+  background: #1d4a72;
+  color: white;
+  font-weight: 600;
+}
+
+.sidebar-footer {
+  margin-top: auto;
+  padding: 0.5rem;
+  font-size: 0.72rem;
+  color: rgba(255, 255, 255, 0.4);
+  letter-spacing: 0.02em;
+}
+
+.app-main {
+  flex: 1;
+  min-width: 0;
+  padding: 2rem 2.75rem 4rem;
+}
+
+@media (max-width: 760px) {
+  .app-shell { flex-direction: column; }
+  .sidebar {
+    position: static;
+    height: auto;
+    width: auto;
+    flex-direction: row;
+    align-items: center;
+    gap: 1.5rem;
+    padding: 0.85rem 1.1rem;
+  }
+  .sidebar-brand { padding: 0; }
+  .sidebar-nav { flex-direction: row; flex-wrap: wrap; gap: 0.3rem; }
+  .sidebar-footer { display: none; }
+  .app-main { padding: 1.5rem 1.25rem 3rem; }
+}
+
+/* "Field" variant — compact top bar, for a mobile/BYOD sub-flow distinct
+   from the office layout above (e.g. a quick scan/entry flow). Use
+   instead of .app-shell, not in addition to it. */
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.5rem;
+  padding-top: calc(1rem + env(safe-area-inset-top));
+  background: var(--blue);
+  color: white;
+}
+.topbar h1 { font-size: 1.2rem; margin: 0; }
+
+/* ---- Cards / panels ---- */
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1.5rem 1.75rem;
+  box-shadow: var(--shadow-card);
+}
+.panel h2 { margin-top: 0; font-size: 1.1rem; letter-spacing: -0.005em; }
+.panel h3 { font-size: 0.95rem; }
+
+.clickable-card {
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.1s ease;
+}
+.clickable-card:hover:not(:disabled) {
+  border-color: var(--blue);
+  box-shadow: var(--shadow-hover);
+  transform: translateY(-1px);
+}
+.clickable-card:active:not(:disabled) { transform: scale(0.97); }
+.clickable-card:disabled { cursor: not-allowed; opacity: 0.6; }
+
+/* ---- Forms ---- */
+label, .label-group {
+  display: block;
+  font-size: 0.85rem;
+  font-weight: 600;
+  margin: 0.75rem 0 0.25rem;
+}
+
+input[type="text"],
+input[type="number"],
+input[type="password"],
+input[type="email"],
+textarea,
+select {
+  width: 100%;
+  padding: 0.6rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  font-size: 1rem;
+  font: inherit;
+  background: var(--surface);
+  color: var(--text);
+}
+
+input:focus, textarea:focus, select:focus {
+  outline: 2px solid var(--blue);
+  outline-offset: 1px;
+}
+
+.hint { color: var(--text-soft); font-size: 0.85rem; }
+.hint.error { color: var(--red); margin-top: 0.5rem; }
+
+/* ---- Buttons ---- */
+button {
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  border-radius: 7px;
+  padding: 0.45rem 0.8rem;
+  font-size: 0.9rem;
+  font: inherit;
+}
+button:hover { background: var(--blue-light); }
+button:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
+
+.btn-primary {
+  display: block;
+  width: 100%;
+  margin-top: 0.75rem;
+  padding: 0.9rem;
+  background: var(--blue);
+  color: white;
+  border: none;
+  font-size: 1rem;
+  font-weight: 600;
+  border-radius: 8px;
+}
+.btn-primary:hover { background: var(--blue-dark); }
+.btn-primary:disabled { background: var(--text-faint); cursor: not-allowed; }
+
+.link {
+  border: none;
+  background: none;
+  color: var(--blue);
+  text-decoration: underline;
+  padding: 0;
+  font-size: inherit;
+}
+
+/* ---- Status badges — stick to the fixed color meaning above ---- */
+.status-badge {
+  display: inline-block;
+  padding: 0.15rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+.badge-success { background: var(--green-light); color: var(--green); }
+.badge-warning { background: var(--orange-light); color: var(--orange); }
+.badge-error { background: var(--red-light); color: var(--red); }
+.badge-info { background: var(--blue-light); color: var(--blue); }
+
+/* ---- Key figure / stat tile (dashboards, indicators) ---- */
+.key-figure {
+  font-size: 2.75rem;
+  font-weight: 750;
+  color: var(--blue);
+  margin: 0.3rem 0;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- Tables ---- */
+table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+th, td { text-align: left; padding: 0.5rem 0.6rem; border-bottom: 1px solid var(--border); }
+th { color: var(--text-soft); font-weight: 600; }

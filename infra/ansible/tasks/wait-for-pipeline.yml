@@ -1,0 +1,30 @@
+# Waits for the end of the pipeline started by the commit `commit_sha` in the
+# repository `repo`, then exposes its result in `pipeline` (and its jobs in
+# `pipeline_jobs`). Used by the CI checks.
+- name: "Wait for the end of the pipeline of commit {{ commit_sha[:7] }}"
+  ansible.builtin.uri:
+    url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/actions/runs"
+  register: runs_wait
+  # The commit's most recent run (highest id): a rerun pipeline must not be
+  # judged on the previous attempt.
+  until: >-
+    (runs_wait.json.workflow_runs | default([])
+     | selectattr('head_sha', 'equalto', commit_sha) | sort(attribute='id') | list
+     | last | default({})).status | default('') == 'completed'
+  retries: 90
+  delay: 10
+
+- name: Keep the result of the pipeline
+  ansible.builtin.set_fact:
+    pipeline: >-
+      {{ runs_wait.json.workflow_runs | selectattr('head_sha', 'equalto', commit_sha)
+         | sort(attribute='id') | last }}
+
+- name: List its jobs
+  ansible.builtin.uri:
+    url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/actions/runs/{{ pipeline.id }}/jobs"
+  register: jobs_response
+
+- name: Keep the result of each job
+  ansible.builtin.set_fact:
+    pipeline_jobs: "{{ jobs_response.json.jobs | items2dict(key_name='name', value_name='conclusion') }}"

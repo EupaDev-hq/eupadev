@@ -1,0 +1,31 @@
+# Waits until an engine cycle is in the state `engine_state`, then posts the
+# human answer `engine_message` through the local API (verify-engine.yml).
+# Variables: engine_api, engine_cycle, engine_slug, engine_state, engine_message.
+# At Gate 2, the approval carries the candidate digest read in the state. I0: a decision comes from the admin, a
+# feedback from the requester (token of the matching service account); the identity is never in the body.
+- name: "Token for {{ engine_message.type }}"
+  ansible.builtin.include_tasks: tasks/engine-token.yml
+  vars:
+    engine_hat: "{{ 'admin' if engine_message.type in ['decision', 'cancellation'] else 'requester' }}"
+
+- name: "Wait for the state {{ engine_state }}"
+  ansible.builtin.uri:
+    url: "{{ engine_api }}/requests/{{ engine_cycle }}"
+    headers: { X-EupaDev: "1", Authorization: "Bearer {{ engine_token }}" }
+    return_content: true
+  register: engine_read
+  until: engine_read.status == 200 and engine_read.json.state == engine_state
+  retries: 90
+  delay: 2
+
+- name: "Human answer to the state {{ engine_state }}"
+  ansible.builtin.uri:
+    url: "{{ engine_api }}/messages"
+    method: POST
+    headers: { X-EupaDev: "1", Authorization: "Bearer {{ engine_token }}", Idempotency-Key: "{{ engine_slug }}-{{ engine_state }}" }
+    body_format: json
+    body: >-
+      {{ {'cycle_id': engine_cycle | int,
+          'message': engine_message | combine({'digest': engine_read.json.candidate_digest} if engine_state == 'gate_2' else {})} }}
+    status_code: 202
+    return_content: true

@@ -1,0 +1,434 @@
+# Real test of the Preview pipeline (E5f, note 2026-10-21-note-e5-refresh.md)
+# — rerunnable, leaves nothing behind. Free: no AI call.
+#   ansible-playbook verify-engine-preview.yml </dev/null
+#   -e orchestrator_image=<digest>: a candidate engine image (pulled with a
+#   throwaway read badge, removed at the end) instead of the one in service.
+# 1. A tool is created from the template; its acceptance suite
+#    (files/trial-acceptance: one scenario, a "user" persona found by role)
+#    committed on main runs its real CI, which publishes the image signed
+#    with the tools key. The tool is a core tool: the registration playbook
+#    registers it (Gate 1 equivalent, personas and PREVIEW_PERSONAS) before
+#    the Preview; the always block removes that registration.
+# 2. The ENGINE's code, in the engine image on the engine VM (SshDeployer,
+#    real key and known_hosts), deploys that digest as the tool's Preview.
+# 3. The engine's GiteaForge starts preview-check.yml on main with the
+#    Preview URL and reads it like the watcher (first run above the id
+#    returned at the start): its four jobs (perf, accessibility-preview,
+#    pentest-dast, acceptance) ran against the deployed Preview, all green.
+# 4. Injected fault (the scenario expects a wrong status) committed on main:
+#    new image, new Preview, acceptance red (the others green), so the
+#    engine reads a red pipeline (back to hardening) with the failing test
+#    taken from the job log (details.failures, note acceptance-on-preview 3.7).
+# 5. Features without tests/acceptance/playwright.config.js pushed on an
+#    agent branch: guard-rails red at push, naming the missing config.
+# 6. served gives the deployed digest (the results hold for that digest).
+- name: E5f — Preview pipeline started and read by the engine
+  hosts: forge
+  become: true
+  gather_facts: false
+  vars:
+    check_slug: check-preview
+    check_engine: "{{ groups['orchestrator'][0] }}"
+    check_ci: "{{ hostvars[groups['ci'][0]].ansible_host }}"
+    check_url: "https://check-preview.preview.{{ base_domain }}"
+    check_image: "{{ hostvars[check_engine].orchestrator_image }}"
+    check_entry:
+      slug: "{{ check_slug }}"
+      roles: [{ name: user, description: "Role of the template's contract (verify-engine-preview.yml)" }]
+      retentions: { RETENTION_AUDIT: "400 days" }
+    lab_ca_crt: /usr/local/share/ca-certificates/eupadev-lab.crt
+    check_suite: [playwright.config.js, features/sign-in.feature, steps/sign-in.js]
+    check_engine_docker: /run/eupadev/check-preview
+  module_defaults:
+    ansible.builtin.uri:
+      url_username: "{{ gitea_admin_user }}"
+      url_password: "{{ vault_gitea_admin_password }}"
+      force_basic_auth: true
+      body_format: json
+      return_content: true
+  tasks:
+    - name: Trials (cleanup guaranteed)
+      block:
+        - name: Remove what an interrupted run would have left
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}{{ item }}"
+            method: DELETE
+            status_code: [204, 404]
+          loop:
+            - "/repos/{{ gitea_org }}/{{ check_slug }}"
+            - "/packages/{{ gitea_org }}/container/{{ check_slug }}"
+            - /users/svc-orchestrator/tokens/check-preview
+
+        - name: Trial tool created from the template
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/tool-template/generate"
+            method: POST
+            body: { owner: "{{ gitea_org }}", name: "{{ check_slug }}", private: true, git_content: true }
+            status_code: 201
+
+        # The tool's acceptance suite, as the tests role would write it; its
+        # commit on main runs the real CI.
+        - name: Acceptance suite committed on main (runs the real CI)
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ check_slug }}/contents"
+            method: POST
+            body:
+              branch: main
+              message: verify-engine-preview acceptance suite
+              files: >-
+                {%- set l = [] -%}
+                {%- for f in check_suite -%}
+                  {%- set _ = l.append({'operation': 'create', 'path': 'tests/acceptance/' ~ f,
+                      'content': lookup('ansible.builtin.file', playbook_dir ~ '/files/trial-acceptance/' ~ f) | b64encode}) -%}
+                {%- endfor -%}
+                {{ l }}
+            status_code: 201
+          register: check_commit
+
+        - name: Wait for the CI of main
+          ansible.builtin.include_tasks: tasks/wait-for-pipeline.yml
+          vars:
+            repo: "{{ check_slug }}"
+            commit_sha: "{{ check_commit.json.commit.sha }}"
+
+        - name: The CI of main is green
+          ansible.builtin.assert:
+            that: pipeline.conclusion == 'success'
+            fail_msg: "CI of main {{ pipeline.conclusion }} ({{ pipeline_jobs }}) — {{ pipeline.html_url }}"
+
+        - name: Log of the image job
+          ansible.builtin.uri:
+            url: >-
+              {{ gitea_api }}/repos/{{ gitea_org }}/{{ check_slug }}/actions/jobs/{{
+              (jobs_response.json.jobs | selectattr('name', 'eq', 'image') | first).id }}/logs
+          register: check_log
+
+        - name: Published digest
+          ansible.builtin.set_fact:
+            check_digest: "{{ (check_log.content | regex_findall('/' ~ check_slug ~ '@(sha256:[0-9a-f]{64})') | last) }}"
+
+        - name: Throwaway svc-orchestrator token (start and read the pipelines)
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/users/svc-orchestrator/tokens"
+            method: POST
+            body: { name: check-preview, scopes: ["write:repository"] }
+            status_code: 201
+          register: check_token
+          no_log: true
+
+        - name: Temporary files on the engine (token, scripts)
+          ansible.builtin.tempfile:
+            suffix: "{{ item }}"
+          loop: [-token, -deployment.ts, -preview.ts]
+          register: check_tmp
+          delegate_to: "{{ check_engine }}"
+
+        - name: Token in its file
+          ansible.builtin.copy:
+            dest: "{{ check_tmp.results[0].path }}"
+            content: "{{ check_token.json.sha1 }}\n"
+            owner: "1000"
+            mode: "0400"
+          delegate_to: "{{ check_engine }}"
+          no_log: true
+
+        - name: Engine trial scripts
+          ansible.builtin.copy:
+            src: "{{ playbook_dir }}/../../orchestrator/scripts/{{ item.0 }}"
+            dest: "{{ item.1.path }}"
+            mode: "0444"
+          loop: "{{ ['trial-deployment.ts', 'trial-preview.ts'] | zip(check_tmp.results[1:]) | list }}"
+          loop_control:
+            label: "{{ item.0 }}"
+          delegate_to: "{{ check_engine }}"
+
+        - name: Engine image present on the engine VM?
+          ansible.builtin.command:
+            argv: [docker, image, inspect, --format, "{{ '{{' }}.Id{{ '}}' }}", "{{ check_image }}"]
+          delegate_to: "{{ check_engine }}"
+          register: check_local_image
+          changed_when: false
+          failed_when: false
+
+        - name: Candidate engine image, pulled with a throwaway read badge
+          when: check_local_image.rc != 0
+          block:
+            - name: Throwaway read badge (svc-deployment)
+              ansible.builtin.uri:
+                url: "{{ gitea_api }}/users/svc-deployment/tokens"
+                method: POST
+                body: { name: check-preview-engine, scopes: ["read:package"] }
+                status_code: 201
+              register: check_engine_badge
+              changed_when: false
+              no_log: true
+
+            - name: Registry login (folder in /run, removed at the end)
+              ansible.builtin.command:
+                argv: [docker, --config, "{{ check_engine_docker }}", login, "{{ gitea_domain }}", -u, svc-deployment, --password-stdin]
+                stdin: "{{ check_engine_badge.json.sha1 }}"
+              delegate_to: "{{ check_engine }}"
+              changed_when: false
+              no_log: true
+
+            - name: Pull the candidate engine image by digest
+              ansible.builtin.command:
+                argv: [docker, --config, "{{ check_engine_docker }}", pull, -q, "{{ check_image }}"]
+              delegate_to: "{{ check_engine }}"
+              changed_when: true
+
+        - name: Engine container
+          ansible.builtin.set_fact:
+            check_run: >-
+              {{ ['docker', 'run', '--rm', '--read-only', '--tmpfs', '/tmp', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true',
+                  '--user', '1000', '--entrypoint', 'node',
+                  '-v', check_tmp.results[1].path ~ ':/app/scripts/trial-deployment.ts:ro',
+                  '-v', check_tmp.results[2].path ~ ':/app/scripts/trial-preview.ts:ro',
+                  '-v', check_tmp.results[0].path ~ ':/run/secrets/token:ro',
+                  '-v', '/run/eupadev/secrets/deployer_key:/run/secrets/deployer_key:ro',
+                  '-v', '/run/eupadev/secrets/deployer_known_hosts:/run/secrets/deployer_known_hosts:ro',
+                  '-v', lab_ca_crt ~ ':/lab-ca.crt:ro', '-e', 'NODE_EXTRA_CA_CERTS=/lab-ca.crt',
+                  '-e', 'EUPADEV_EXTERNAL=forge=gitea,deployer=ssh', '-e', 'FORGE_URL=https://' ~ gitea_domain,
+                  '-e', 'FORGE_TOKEN_FILE=/run/secrets/token',
+                  '-e', 'DEPLOYER_HOSTS=mockup=' ~ check_ci ~ ',preview=' ~ check_ci ~ ',prod=' ~ hostvars[groups['tools'][0]].ansible_host,
+                  '-e', 'DEPLOYER_KEY_FILE=/run/secrets/deployer_key', '-e', 'DEPLOYER_KNOWN_HOSTS_FILE=/run/secrets/deployer_known_hosts',
+                  check_image] }}
+
+        # Gate 1 equivalent for a core tool (D-E5): the real registration
+        # playbook, as in verify-deployer-core.yml.
+        - name: Registration of the test tool (register-tools.yml)
+          ansible.builtin.command:
+            argv: [ansible-playbook, "{{ playbook_dir }}/register-tools.yml", -e, "{{ {'core_tools': [check_entry]} | to_json }}"]
+            chdir: "{{ playbook_dir }}"
+          delegate_to: localhost
+          become: false
+          changed_when: true
+
+        - name: The engine deploys the Preview of main's image
+          ansible.builtin.command:
+            argv: "{{ check_run + ['/app/scripts/trial-deployment.ts', 'deploy', 'preview', check_slug, '1', check_digest] }}"
+          delegate_to: "{{ check_engine }}"
+          register: check_deployment
+          changed_when: true
+          failed_when: >-
+            check_deployment.rc != 0
+            or (check_deployment.stdout | from_json) != {'digest': check_digest, 'url': check_url, 'health': 'ok'}
+
+        - name: The engine starts the Preview pipeline and reads it to the end
+          ansible.builtin.command:
+            argv: "{{ check_run + ['/app/scripts/trial-preview.ts', check_slug, check_url] }}"
+          delegate_to: "{{ check_engine }}"
+          register: check_pipeline
+          changed_when: true
+          failed_when: check_pipeline.rc != 0
+
+        - name: Result of the Preview pipeline
+          ansible.builtin.debug:
+            msg: "{{ check_pipeline.stdout | from_json }}"
+
+        - name: The four checks ran against the Preview, all green
+          vars:
+            r: "{{ (check_pipeline.stdout | from_json).result }}"
+            by_check: "{{ r.checks | items2dict(key_name='check', value_name='result') }}"
+          ansible.builtin.assert:
+            that:
+              - by_check.keys() | sort == ['acceptance', 'accessibility-preview', 'pentest-dast', 'perf']
+              - r.outcome == 'green'
+            fail_msg: "Preview pipeline: {{ r }}"
+            success_msg: "Preview pipeline: {{ by_check }}"
+
+        # ── 4. Injected fault: the scenario expects a wrong status ─────────
+        - name: Steps of the suite on main (their sha)
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ check_slug }}/contents/tests/acceptance/steps/sign-in.js?ref=main"
+          register: check_steps
+
+        - name: Fault committed on main (GET /api/me expected to answer 201)
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ check_slug }}/contents/tests/acceptance/steps/sign-in.js"
+            method: PUT
+            body:
+              content: "{{ check_steps.json.content | b64decode | replace('toBe(200)', 'toBe(201)') | b64encode }}"
+              sha: "{{ check_steps.json.sha }}"
+              branch: main
+              message: verify-engine-preview injected fault
+            status_code: 200
+          register: check_fault
+
+        - name: Wait for the CI of main (fault)
+          ansible.builtin.include_tasks: tasks/wait-for-pipeline.yml
+          vars:
+            repo: "{{ check_slug }}"
+            commit_sha: "{{ check_fault.json.commit.sha }}"
+
+        - name: The CI of main is green (the fault is in the acceptance suite, not in unit tests)
+          ansible.builtin.assert:
+            that: pipeline.conclusion == 'success'
+            fail_msg: "CI of main {{ pipeline.conclusion }} ({{ pipeline_jobs }}) — {{ pipeline.html_url }}"
+
+        - name: Log of the image job (fault)
+          ansible.builtin.uri:
+            url: >-
+              {{ gitea_api }}/repos/{{ gitea_org }}/{{ check_slug }}/actions/jobs/{{
+              (jobs_response.json.jobs | selectattr('name', 'eq', 'image') | first).id }}/logs
+          register: check_fault_log
+
+        - name: Published digest (fault)
+          ansible.builtin.set_fact:
+            check_fault_digest: "{{ (check_fault_log.content | regex_findall('/' ~ check_slug ~ '@(sha256:[0-9a-f]{64})') | last) }}"
+
+        - name: The engine deploys the faulty image as Preview (new digest, database emptied)
+          ansible.builtin.command:
+            argv: "{{ check_run + ['/app/scripts/trial-deployment.ts', 'deploy', 'preview', check_slug, '1', check_fault_digest] }}"
+          delegate_to: "{{ check_engine }}"
+          register: check_fault_deployment
+          changed_when: true
+          failed_when: >-
+            check_fault_deployment.rc != 0
+            or (check_fault_deployment.stdout | from_json) != {'digest': check_fault_digest, 'url': check_url, 'health': 'ok'}
+
+        - name: The engine starts the Preview pipeline and reads it (fault)
+          ansible.builtin.command:
+            argv: "{{ check_run + ['/app/scripts/trial-preview.ts', check_slug, check_url] }}"
+          delegate_to: "{{ check_engine }}"
+          register: check_fault_pipeline
+          changed_when: true
+          failed_when: check_fault_pipeline.rc != 0
+
+        - name: Result of the Preview pipeline (fault)
+          ansible.builtin.debug:
+            msg: "{{ check_fault_pipeline.stdout | from_json }}"
+
+        - name: Acceptance red, the other three green; the failing test read in the job log
+          vars:
+            r: "{{ (check_fault_pipeline.stdout | from_json).result }}"
+            by_check: "{{ r.checks | items2dict(key_name='check', value_name='result') }}"
+            failures: "{{ (r.checks | selectattr('check', 'eq', 'acceptance') | first).details.failures | default([]) }}"
+          ansible.builtin.assert:
+            that:
+              - r.outcome == 'red'
+              - "by_check == {'perf': 'green', 'accessibility-preview': 'green', 'pentest-dast': 'green', 'acceptance': 'red'}"
+              - failures | select('search', 'A user signs in and reads their roles') | list | length > 0
+            fail_msg: "Preview pipeline (fault): {{ r }}"
+            success_msg: "Deviations for the hardening round: {{ failures }}"
+
+        # ── 5. Features without the Playwright config: red at push ─────────
+        - name: The suite's config on main (its sha)
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ check_slug }}/contents/tests/acceptance/playwright.config.js?ref=main"
+          register: check_config
+
+        - name: Config removed on an agent branch
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ check_slug }}/contents/tests/acceptance/playwright.config.js"
+            method: DELETE
+            body: { sha: "{{ check_config.json.sha }}", branch: main, new_branch: agent/check-no-config, message: verify-engine-preview no config }
+            status_code: 200
+          register: check_no_config
+
+        - name: Wait for the CI of the branch
+          ansible.builtin.include_tasks: tasks/wait-for-pipeline.yml
+          vars:
+            repo: "{{ check_slug }}"
+            commit_sha: "{{ check_no_config.json.commit.sha }}"
+
+        - name: Log of the guard-rails job
+          ansible.builtin.uri:
+            url: >-
+              {{ gitea_api }}/repos/{{ gitea_org }}/{{ check_slug }}/actions/jobs/{{
+              (jobs_response.json.jobs | selectattr('name', 'eq', 'guard-rails') | first).id }}/logs
+          register: check_guard_log
+
+        - name: Guard-rails red, naming the missing config
+          ansible.builtin.assert:
+            that:
+              - pipeline_jobs['guard-rails'] == 'failure'
+              - check_guard_log.content is search('Z GUARD-RAIL acceptance. tests/acceptance/features/ without tests/acceptance/playwright.config.js')
+            fail_msg: "guard-rails {{ pipeline_jobs['guard-rails'] }}: {{ check_guard_log.content.splitlines()[-15:] }}"
+
+        - name: Served = the tested digest
+          ansible.builtin.command:
+            argv: "{{ check_run + ['/app/scripts/trial-deployment.ts', 'served', 'preview', check_slug] }}"
+          delegate_to: "{{ check_engine }}"
+          register: check_served
+          changed_when: false
+          failed_when: (check_served.stdout | from_json).digest != check_fault_digest
+
+      rescue:
+        - name: Runs of the Preview pipeline (diagnosis)
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ check_slug }}/actions/workflows/preview-check.yml/runs?limit=1"
+          register: check_diag_runs
+          failed_when: false
+
+        - name: Jobs of the last run (diagnosis)
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ check_slug }}/actions/runs/{{ check_diag_runs.json.workflow_runs[0].id }}/jobs"
+          register: check_diag_jobs
+          when: check_diag_runs.json.workflow_runs | default([]) | length > 0
+          failed_when: false
+
+        - name: Job logs (diagnosis)
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ check_slug }}/actions/jobs/{{ item.id }}/logs"
+          loop: "{{ check_diag_jobs.json.jobs | default([]) }}"
+          loop_control:
+            label: "{{ item.name }}"
+          register: check_diag_logs
+          failed_when: false
+
+        - name: End of each log
+          ansible.builtin.debug:
+            msg: "{{ item.item.name }}: {{ (item.content | default('')).splitlines()[-25:] }}"
+          loop: "{{ check_diag_logs.results | default([]) }}"
+          loop_control:
+            label: "{{ item.item.name }}"
+
+        - name: Failure
+          ansible.builtin.fail:
+            msg: "verify-engine-preview failed: see the logs above"
+
+      always:
+        - name: Remove the Preview (script of the CI VM)
+          ansible.builtin.command: /usr/local/sbin/eupadev-deployer
+          environment: { SSH_ORIGINAL_COMMAND: "remove preview {{ check_slug }} 1" }
+          delegate_to: "{{ groups['ci'][0] }}"
+          changed_when: false
+          failed_when: false
+
+        - name: Registration of the test (clients, database, roles, secrets, entry)
+          ansible.builtin.include_tasks: tasks/remove-core-tool.yml
+          vars: { tool_slug: "{{ check_slug }}" }
+
+        - name: Test repository, package and tokens
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}{{ item }}"
+            method: DELETE
+            status_code: [204, 404]
+          loop:
+            - "/repos/{{ gitea_org }}/{{ check_slug }}"
+            - "/packages/{{ gitea_org }}/container/{{ check_slug }}"
+            - /users/svc-orchestrator/tokens/check-preview
+            - /users/svc-deployment/tokens/check-preview-engine
+
+        - name: Registry login folder of the candidate engine image
+          ansible.builtin.file:
+            path: "{{ check_engine_docker }}"
+            state: absent
+          delegate_to: "{{ check_engine }}"
+
+        - name: Candidate engine image (pulled by this test only)
+          ansible.builtin.command:
+            argv: [docker, image, rm, "{{ check_image }}"]
+          delegate_to: "{{ check_engine }}"
+          when: check_local_image.rc | default(0) != 0
+          changed_when: true
+
+        - name: Temporary files of the engine
+          ansible.builtin.file:
+            path: "{{ item.path }}"
+            state: absent
+          loop: "{{ check_tmp.results | default([]) }}"
+          loop_control:
+            label: "{{ item.path }}"
+          delegate_to: "{{ check_engine }}"

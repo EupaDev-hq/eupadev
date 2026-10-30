@@ -1,0 +1,503 @@
+# Real test of the backups — rerunnable.
+#   ansible-playbook verify-backup.yml
+# Starts an on-demand backup on the forge and the orchestrator, then RESTORES
+# it in throwaway containers (same image as the running service, isolated
+# network, no published port, no volume of the service) and compares with the
+# running service. Never restores over the data in place.
+# Effects on the services: the forge backup stops Gitea ≈ 30 s (Gitea docs);
+# the orchestrator gets a witness schema, removed at the end.
+- name: Backup and restore of the forge (gitea dump)
+  hosts: forge
+  become: true
+  gather_facts: false
+  vars:
+    trial: "{{ backup_dir }}/restore-trial"
+    trial_name: restore-trial
+    witness_repo: tool-template
+    sql_accounts: >-
+      select (select count(*) from repository) || ' ' || (select count(*) from "user")
+      || ' ' || (select count(*) from package_version) || ' ' || (select count(*) from package_blob)
+  tasks:
+    - name: Start time
+      ansible.builtin.command: date +%s
+      register: start_time
+      changed_when: false
+
+    # systemctl start waits for the end of a oneshot service and fails with it.
+    - name: Start an on-demand backup (like the timer)
+      ansible.builtin.systemd_service:
+        name: eupadev-backup.service
+        state: started
+
+    - name: Result of the last run
+      ansible.builtin.systemd_service:
+        name: eupadev-backup.service
+      register: last_run
+      failed_when: last_run.status.Result != 'success'
+
+    - name: Gitea is back (healthz)
+      ansible.builtin.command:
+        cmd: docker compose exec -T gitea curl -fsS http://localhost:3000/api/healthz
+        chdir: /opt/eupadev/forge
+      register: gitea_health
+      changed_when: false
+      retries: 20
+      delay: 3
+      until: gitea_health.rc == 0
+
+    - name: Latest backup
+      ansible.builtin.shell:
+        cmd: set -o pipefail; ls -1t {{ backup_dir }}/gitea-*.tar.gz | head -1
+        executable: /bin/bash
+      register: latest
+      changed_when: false
+
+    - name: Read its permissions
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop: ["{{ latest.stdout }}", "{{ backup_dir }}"]
+      register: rights
+
+    - name: New file, not empty, readable by root only
+      ansible.builtin.assert:
+        that:
+          - rights.results[0].stat.size > 0
+          - rights.results[0].stat.mtime >= (start_time.stdout | int)
+          - rights.results[0].stat.mode == '0600'
+          - rights.results[0].stat.pw_name == 'root'
+          - rights.results[1].stat.mode == '0700'
+        fail_msg: "{{ latest.stdout }}: empty, old or permissions too wide"
+
+    - name: List the archive (readable to the end)
+      # Listing reads the whole archive again (integrity check); unarchive does not list.
+      ansible.builtin.command: tar tzf {{ latest.stdout }}  # noqa command-instead-of-module
+      register: listing
+      changed_when: false
+
+    - name: The archive holds the database, the configuration, the repositories and the registry
+      ansible.builtin.assert:
+        that:
+          - "'gitea-db.sql' in listing.stdout_lines"
+          - "'app.ini' in listing.stdout_lines"
+          - "'repos/eupadev/' ~ witness_repo ~ '.git/HEAD' in listing.stdout_lines"
+          - listing.stdout is search('(?m)^data/packages/../../[0-9a-f]{64}$')
+        fail_msg: Incomplete archive
+
+    - name: Images of the running containers (database and Gitea), reused as they are
+      ansible.builtin.command:
+        cmd: docker compose ps --format {{ '{{.Image}}' }} {{ item }}
+        chdir: /opt/eupadev/forge
+      loop: [db, gitea]
+      register: images
+      changed_when: false
+
+    - name: Restore in a throwaway environment
+      block:
+        - name: Empty trial directory
+          ansible.builtin.file:
+            path: "{{ trial }}"
+            state: "{{ item }}"
+            mode: "0700"
+          loop: [absent, directory]
+
+        - name: Extract the archive
+          ansible.builtin.unarchive:
+            src: "{{ latest.stdout }}"
+            dest: "{{ trial }}"
+            remote_src: true
+
+        # Layout of the Gitea docs (rootless): app.ini → /etc/gitea,
+        # data → /var/lib/gitea, repos → /var/lib/gitea/git/repositories.
+        - name: Place the files as the docs say (rootless)
+          ansible.builtin.shell:
+            cmd: >-
+              set -e; mkdir {{ trial }}/etc; mv {{ trial }}/app.ini {{ trial }}/etc/;
+              mkdir -p {{ trial }}/data/git; mv {{ trial }}/repos {{ trial }}/data/git/repositories;
+              chown -R 1000:1000 {{ trial }}/etc {{ trial }}/data
+          changed_when: true
+
+        - name: Isolated network (no egress, no published port)
+          ansible.builtin.command: docker network create --internal {{ trial_name }}
+          changed_when: true
+
+        # No database password needed here: "trust" access, on an internal
+        # network that disappears at the end of the test.
+        - name: Throwaway PostgreSQL
+          ansible.builtin.command: >-
+            docker run -d --name {{ trial_name }}-db --network {{ trial_name }}
+            -e POSTGRES_USER=gitea -e POSTGRES_DB=gitea -e POSTGRES_HOST_AUTH_METHOD=trust
+            {{ images.results[0].stdout }}
+          changed_when: true
+
+        # Over TCP: the temporary server of the initialisation listens on the socket only.
+        - name: Wait for the throwaway database
+          ansible.builtin.command: docker exec {{ trial_name }}-db pg_isready -h 127.0.0.1 -U gitea -d gitea
+          register: ready
+          changed_when: false
+          retries: 30
+          delay: 2
+          until: ready.rc == 0
+
+        - name: Restore the Gitea SQL (stop at the first error)
+          ansible.builtin.shell:
+            cmd: >-
+              docker exec -i {{ trial_name }}-db psql -h 127.0.0.1 -U gitea -d gitea
+              -v ON_ERROR_STOP=1 -q < {{ trial }}/gitea-db.sql
+          changed_when: true
+
+        - name: Throwaway Gitea on the restored files
+          ansible.builtin.command: >-
+            docker run -d --name {{ trial_name }}-gitea --network {{ trial_name }}
+            -v {{ trial }}/data:/var/lib/gitea -v {{ trial }}/etc:/etc/gitea
+            -e GITEA__database__HOST={{ trial_name }}-db:5432
+            {{ images.results[1].stdout }}
+          changed_when: true
+
+        - name: Wait for the restored Gitea (healthz)
+          ansible.builtin.command: docker exec {{ trial_name }}-gitea curl -fsS http://localhost:3000/api/healthz
+          register: trial_health
+          changed_when: false
+          retries: 30
+          delay: 3
+          until: trial_health.rc == 0
+
+        - name: Regenerate the Git hooks (last step of the docs)
+          ansible.builtin.command: docker exec {{ trial_name }}-gitea gitea admin regenerate hooks
+          changed_when: true
+
+        # argv: the query has "user" between quotes; without them, user is
+        # PostgreSQL's current user (1 row), not the table.
+        - name: Counts of the restored database
+          ansible.builtin.command:
+            argv: [docker, exec, "{{ trial_name }}-db", psql, -h, 127.0.0.1, -U, gitea, -d, gitea, -tAc, "{{ sql_accounts }}"]
+          register: trial_accounts
+          changed_when: false
+
+        - name: Counts of the running database (read only)
+          ansible.builtin.command:
+            argv: [docker, compose, exec, -T, db, psql, -U, gitea, -d, gitea, -tAc, "{{ sql_accounts }}"]
+            chdir: /opt/eupadev/forge
+          register: service_accounts
+          changed_when: false
+
+        - name: Same repositories, accounts, package versions and blobs
+          ansible.builtin.assert:
+            that:
+              - trial_accounts.stdout == service_accounts.stdout
+              - (trial_accounts.stdout.split() | map('int') | min) > 0
+            fail_msg: "restored {{ trial_accounts.stdout }} ≠ running {{ service_accounts.stdout }}"
+            success_msg: "repositories, users, package versions, blobs: {{ trial_accounts.stdout }}"
+
+        - name: Registry — each blob listed in the database is present and intact (sha256 computed again)
+          ansible.builtin.shell:
+            cmd: >-
+              set -o pipefail;
+              docker exec {{ trial_name }}-db psql -h 127.0.0.1 -U gitea -d gitea -tAc 'select hash_sha256 from package_blob'
+              | awk -v d={{ trial }}/data/packages '{print $1 "  " d "/" substr($1,1,2) "/" substr($1,3,2) "/" $1}'
+              | sha256sum -c --quiet
+            executable: /bin/bash
+          changed_when: false
+
+        # Token created IN the throwaway instance (destroyed at the end), never shown.
+        - name: Read token in the restored instance
+          ansible.builtin.command: >-
+            docker exec {{ trial_name }}-gitea gitea admin user generate-access-token
+            --username {{ gitea_admin_user }} --token-name backup-verification
+            --scopes read:repository --raw
+          register: token
+          changed_when: true
+          no_log: true
+
+        - name: Clone the witness repository from the restored Gitea (HTTP)
+          ansible.builtin.command:
+            argv:
+              - docker
+              - exec
+              - "{{ trial_name }}-gitea"
+              - git
+              - -c
+              - "http.extraHeader=Authorization: token {{ token.stdout }}"
+              - clone
+              - --bare
+              - -q
+              - "http://localhost:3000/{{ gitea_org }}/{{ witness_repo }}.git"
+              - /tmp/check.git
+          register: clone
+          changed_when: true
+          no_log: true
+          failed_when: false
+
+        - name: The clone succeeded
+          ansible.builtin.assert:
+            that: clone.rc == 0
+            fail_msg: "clone failed: {{ clone.stderr | default('') }}"
+
+        - name: Integrity of the cloned repository
+          ansible.builtin.command: docker exec {{ trial_name }}-gitea git -C /tmp/check.git fsck --full
+          changed_when: false
+
+        - name: Commit of main in the restored clone
+          ansible.builtin.command: docker exec {{ trial_name }}-gitea git -C /tmp/check.git rev-parse refs/heads/main
+          register: trial_main
+          changed_when: false
+
+        - name: Commit of main on the running forge (read only)
+          ansible.builtin.command:
+            cmd: >-
+              docker compose exec -T gitea git
+              --git-dir=/var/lib/gitea/git/repositories/{{ gitea_org }}/{{ witness_repo }}.git
+              rev-parse refs/heads/main
+            chdir: /opt/eupadev/forge
+          register: main_service
+          changed_when: false
+
+        - name: Same commit
+          ansible.builtin.assert:
+            that: trial_main.stdout == main_service.stdout
+            fail_msg: "restored main {{ trial_main.stdout }} ≠ running {{ main_service.stdout }}"
+            success_msg: "{{ witness_repo }}: main = {{ trial_main.stdout }}, git fsck OK"
+
+      rescue:
+        - name: Logs of the throwaway containers
+          ansible.builtin.command: docker logs --tail 40 {{ item }}
+          loop: ["{{ trial_name }}-db", "{{ trial_name }}-gitea"]
+          register: logs
+          changed_when: false
+          failed_when: false
+
+        - name: Show the logs
+          ansible.builtin.debug:
+            msg: "{{ logs.results | map(attribute='stdout_lines') | list }}\n{{ logs.results | map(attribute='stderr_lines') | list }}"
+
+        - name: Failure
+          ansible.builtin.fail:
+            msg: Restore of the forge failed (see above)
+
+      always:
+        - name: Remove the throwaway containers
+          ansible.builtin.command: docker rm -fv {{ trial_name }}-gitea {{ trial_name }}-db
+          changed_when: true
+          failed_when: false
+
+        - name: Remove the isolated network
+          ansible.builtin.command: docker network rm {{ trial_name }}
+          changed_when: true
+          failed_when: false
+
+        - name: Remove the trial directory
+          ansible.builtin.file:
+            path: "{{ trial }}"
+            state: absent
+
+- name: Backup and restore of the orchestrator database (pg_dump)
+  hosts: orchestrator
+  become: true
+  gather_facts: false
+  vars:
+    trial_name: restore-trial-orch
+    # Each user table and its row count, sorted.
+    # Owner and grants of each table and sequence of the public schema, and owner of the database.
+    sql_grants: >-
+      select coalesce(string_agg(format('%s:%s:%s', c.relname, pg_get_userbyid(c.relowner), c.relacl), ' ' order by c.relname), '')
+      || ' db:' || (select pg_get_userbyid(datdba) from pg_database where datname = current_database())
+      from pg_class c join pg_namespace n on n.oid = c.relnamespace
+      where n.nspname = 'public' and c.relkind in ('r', 'S')
+    tables_sql: >-
+      select coalesce(string_agg(t, ' ' order by t), '') from (
+      select table_schema || '.' || table_name || '=' ||
+      (xpath('/row/c/text()', query_to_xml(format('select count(*) as c from %I.%I', table_schema, table_name), false, true, '')))[1]::text as t
+      from information_schema.tables
+      where table_schema not in ('pg_catalog', 'information_schema') and table_type = 'BASE TABLE') s
+  tasks:
+    - name: Witness value
+      ansible.builtin.set_fact:
+        witness: "{{ lookup('ansible.builtin.password', '/dev/null', chars=['ascii_lowercase', 'digits'], length=20) }}"
+
+    - name: Start time
+      ansible.builtin.command: date +%s
+      register: start_time
+      changed_when: false
+
+    - name: Back up and restore
+      block:
+        # The database may still be empty (engine not deployed): a witness proves
+        # that data really is backed up then restored.
+        - name: Write the witness (schema dedicated to the test)
+          ansible.builtin.command:
+            argv:
+              - docker
+              - compose
+              - exec
+              - -T
+              - db
+              - psql
+              - -U
+              - orchestrator
+              - -d
+              - orchestrator
+              - -v
+              - ON_ERROR_STOP=1
+              - -c
+              - >-
+                drop schema if exists backup_verification cascade;
+                create schema backup_verification;
+                create table backup_verification.witness (value text);
+                insert into backup_verification.witness values ('{{ witness }}')
+            chdir: /opt/eupadev/orchestrator
+          changed_when: true
+
+        # systemctl start waits for the end of a oneshot service and fails with it.
+        - name: Start an on-demand backup (like the timer)
+          ansible.builtin.systemd_service:
+            name: eupadev-backup.service
+            state: started
+
+        - name: Result of the last run
+          ansible.builtin.systemd_service:
+            name: eupadev-backup.service
+          register: last_run
+          failed_when: last_run.status.Result != 'success'
+
+        - name: Latest backup
+          ansible.builtin.shell:
+            cmd: set -o pipefail; ls -1t {{ backup_dir }}/orchestrator-*.dump | head -1
+            executable: /bin/bash
+          register: latest
+          changed_when: false
+
+        - name: Read its permissions
+          ansible.builtin.stat:
+            path: "{{ item }}"
+          loop: ["{{ latest.stdout }}", "{{ backup_dir }}"]
+          register: rights
+
+        - name: New file, not empty, readable by root only
+          ansible.builtin.assert:
+            that:
+              - rights.results[0].stat.size > 0
+              - rights.results[0].stat.mtime >= (start_time.stdout | int)
+              - rights.results[0].stat.mode == '0600'
+              - rights.results[0].stat.pw_name == 'root'
+              - rights.results[1].stat.mode == '0700'
+            fail_msg: "{{ latest.stdout }}: empty, old or permissions too wide"
+
+        - name: Image of the running database, reused as it is
+          ansible.builtin.command:
+            cmd: docker compose ps --format {{ '{{.Image}}' }} db
+            chdir: /opt/eupadev/orchestrator
+          register: image
+          changed_when: false
+
+        - name: Throwaway PostgreSQL, without network
+          ansible.builtin.command: >-
+            docker run -d --name {{ trial_name }} --network none
+            -e POSTGRES_USER=orchestrator -e POSTGRES_DB=orchestrator -e POSTGRES_HOST_AUTH_METHOD=trust
+            {{ image.stdout }}
+          changed_when: true
+
+        - name: Wait for the throwaway database
+          ansible.builtin.command: docker exec {{ trial_name }} pg_isready -h 127.0.0.1 -U orchestrator -d orchestrator
+          register: ready
+          changed_when: false
+          retries: 30
+          delay: 2
+          until: ready.rc == 0
+
+        # pg_dump does not back up the accounts (PostgreSQL docs, backup-dump):
+        # they are created first with the same script as the VM (fake
+        # passwords), otherwise the restore fails on "OWNER TO orch_owner".
+        - name: Create the orchestrator accounts in the throwaway database
+          ansible.builtin.command:
+            argv: [docker, exec, -i, "{{ trial_name }}", psql, -h, 127.0.0.1, -U, orchestrator, -d, orchestrator, -v, ON_ERROR_STOP=1, -f, "-"]
+            stdin: |
+              \set owner_password 'throwaway-trial'
+              \set engine_password 'throwaway-trial'
+              {{ lookup('ansible.builtin.file', playbook_dir ~ '/../../orchestrator/sql/roles.sql') }}
+          changed_when: true
+
+        - name: Restore the backup (stop at the first error)
+          ansible.builtin.shell:
+            cmd: >-
+              docker exec -i {{ trial_name }} pg_restore -h 127.0.0.1 -U orchestrator -d orchestrator
+              --exit-on-error < {{ latest.stdout }}
+          changed_when: true
+
+        - name: Tables and rows of the restored database
+          ansible.builtin.command:
+            argv: [docker, exec, "{{ trial_name }}", psql, -h, 127.0.0.1, -U, orchestrator, -d, orchestrator, -tAc, "{{ tables_sql }}"]
+          register: trial_tables
+          changed_when: false
+
+        - name: Tables and rows of the running database (read only)
+          ansible.builtin.command:
+            argv: [docker, compose, exec, -T, db, psql, -U, orchestrator, -d, orchestrator, -tAc, "{{ tables_sql }}"]
+            chdir: /opt/eupadev/orchestrator
+          register: tables_service
+          changed_when: false
+
+        # Owners and grants (step 6): they must come back identical.
+        - name: Owners and grants of the restored database
+          ansible.builtin.command:
+            argv: [docker, exec, "{{ trial_name }}", psql, -h, 127.0.0.1, -U, orchestrator, -d, orchestrator, -tAc, "{{ sql_grants }}"]
+          register: trial_grants
+          changed_when: false
+
+        - name: Owners and grants of the running database (read only)
+          ansible.builtin.command:
+            argv: [docker, compose, exec, -T, db, psql, -U, orchestrator, -d, orchestrator, -tAc, "{{ sql_grants }}"]
+            chdir: /opt/eupadev/orchestrator
+          register: service_grants
+          changed_when: false
+
+        - name: Same owners and same grants as the running database
+          ansible.builtin.assert:
+            that: trial_grants.stdout == service_grants.stdout
+            fail_msg: "restored grants [{{ trial_grants.stdout }}] ≠ running [{{ service_grants.stdout }}]"
+
+        - name: Restored witness
+          ansible.builtin.command:
+            argv: [docker, exec, "{{ trial_name }}", psql, -h, 127.0.0.1, -U, orchestrator, -d, orchestrator, -tAc,
+                   "select value from backup_verification.witness"]
+          register: trial_witness
+          changed_when: false
+
+        - name: Same tables, same row counts, witness found
+          ansible.builtin.assert:
+            that:
+              - trial_tables.stdout == tables_service.stdout
+              - "'backup_verification.witness=1' in trial_tables.stdout.split()"
+              - trial_witness.stdout == witness
+            fail_msg: "restored [{{ trial_tables.stdout }}] ≠ running [{{ tables_service.stdout }}] or witness missing"
+            success_msg: "restored tables = running: {{ trial_tables.stdout }}"
+
+      rescue:
+        - name: Log of the throwaway database
+          ansible.builtin.command: docker logs --tail 40 {{ trial_name }}
+          register: db_log
+          changed_when: false
+          failed_when: false
+
+        - name: Log of the backup
+          ansible.builtin.command: journalctl -u eupadev-backup.service -n 20 --no-pager
+          register: backup_log
+          changed_when: false
+
+        - name: Show the logs
+          ansible.builtin.debug:
+            msg: "{{ db_log.stdout_lines + db_log.stderr_lines + backup_log.stdout_lines }}"
+
+        - name: Failure
+          ansible.builtin.fail:
+            msg: Restore of the orchestrator database failed (see above)
+
+      always:
+        - name: Remove the throwaway database
+          ansible.builtin.command: docker rm -fv {{ trial_name }}
+          changed_when: true
+          failed_when: false
+
+        - name: Remove the witness from the running database
+          ansible.builtin.command:
+            cmd: docker compose exec -T db psql -U orchestrator -d orchestrator -c "drop schema if exists backup_verification cascade"
+            chdir: /opt/eupadev/orchestrator
+          changed_when: true

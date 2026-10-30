@@ -1,0 +1,104 @@
+# Two runners on the CI VM (runner_instances): "standard" without access to
+# the VM's Docker, "image" with it. See infra/compose/runner/compose.yml.
+- name: Directories of the runners (root access only)
+  ansible.builtin.file:
+    path: "/opt/eupadev/runner/{{ item.name }}/data"
+    state: directory
+    mode: "0750"
+  loop: "{{ runner_instances }}"
+  loop_control: { label: "{{ item.name }}" }
+
+- name: Copy the Compose file of the runners
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../compose/runner/compose.yml"
+    dest: /opt/eupadev/runner/compose.yml
+    mode: "0640"
+  register: runner_compose
+
+- name: Variables of the runners (nothing secret)
+  ansible.builtin.copy:
+    dest: /opt/eupadev/runner/.env
+    content: |
+      GITEA_DOMAIN={{ gitea_domain }}
+      FORGE_IP={{ forge_ip }}
+    mode: "0640"
+
+- name: Configuration of each runner
+  ansible.builtin.template:
+    src: config.yaml.j2
+    dest: "/opt/eupadev/runner/{{ runner_instance.name }}/config.yaml"
+    mode: "0640"
+  loop: "{{ runner_instances }}"
+  loop_control: { loop_var: runner_instance, label: "{{ runner_instance.name }}" }
+  register: runner_config
+
+- name: Are the runners already registered?
+  ansible.builtin.stat:
+    path: "/opt/eupadev/runner/{{ item.name }}/data/.runner"
+  loop: "{{ runner_instances }}"
+  loop_control: { label: "{{ item.name }}" }
+  register: runner_files
+
+# Registration once per runner, at the organisation level: it only works
+# for its repositories. The registration ticket is asked from Gitea just
+# before and never written to disk. Labels read from the runner's
+# configuration.
+- name: Register the missing runners with the organisation
+  when: runner_files.results | rejectattr('stat.exists') | list | length > 0
+  block:
+    - name: Ask Gitea for a registration ticket
+      ansible.builtin.uri:
+        url: "{{ hostvars[groups['forge'][0]].gitea_api }}/orgs/{{ hostvars[groups['forge'][0]].gitea_org }}/actions/runners/registration-token"
+        method: POST
+        url_username: "{{ gitea_admin_user }}"
+        url_password: "{{ vault_gitea_admin_password }}"
+        force_basic_auth: true
+        return_content: true
+      delegate_to: "{{ groups['forge'][0] }}"
+      register: runner_reg_token
+      no_log: true
+
+    - name: Registration
+      ansible.builtin.command:
+        cmd: >-
+          docker compose run --rm --entrypoint gitea-runner {{ item.item.name }}
+          register --no-interactive --config /config.yaml
+          --instance https://{{ gitea_domain }}
+          --token {{ runner_reg_token.json.token }}
+          --name {{ inventory_hostname }}-{{ item.item.name }}
+        chdir: /opt/eupadev/runner
+      loop: "{{ runner_files.results | rejectattr('stat.exists') | list }}"
+      no_log: true
+      changed_when: true
+
+# --remove-orphans: removes a runner no longer described in compose.yml.
+- name: Start the runners (recreated if their configuration changes)
+  ansible.builtin.command:
+    cmd: >-
+      docker compose up -d --wait --remove-orphans
+      {{ '--force-recreate' if (runner_config.changed or runner_compose.changed) else '' }}
+    chdir: /opt/eupadev/runner
+  register: runner_up
+  changed_when: runner_up.stderr is search('Created|Recreated|Started|Pulled|Removed')
+
+# Playwright image of the acceptance job (template acceptance.sh, ≈ 2 GB):
+# pulled here once, not by the first Preview run of a tool. Reference read in
+# that script, never copied (pinned by digest).
+- name: Playwright image of the acceptance job
+  vars:
+    runner_playwright: >-
+      {{ lookup('ansible.builtin.file', playbook_dir ~ '/../../tool-template/.gitea/checks/acceptance.sh')
+         | regex_findall('(?m)^IMAGE=([^ ]+)$') | first }}
+  block:
+    - name: Playwright image present?
+      ansible.builtin.command:
+        argv: [docker, image, inspect, --format, "{{ '{{' }}.Id{{ '}}' }}", "{{ runner_playwright }}"]
+      register: runner_playwright_local
+      changed_when: false
+      failed_when: false
+
+    - name: Pull the Playwright image by digest
+      ansible.builtin.command:
+        argv: [docker, pull, -q, "{{ runner_playwright }}"]
+      when: runner_playwright_local.rc != 0
+      changed_when: true

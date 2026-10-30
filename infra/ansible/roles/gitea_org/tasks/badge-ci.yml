@@ -1,0 +1,40 @@
+# Creates a badge (token) for a robot account and stores it in the
+# organisation's secrets. Called for each entry of gitea_ci_tokens whose secret
+# is missing; the badge is never written on disk nor printed. Also called for
+# gitea_platform_repos[].badges, stored in that repository's secrets instead.
+- name: "Remove an old badge of the same name (interrupted trial): {{ gitea_org_badge.name }}"
+  ansible.builtin.uri:
+    url: "{{ gitea_api }}/users/{{ gitea_org_badge.user }}/tokens/{{ gitea_org_badge.name }}"
+    method: DELETE
+    url_username: "{{ gitea_admin_user }}"
+    url_password: "{{ vault_gitea_admin_password }}"
+    force_basic_auth: true
+    status_code: [204, 404]
+
+- name: "Create the badge of the robot account: {{ gitea_org_badge.user }}"
+  ansible.builtin.uri:
+    url: "{{ gitea_api }}/users/{{ gitea_org_badge.user }}/tokens"
+    method: POST
+    url_username: "{{ gitea_admin_user }}"
+    url_password: "{{ vault_gitea_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body: { name: "{{ gitea_org_badge.name }}", scopes: "{{ gitea_org_badge.scopes }}" }
+    status_code: 201
+  register: gitea_org_badge_created
+  no_log: true
+
+- name: "Store the badge in the secret: {{ gitea_org_badge.secret }}"
+  ansible.builtin.uri:
+    # Organisation secrets by default; a repository's (gitea_org_badge_secrets)
+    # for the badges of a platform repository.
+    url: "{{ gitea_org_badge_secrets | default(gitea_api ~ '/orgs/' ~ gitea_org ~ '/actions/secrets') }}/{{ gitea_org_badge.secret }}"
+    method: PUT
+    url_username: "{{ gitea_admin_user }}"
+    url_password: "{{ vault_gitea_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body: { data: "{{ gitea_org_badge_created.json.sha1 }}" }
+    status_code: [201, 204]
+  no_log: true
+  changed_when: true

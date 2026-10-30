@@ -1,0 +1,32 @@
+# Daily backup by the native method of each service (ROADMAP §8.14 B, audit
+# I6): gitea dump on the forge, pg_dump on the orchestrator.
+# Files readable by root only: they contain app.ini and the tokens.
+# Restore and proof: infra/README.md, verify-backup.yml.
+- name: Backup folder (root only)
+  ansible.builtin.file:
+    path: "{{ backup_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Backup script
+  ansible.builtin.template:
+    src: eupadev-backup.sh.j2
+    dest: /usr/local/sbin/eupadev-backup
+    mode: "0700"
+
+- name: Systemd service and timer
+  ansible.builtin.template:
+    src: "eupadev-backup.{{ item }}.j2"
+    dest: "/etc/systemd/system/eupadev-backup.{{ item }}"
+    mode: "0644"
+  loop: [service, timer]
+  register: backup_units
+
+- name: Enable the daily timer
+  ansible.builtin.systemd_service:
+    name: eupadev-backup.timer
+    enabled: true
+    state: started
+    daemon_reload: "{{ backup_units is changed }}"

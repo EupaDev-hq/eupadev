@@ -1,0 +1,18 @@
+# Caddy of the test Compose (compose.test.yml): one origin, http://localhost:3000. Keycloak under /realms/ and
+# /resources/, the rest to the two instances of the tool in round robin (SEC-RATE across two instances).
+{
+	admin off
+	auto_https off
+}
+
+:3000 {
+	@keycloak path /realms/* /resources/*
+	handle @keycloak {
+		reverse_proxy keycloak:8080
+	}
+	handle {
+		reverse_proxy 127.0.0.1:3001 127.0.0.1:3002 {
+			lb_policy round_robin
+		}
+	}
+}

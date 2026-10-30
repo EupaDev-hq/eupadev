@@ -1,0 +1,117 @@
+{
+  "realm": "tools",
+  "enabled": true,
+  "sslRequired": "external",
+  "registrationAllowed": false,
+  "resetPasswordAllowed": false,
+  "rememberMe": false,
+  "accessTokenLifespan": 300,
+  "ssoSessionIdleTimeout": 1800,
+  "ssoSessionMaxLifespan": 36000,
+  "revokeRefreshToken": true,
+  "refreshTokenMaxReuse": 0,
+  "eventsEnabled": true,
+  "eventsExpiration": 34560000,
+  "eventsListeners": ["jboss-logging"],
+  "adminEventsEnabled": true,
+  "adminEventsDetailsEnabled": true,
+  "attributes": { "adminEventsExpiration": "34560000" },
+  "bruteForceProtected": true,
+  "permanentLockout": false,
+  "maxTemporaryLockouts": 0,
+  "failureFactor": 5,
+  "waitIncrementSeconds": 60,
+  "maxFailureWaitSeconds": 900,
+  "minimumQuickLoginWaitSeconds": 60,
+  "defaultOptionalClientScopes": ["address", "microprofile-jwt", "organization", "phone"],
+  "clients": [
+    {
+      "clientId": "trial-tool",
+      "description": "Trial tool of the core (confidential client, code + PKCE)",
+      "enabled": true,
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "ci-only-not-a-real-secret",
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "fullScopeAllowed": false,
+      "frontchannelLogout": false,
+      "redirectUris": ["http://localhost:3000/auth/callback"],
+      "webOrigins": [],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://localhost:3000/",
+        "backchannel.logout.url": "http://host.docker.internal:3000/auth/backchannel-logout",
+        "backchannel.logout.session.required": "true",
+        "backchannel.logout.revoke.offline.tokens": "false"
+      },
+      "defaultClientScopes": ["acr", "basic", "email", "profile", "roles", "web-origins"],
+      "optionalClientScopes": [],
+      "protocolMappers": [
+        {
+          "name": "client-roles-in-id-token",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-client-role-mapper",
+          "config": {
+            "usermodel.clientRoleMapping.clientId": "trial-tool",
+            "claim.name": "resource_access.${client_id}.roles",
+            "jsonType.label": "String",
+            "multivalued": "true",
+            "id.token.claim": "true",
+            "access.token.claim": "false",
+            "userinfo.token.claim": "false",
+            "introspection.token.claim": "false"
+          }
+        }
+      ]
+    }
+  ],
+  "roles": {
+    "client": {
+      "trial-tool": [
+        { "name": "reader", "description": "Reads the tool's data" },
+        { "name": "manager", "description": "Creates and changes the tool's data" },
+        { "name": "admin", "description": "Administers the tool" }
+      ]
+    }
+  },
+  "groups": [
+    { "name": "trial-tool-readers", "clientRoles": { "trial-tool": ["reader"] } },
+    { "name": "trial-tool-managers", "clientRoles": { "trial-tool": ["manager"] } },
+    { "name": "trial-tool-admins", "clientRoles": { "trial-tool": ["admin"] } }
+  ],
+  "users": [
+    {
+      "username": "alice",
+      "firstName": "Alice",
+      "lastName": "Reader",
+      "email": "alice@example.test",
+      "emailVerified": true,
+      "enabled": true,
+      "groups": ["/trial-tool-readers"],
+      "credentials": [{ "type": "password", "value": "ci-only-alice", "temporary": false }]
+    },
+    {
+      "username": "bruno",
+      "firstName": "Bruno",
+      "lastName": "Manager",
+      "email": "bruno@example.test",
+      "emailVerified": true,
+      "enabled": true,
+      "groups": ["/trial-tool-managers"],
+      "credentials": [{ "type": "password", "value": "ci-only-bruno", "temporary": false }]
+    },
+    {
+      "username": "chloe",
+      "firstName": "Chloe",
+      "lastName": "Admin",
+      "email": "chloe@example.test",
+      "emailVerified": true,
+      "enabled": true,
+      "groups": ["/trial-tool-managers", "/trial-tool-admins"],
+      "credentials": [{ "type": "password", "value": "ci-only-chloe", "temporary": false }]
+    }
+  ]
+}

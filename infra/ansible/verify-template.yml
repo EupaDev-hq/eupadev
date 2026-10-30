@@ -1,0 +1,1386 @@
+# Real-conditions check of the template's pipelines — can be rerun.
+#   ansible-playbook verify-template.yml
+# Creates a trial tool from the template (which is already a minimal
+# ready-to-use application), then checks on the real CI:
+#   1. branch agent/builder: the Check pipeline turns green;
+#   2. branch agent/fault (an eval() slipped in): the pipeline turns RED,
+#      and it is indeed the code analysis that blocks — proof that the check
+#      really blocks;
+#   3. branch agent/docker (a test that tries to drive Docker, as a malicious
+#      agent would): the test FAILS for lack of access — no socket, no
+#      DOCKER_HOST, no Docker client in the jobs that run the agents' code
+#      (runner ci-standard);
+#   4. merge into main: the image is published in the forge's registry, with
+#      its digest; secrets/tests/analysis ran on the standard runner (without
+#      Docker), only the image job on the image runner;
+#      4g: the published image is signed with the TOOLS' key — checked from
+#      the CI VM with the cosign and the key installed by the deployer role;
+#      the engine's key refuses it, and the two public keys differ;
+#      4h-i: the image boots read-only against a migrated throwaway database
+#      (boot check), and carries the label eupadev.core=<core version>;
+#   5. a) the image is built by the fixed Dockerfile .gitea/image/Dockerfile
+#      (scenarios 1 and 4: build, /app not writable); the refusal of build
+#      files pushed by svc-agent is in verify-forge.yml (here, the pushes go
+#      through the admin account, which Gitea lets through);
+#      b-c) branch agent/bypasses (an agent tries to silence the checks:
+#      exception comments, configuration files of the repository): the
+#      pipeline turns RED, each job concerned fails, and its log shows each
+#      finding the agent wanted to hide (gitleaks, and "test": "true" in
+#      package.json with a failing test: the CI runs node --test, not the
+#      agent's script);
+#   6. branch agent/masked (an eval() hidden from the analysis by a
+#      .gitignore in api/, and package.json deleted): RED on the analysis,
+#      which names the hidden file, and on the tests, for lack of package.json;
+#   7. branch agent/postinstall (a postinstall script that writes a witness
+#      file, a test that requires its absence, and a devEngines that would
+#      download another pnpm): RED in guard-rails, which names the script and
+#      devEngines (A-R0); the tests job stays GREEN, proof that the CI does
+#      not run the agent's install scripts;
+#   8. branch agent/exceptions (a test.skip, an eslint-disable, a
+#      "// nosemgrep" before an eval()), no exceptions registry: RED in the
+#      guard-rails job, which names each pattern and its file, and says what
+#      to do (line in the registry .gitea/exceptions.txt, human route);
+#   9. branch agent/licence (a local "file:" dependency under AGPL-3.0-only,
+#      lockfile prepared): RED in guard-rails, which names the dependency and
+#      its licence;
+#  10. .trivyignore.yaml put on main by the admin (as a human would after the
+#      gate), entry without expired_at: RED in guard-rails, image not
+#      published;
+#  11. same file, expired_at in 60 days: RED (30 days at most);
+#  12. same file, expired_at in 10 days: GREEN, and the image job does pass
+#      the file to Trivy (docker cp, Trivy reads it without error);
+#  13. really vulnerable dependency (minimist 1.2.5, CVE-2021-44906,
+#      CRITICAL): a) witness, branch without exception: RED in the image job,
+#      which cites the CVE; b) EXPIRED exception put on main (past date,
+#      accepted by guard-rails): the flaw comes back, RED in the image job,
+#      which cites the CVE; c) main itself stays green;
+#  14. same exception dated in 10 days: GREEN, the flaw is ignored;
+#  15. registry .gitea/exceptions.txt put on main by the admin: valid lines
+#      for nosem and eslint-disable, EXPIRED line for .skip(, a line 2 years
+#      ahead and a malformed one: RED in guard-rails on an agent branch
+#      (registry read on the forge's main) AND on main (registry of the
+#      commit); the log names the expired line, cites the faulty lines, and
+#      reports neither nosem nor eslint-disable;
+#  16. registry fixed, three valid lines: GREEN on the agent branch and on
+#      main.
+# Then deletes the trial tool and its image, even on failure.
+- name: Check the template's pipelines
+  hosts: forge
+  become: true
+  vars:
+    repo: check-template
+    # 4g: login to the registry from the CI VM, in memory, removed at the end.
+    signature_docker_config: /run/eupadev/check-template-signature
+    trial_js: |
+      export const trial = () => 'ok';
+    # What a malicious agent would try from its tests: reach the CI VM's
+    # Docker (socket, DOCKER_HOST, client). The test requires Docker to
+    # answer: it must therefore FAIL, and its message says why.
+    docker_probe_js: |
+      import { test } from 'node:test';
+      import assert from 'node:assert/strict';
+      import { existsSync } from 'node:fs';
+      import { connect } from 'node:net';
+
+      const reach = (path) => new Promise((done) => {
+        const s = connect(path);
+        s.on('connect', () => { s.destroy(); done('connected'); });
+        s.on('error', (e) => done(e.code));
+      });
+
+      test('an agent test tries to drive Docker', async () => {
+        const socket = await reach('/var/run/docker.sock');
+        const host = process.env.DOCKER_HOST || 'absent';
+        const client = ['/usr/bin/docker', '/usr/local/bin/docker'].some((f) => existsSync(f)) ? 'present' : 'absent';
+        const probe = `DOCKER-PROBE socket=${socket} DOCKER_HOST=${host} client=${client}`;
+        console.log(probe);
+        assert.equal(socket, 'connected', probe);
+      });
+    # Scenario 5 b-c: each bypass targets a different job, or else the job's
+    # log shows each finding separately (one pipeline instead of one per
+    # bypass).
+    # gitleaks: a fake token (built here, never written in clear) hidden by
+    # "gitleaks:allow" in one file, by a .gitleaks.toml of the repository in
+    # the other.
+    fake_token: "{{ 'ghp_' ~ ((repo ~ '-fake-token') | hash('sha1'))[:36] }}"
+    gitleaks_bypass: |
+      [extend]
+      useDefault = true
+      [[allowlists]]
+      paths = ['''api/config-leak\.js''']
+    # Tests: the CI must run node --test, never the "test" script of
+    # package.json (rewritten to "true" by the agent).
+    failing_test_js: |
+      import { test } from 'node:test';
+      import assert from 'node:assert/strict';
+
+      test('M2-FAILING-TEST', () => {
+        assert.fail('the CI runs node --test, not the agent\'s "test" script');
+      });
+    # Scenario 7: the agent's postinstall script writes a witness; the test
+    # requires the witness to be missing (install without scripts). devEngines:
+    # guard-rails refuses its mere presence (another version would download
+    # another pnpm; here the same as packageManager, otherwise pnpm refuses
+    # to install — ERR_PNPM_BAD_PM_VERSION — and the tests job would no longer
+    # prove anything about the postinstall).
+    postinstall_witness: "node -e \"require('fs').writeFileSync('postinstall-ran', 'yes')\""
+    dev_engines_agent: { packageManager: { name: pnpm, version: 12.16.1, onFail: download } }
+    postinstall_test_js: |
+      import { test } from 'node:test';
+      import assert from 'node:assert/strict';
+      import { existsSync } from 'node:fs';
+
+      test('M2-POSTINSTALL: the agent\'s postinstall script did not run', () => {
+        assert.equal(existsSync('postinstall-ran'), false, 'postinstall ran during pnpm install');
+      });
+    # Scenario 8: exceptions added by the agent (missing from main).
+    skipped_test_js: |
+      import { test } from 'node:test';
+
+      test.skip('M3: test disabled by the agent', () => {});
+    # Scenario 9: files/licence-agpl/pnpm-lock.yaml = the template's lockfile +
+    # this dependency, produced by pnpm 12.16.1 (pnpm install --lockfile-only).
+    # To redo if the template's package.json or lockfile changes: otherwise
+    # the install fails and the scenario reports it (cause missing from the log).
+    agpl_dependency: { agpl-trial: "file:api/agpl-trial" }
+    # Scenarios 10 to 12: Trivy exception (fictitious CVE); "days" is given by
+    # the task (expiry date = today + days).
+    trivy_no_date: |
+      vulnerabilities:
+        - id: CVE-2026-99999
+          statement: "verify-template trial: exception without date"
+    trivy_cve: CVE-2026-99999
+    trivy_dated: |
+      vulnerabilities:
+        - id: {{ trivy_cve }}
+          expired_at: {{ '%Y-%m-%d' | strftime(second=(now(utc=true).timestamp() | int) + days * 86400, utc=true) }}
+          statement: "verify-template trial: exception for {{ days }} days"
+    # Line printed by the image job; the log also holds the script's text
+    # (with "echo"): only the printed line counts.
+    trivy_transmitted: '(?m)^(?!.*echo).*Dated Trivy exceptions passed on'
+    # Scenarios 13 and 14: files/trivy-vulnerable/ = the template's package.json
+    # + minimist 1.2.5 (MIT), and its pnpm-lock.yaml produced by pnpm 12.16.1
+    # (pnpm install --lockfile-only), to redo like scenario 9's.
+    # A single HIGH/CRITICAL flaw for Trivy 0.75.0: CVE-2021-44906
+    # (CRITICAL, fixed in 1.2.6). lodash 4.17.20 ruled out: two HIGH
+    # (CVE-2021-23337 and CVE-2026-4800), one exception covers only one.
+    trivy_real_cve: CVE-2021-44906
+    # Line of Trivy's table that names the flaw (package, CVE, severity).
+    trivy_finding: 'minimist.*CVE-2021-44906.*CRITICAL'
+    vulnerable_files:
+      - operation: update
+        path: package.json
+        sha: "{{ package_builder.json.sha }}"
+        content: "{{ lookup('ansible.builtin.file', 'trivy-vulnerable/package.json', rstrip=false) | b64encode }}"
+      - operation: update
+        path: pnpm-lock.yaml
+        sha: "{{ lockfile_builder.json.sha }}"
+        content: "{{ lookup('ansible.builtin.file', 'trivy-vulnerable/pnpm-lock.yaml', rstrip=false) | b64encode }}"
+    # Scenarios 15 and 16: exceptions registry written on main by the admin
+    # (the trial repository is not protected), as a human would by the
+    # exception/** route. Dates: today + N days.
+    registry_d30: "{{ '%Y-%m-%d' | strftime(second=(now(utc=true).timestamp() | int) + 30 * 86400, utc=true) }}"
+    registry_d730: "{{ '%Y-%m-%d' | strftime(second=(now(utc=true).timestamp() | int) + 730 * 86400, utc=true) }}"
+    expired_registry: "{{ '%Y-%m-%d' | strftime(second=(now(utc=true).timestamp() | int) - 10 * 86400, utc=true) }}"
+    # Lines printed by guard-rails (the log does not hold the script's text,
+    # run by "sh .gitea/checks/guard-rails.sh").
+    missing_registry: 'Exceptions registry: missing [(]the forge.s main[)]'
+    registry_read_main: 'Exceptions registry: [.]gitea/exceptions[.]txt [(]the forge.s main[)]'
+    registry_read_commit: 'Exceptions registry: [.]gitea/exceptions[.]txt [(]this commit of main[)]'
+    malformed_registry: 'GUARD-RAIL registry [.]gitea/exceptions[.]txt, line [0-9]+: count .one. not an integer'
+    registry_instruction: 'add a line to the registry [.]gitea/exceptions[.]txt by the human route [(]branch exception/[*][*][)]'
+    registry_header: "# expires;file;pattern;count;reason\n"
+    allowed_registry: |
+      {{ registry_d30 }};api/lib/exception-nosemgrep.js;nosem;1;verify-template trial: valid line
+      {{ registry_d30 }};web/exception-lint.js;eslint-disable;1;verify-template trial: valid line
+    red_registry: |
+      {{ registry_header }}{{ allowed_registry }}{{ expired_registry }};tests/unit/skipped.test.js;.skip(;1;verify-template trial: expired line
+      {{ registry_d730 }};api/other.js;nosem;1;verify-template trial: line two years ahead
+      {{ registry_d30 }};api/other.js;nosem;one;verify-template trial: malformed line
+    valid_registry: |
+      {{ registry_header }}{{ allowed_registry }}{{ registry_d30 }};tests/unit/skipped.test.js;.skip(;1;verify-template trial: valid line
+  module_defaults:
+    ansible.builtin.uri:
+      url_username: "{{ gitea_admin_user }}"
+      url_password: "{{ vault_gitea_admin_password }}"
+      force_basic_auth: true
+      body_format: json
+      return_content: true
+  tasks:
+    - name: Checks
+      block:
+        - name: Create the trial tool from the template
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/tool-template/generate"
+            method: POST
+            body: { owner: "{{ gitea_org }}", name: "{{ repo }}", private: true, git_content: true }
+            status_code: 201
+
+        # --- 1. Agent branch with the mini-application: must be green ---
+        # The template is already a working application (ready-to-use
+        # building blocks): only a small file is added, as the builder role
+        # would, and the whole CI must pass on this base.
+        - name: Push a change of the builder on agent/builder
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/contents"
+            method: POST
+            body:
+              branch: main
+              new_branch: agent/builder
+              message: Add a trial module of the builder
+              files:
+                - operation: create
+                  path: api/lib/trial.js
+                  content: "{{ trial_js | b64encode }}"
+            status_code: 201
+          register: commit_builder
+
+        - name: Wait for the pipeline of agent/builder
+          ansible.builtin.include_tasks: tasks/wait-for-pipeline.yml
+          vars:
+            commit_sha: "{{ commit_builder.json.commit.sha }}"
+
+        - name: "1. agent/builder: the pipeline must be green"
+          ansible.builtin.assert:
+            that:
+              - pipeline.conclusion == 'success'
+              - pipeline_jobs['guard-rails'] == 'success'
+            success_msg: "OK — agent branch: pipeline green ({{ pipeline_jobs }})"
+            fail_msg: "FAILED — agent branch: {{ pipeline.conclusion }} ({{ pipeline_jobs }}) — {{ pipeline.html_url }}"
+
+        # --- 2. A slipped-in fault: must be red, because of the analysis ---
+        - name: Slip an eval() into a branch agent/fault
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/contents"
+            method: POST
+            body:
+              branch: agent/builder
+              new_branch: agent/fault
+              message: Deliberate fault
+              files:
+                - operation: create
+                  path: danger.js
+                  content: "{{ 'eval(process.argv[2]);\n' | b64encode }}"
+            status_code: 201
+          register: commit_fault
+
+        - name: Wait for the pipeline of agent/fault
+          ansible.builtin.include_tasks: tasks/wait-for-pipeline.yml
+          vars:
+            commit_sha: "{{ commit_fault.json.commit.sha }}"
+
+        - name: "2. agent/fault: red, blocked by the code analysis"
+          ansible.builtin.assert:
+            that:
+              - pipeline.conclusion == 'failure'
+              - pipeline_jobs.analysis == 'failure'
+              - pipeline_jobs.tests == 'success'
+            success_msg: "OK — fault detected: pipeline red, blocked by the analysis ({{ pipeline_jobs }})"
+            fail_msg: "FAILED — the fault was not blocked as expected ({{ pipeline.conclusion }}, {{ pipeline_jobs }})"
+
+        # --- 3. An agent test tries to drive Docker: it must fail ---
+        - name: Push a test that tries to use Docker on agent/docker
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/contents"
+            method: POST
+            body:
+              branch: agent/builder
+              new_branch: agent/docker
+              message: Test that tries to use Docker
+              files:
+                - operation: create
+                  path: tests/unit/docker-probe.test.js
+                  content: "{{ docker_probe_js | b64encode }}"
+            status_code: 201
+          register: commit_docker
+
+        - name: Wait for the pipeline of agent/docker
+          ansible.builtin.include_tasks: tasks/wait-for-pipeline.yml
+          vars:
+            commit_sha: "{{ commit_docker.json.commit.sha }}"
+
+        - name: Read the log of the tests job of agent/docker
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/actions/jobs/{{ job_tests.id }}/logs"
+          vars:
+            job_tests: "{{ jobs_response.json.jobs | selectattr('name', 'equalto', 'tests') | first }}"
+          register: probe_log
+
+        - name: "3. agent/docker: the test does not reach Docker, the pipeline shows it"
+          ansible.builtin.assert:
+            that:
+              - pipeline.conclusion == 'failure'
+              - pipeline_jobs.tests == 'failure'
+              - pipeline_jobs.secrets == 'success'
+              - pipeline_jobs.analysis == 'success'
+              - pipeline_jobs.image != 'success'
+              - probe_log.content is search('DOCKER-PROBE socket=ENOENT DOCKER_HOST=absent client=absent')
+              - probe_log.content is not search('socket=connected')
+            success_msg: >-
+              OK — Docker out of reach of the agents' code:
+              {{ probe_log.content | regex_search('DOCKER-PROBE socket=\S+ DOCKER_HOST=\S+ client=\S+') }};
+              pipeline red on the tests job ({{ pipeline_jobs }})
+            fail_msg: >-
+              FAILED — Docker probe: {{ pipeline.conclusion }} ({{ pipeline_jobs }});
+              {{ probe_log.content | regex_search('DOCKER-PROBE socket=\S+ DOCKER_HOST=\S+ client=\S+') | default('no trace of the probe', true) }}
+              — {{ pipeline.html_url }}
+
+        # --- 4. Merge into main: the image must be published ---
+        - name: Propose the merge of agent/builder into main
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/pulls"
+            method: POST
+            body: { head: agent/builder, base: main, title: Trial module of the builder }
+            status_code: 201
+          register: merge_request
+
+        - name: Merge (squash)
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/pulls/{{ merge_request.json.number }}/merge"
+            method: POST
+            body: { Do: squash }
+            status_code: 200
+
+        - name: Read the commit of main
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/branches/main"
+          register: main_branch
+
+        - name: Wait for the pipeline of main
+          ansible.builtin.include_tasks: tasks/wait-for-pipeline.yml
+          vars:
+            commit_sha: "{{ main_branch.json.commit.id }}"
+
+        - name: "4a. main: the pipeline must be green"
+          ansible.builtin.assert:
+            that: pipeline.conclusion == 'success'
+            success_msg: "OK — main: pipeline green"
+            fail_msg: "FAILED — main: {{ pipeline.conclusion }} ({{ pipeline_jobs }}) — {{ pipeline.html_url }}"
+
+        - name: "4f. Each job of main ran on the right runner (Docker kept for the image job)"
+          ansible.builtin.assert:
+            that: item.runner_name is search('-' ~ ('image' if item.name == 'image' else 'standard') ~ '$')
+            success_msg: "OK — job {{ item.name }} run by {{ item.runner_name }}"
+            fail_msg: "FAILED — job {{ item.name }} run by {{ item.runner_name | default('?') }}"
+            quiet: true
+          loop: "{{ jobs_response.json.jobs }}"
+          loop_control: { label: "{{ item.name }}" }
+
+        - name: Look for the image in the forge's registry
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/packages/{{ gitea_org }}?type=container&q={{ repo }}"
+          register: packages
+
+        - name: "4b. The image of main's commit is in the registry"
+          ansible.builtin.assert:
+            that: main_branch.json.commit.id in (packages.json | selectattr('name', 'equalto', repo) | map(attribute='version'))
+            success_msg: "OK — image {{ repo }}:{{ main_branch.json.commit.id[:7] }} published in the registry"
+            fail_msg: "FAILED — image missing from the registry ({{ packages.json | map(attribute='version') | list }})"
+
+        - name: Read the log of the image job (digest)
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/actions/jobs/{{ job_image.id }}/logs"
+          vars:
+            job_image: "{{ jobs_response.json.jobs | selectattr('name', 'equalto', 'image') | first }}"
+          register: log_image
+
+        - name: "4c. The digest of the published image is printed"
+          ansible.builtin.assert:
+            that: >-
+              log_image.content is search('Digest: \S+@sha256:[0-9a-f]{64}')
+            success_msg: "OK — {{ log_image.content | regex_search('Digest: \\S+@sha256:[0-9a-f]{64}') }}"
+            fail_msg: "FAILED — no digest in the log of the image job"
+        - name: "4f. On main, the published image is built without the shared cache"
+          ansible.builtin.assert:
+            that: >-
+              log_image.content is search('Build: --no-cache')
+            success_msg: "OK — main's image built without cache"
+            fail_msg: "FAILED — main's image was built with the shared cache"
+        - name: "4e. The tool is built from the golden image"
+          ansible.builtin.assert:
+            that: log_image.content is search('base-node')
+            success_msg: "OK — built from the golden image (base-node)"
+            fail_msg: "FAILED — no trace of the golden image in the build log"
+        - name: "4h. The image boots read-only against a migrated throwaway database (boot check)"
+          ansible.builtin.assert:
+            that: log_image.content is search('The image starts read-only, migrates with the same image and answers 200 on /health and /')
+            success_msg: "OK — boot check green: read-only, migration by the same image, 200 on /health and /"
+            fail_msg: "FAILED — no green boot check in the image job's log"
+
+        # The registry is queried directly: the digest printed by the
+        # pipeline must be the one it serves for this image.
+        - name: Get a registry read token
+          ansible.builtin.uri:
+            url: "http://127.0.0.1:3000/v2/token?scope=repository:{{ gitea_org }}/{{ repo }}:pull"
+          register: registry_token
+          no_log: true
+
+        - name: Ask the registry for the image digest
+          ansible.builtin.uri:
+            url: "http://127.0.0.1:3000/v2/{{ gitea_org }}/{{ repo }}/manifests/{{ main_branch.json.commit.id }}"
+            method: HEAD
+            force_basic_auth: false
+            headers:
+              Authorization: "Bearer {{ registry_token.json.token }}"
+              Accept: >-
+                application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json,
+                application/vnd.docker.distribution.manifest.v2+json, application/vnd.docker.distribution.manifest.list.v2+json
+          register: manifest
+
+        - name: "4d. The printed digest is the registry's"
+          ansible.builtin.assert:
+            that: log_image.content is search(manifest.docker_content_digest)
+            success_msg: "OK — digest confirmed by the registry: {{ manifest.docker_content_digest }}"
+            fail_msg: "FAILED — the registry serves {{ manifest.docker_content_digest }}, missing from the pipeline log"
+
+        # --- 4g. Signature by the tools' key (ADR-014, E5c) ---
+        # Checked from the CI VM, as the deployer will do (E5d): cosign
+        # and /etc/eupadev/cosign-tools.pub installed by the deployer role;
+        # throwaway registry read badge, login in memory (/run).
+        - name: "4g. The public keys of the tools and of the engine differ"
+          ansible.builtin.assert:
+            that: >-
+              lookup('ansible.builtin.file', playbook_dir ~ '/files/cosign-tools.pub')
+              != lookup('ansible.builtin.file', playbook_dir ~ '/../../images/engine/cosign.pub')
+            success_msg: "OK — tools' key distinct from the engine's and the agents'"
+            fail_msg: "FAILED — files/cosign-tools.pub is the engine's key"
+
+        - name: Remove an old throwaway badge (interrupted run)
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/users/svc-deployment/tokens/check-template-signature"
+            method: DELETE
+            status_code: [204, 404]
+
+        - name: Create the throwaway registry read badge
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/users/svc-deployment/tokens"
+            method: POST
+            body_format: json
+            body: { name: check-template-signature, scopes: ["read:package"] }
+            status_code: 201
+          register: badge_signature
+          changed_when: false
+          no_log: true
+
+        - name: Registry login directory on the CI VM (memory)
+          ansible.builtin.file:
+            path: "{{ signature_docker_config }}"
+            state: directory
+            mode: "0700"
+          delegate_to: "{{ groups['ci'][0] }}"
+
+        - name: Log in to the registry from the CI VM
+          ansible.builtin.command:
+            argv: [docker, login, "{{ gitea_domain }}", -u, svc-deployment, --password-stdin]
+            stdin: "{{ badge_signature.json.sha1 }}"
+          environment: { DOCKER_CONFIG: "{{ signature_docker_config }}" }
+          delegate_to: "{{ groups['ci'][0] }}"
+          changed_when: false
+          no_log: true
+
+        - name: Public key of the engine on the CI VM (counter-check)
+          ansible.builtin.copy:
+            src: "{{ playbook_dir }}/../../images/engine/cosign.pub"
+            dest: "{{ signature_docker_config }}/cosign-engine.pub"
+            mode: "0600"
+          delegate_to: "{{ groups['ci'][0] }}"
+          changed_when: false
+
+        - name: Check the signature with the tools' key, then with the engine's
+          ansible.builtin.command:
+            argv: [cosign, verify, --key, "{{ item }}", --insecure-ignore-tlog=true,
+                   "{{ gitea_domain }}/{{ gitea_org }}/{{ repo }}@{{ manifest.docker_content_digest }}"]
+          environment: { DOCKER_CONFIG: "{{ signature_docker_config }}" }
+          delegate_to: "{{ groups['ci'][0] }}"
+          loop: [/etc/eupadev/cosign-tools.pub, "{{ signature_docker_config }}/cosign-engine.pub"]
+          register: check_signature
+          changed_when: false
+          failed_when: false
+
+        - name: "4g. Signed by the tools' key, refused by the engine's key"
+          ansible.builtin.assert:
+            that:
+              - check_signature.results[0].rc == 0
+              - check_signature.results[1].rc != 0
+              - check_signature.results[1].stderr is search('failed to verify signature|no matching signatures')
+            success_msg: "OK — image signed by the tools' key; the engine's key refuses it"
+            fail_msg: >-
+              FAILED — tools' key: rc={{ check_signature.results[0].rc }} {{ check_signature.results[0].stderr[-300:] }};
+              engine's key: rc={{ check_signature.results[1].rc }} {{ check_signature.results[1].stderr[-300:] }}
+
+        # Core mode of the deployer (ADR-022): the published image carries
+        # the label eupadev.core with the core version of package.json.
+        - name: Read the published image's core label from the CI VM
+          ansible.builtin.shell:
+            cmd: >-
+              set -o pipefail && docker pull -q "$REF" > /dev/null
+              && docker image inspect -f '{{ '{{' }}index .Config.Labels "eupadev.core"{{ '}}' }}' "$REF";
+              rc=$?; docker rmi "$REF" > /dev/null 2>&1; exit $rc
+            executable: /bin/bash
+          environment:
+            DOCKER_CONFIG: "{{ signature_docker_config }}"
+            REF: "{{ gitea_domain }}/{{ gitea_org }}/{{ repo }}@{{ manifest.docker_content_digest }}"
+          delegate_to: "{{ groups['ci'][0] }}"
+          register: core_label
+          changed_when: false
+
+        - name: "4i. The published image is labelled eupadev.core with the template's core version"
+          ansible.builtin.assert:
+            that: core_label.stdout == core_version
+          vars:
+            core_version: >-
+              {{ (lookup('ansible.builtin.file', playbook_dir ~ '/../../tool-template/package.json')
+                  | from_json).dependencies['@eupadev/core'] }}
+            success_msg: "OK — eupadev.core={{ core_label.stdout }}"
+            fail_msg: "FAILED — label eupadev.core: '{{ core_label.stdout }}'"
+
+        # --- 5 b-c. An agent silences the checks: must stay red ---
+        - name: Read the package.json of agent/builder
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/contents/package.json?ref=agent/builder"
+          register: package_builder
+
+        - name: Push the bypasses on agent/bypasses
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/contents"
+            method: POST
+            body:
+              branch: agent/builder
+              new_branch: agent/bypasses
+              message: Bypasses of the checks
+              files:
+                - operation: create
+                  path: api/comment-leak.js
+                  content: "{{ ('export const token = \"' ~ fake_token ~ '\"; // gitleaks:allow\n') | b64encode }}"
+                - operation: create
+                  path: api/config-leak.js
+                  content: "{{ ('export const token = \"' ~ fake_token ~ '\";\n') | b64encode }}"
+                - operation: create
+                  path: .gitleaks.toml
+                  content: "{{ gitleaks_bypass | b64encode }}"
+                - operation: update
+                  path: package.json
+                  sha: "{{ package_builder.json.sha }}"
+                  content: >-
+                    {{ (package_builder.json.content | b64decode | from_json)
+                       | combine({'scripts': {'test': 'true'}}, recursive=true) | to_nice_json(indent=2) | b64encode }}
+                - operation: create
+                  path: tests/unit/deliberate-failure.test.js
+                  content: "{{ failing_test_js | b64encode }}"
+            status_code: 201
+          register: commit_bypasses
+
+        - name: Wait for the pipeline of agent/bypasses
+          ansible.builtin.include_tasks: tasks/wait-for-pipeline.yml
+          vars:
+            commit_sha: "{{ commit_bypasses.json.commit.sha }}"
+
+        - name: Read the logs of the jobs of agent/bypasses
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/actions/jobs/{{ job.id }}/logs"
+          vars:
+            job: "{{ jobs_response.json.jobs | selectattr('name', 'equalto', item) | first }}"
+          loop: [secrets, tests]
+          register: bypass_logs
+
+        - name: Keep the logs by job
+          ansible.builtin.set_fact:
+            job_log: "{{ bypass_logs.results | items2dict(key_name='item', value_name='content') }}"
+
+        # The log also holds the script's text: the patterns searched for
+        # only appear in the findings (none in check.yml).
+        - name: "5b. gitleaks: neither \"gitleaks:allow\" nor a .gitleaks.toml of the repository silences it"
+          ansible.builtin.assert:
+            that:
+              - pipeline.conclusion == 'failure'
+              - pipeline_jobs.image != 'success'
+              - pipeline_jobs.secrets == 'failure'
+              - "job_log.secrets is search('File: +api/comment-leak[.]js')"
+              - "job_log.secrets is search('File: +api/config-leak[.]js')"
+              - job_log.secrets is not search(fake_token)
+            success_msg: "OK — gitleaks red despite the comment and the repository's .gitleaks.toml, token masked ({{ pipeline_jobs }})"
+            fail_msg: >-
+              FAILED — gitleaks: job {{ pipeline_jobs.secrets }};
+              comment-leak.js {{ 'vu' if job_log.secrets is search('comment-leak') else 'ABSENT' }},
+              config-leak.js {{ 'vu' if job_log.secrets is search('config-leak') else 'ABSENT' }},
+              token {{ 'IN CLEAR' if job_log.secrets is search(fake_token) else 'masked' }} — {{ pipeline.html_url }}
+
+        - name: "5c. Tests: a \"test\" script rewritten to \"true\" does not replace node --test"
+          ansible.builtin.assert:
+            that:
+              - pipeline_jobs.tests == 'failure'
+              - job_log.tests is search('M2-FAILING-TEST')
+            success_msg: "OK — the failing test ran despite the agent's 'test' script: tests job red ({{ pipeline_jobs }})"
+            fail_msg: >-
+              FAILED — tests: job {{ pipeline_jobs.tests }};
+              test M2-FAILING-TEST {{ 'run' if job_log.tests is search('M2-FAILING-TEST') else 'NEVER RUN' }} — {{ pipeline.html_url }}
+
+        # --- 6. File hidden from the analysis, package.json deleted: red ---
+        - name: Hide an eval() with api/.gitignore and delete package.json on agent/masked
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/contents"
+            method: POST
+            body:
+              branch: agent/builder
+              new_branch: agent/masked
+              message: File hidden from the analysis
+              files:
+                - operation: create
+                  path: api/masked.js
+                  content: "{{ 'eval(process.argv[2]);\n' | b64encode }}"
+                - operation: create
+                  path: api/.gitignore
+                  content: "{{ 'masked.js\n' | b64encode }}"
+                - operation: delete
+                  path: package.json
+                  sha: "{{ package_builder.json.sha }}"
+            status_code: 201
+          register: commit_masked
+
+        - name: Wait for the pipeline of agent/masked
+          ansible.builtin.include_tasks: tasks/wait-for-pipeline.yml
+          vars:
+            commit_sha: "{{ commit_masked.json.commit.sha }}"
+
+        - name: Read the logs of the jobs of agent/masked
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/actions/jobs/{{ job.id }}/logs"
+          vars:
+            job: "{{ jobs_response.json.jobs | selectattr('name', 'equalto', item) | first }}"
+          loop: [tests, analysis]
+          register: masked_logs
+
+        - name: Keep the logs by job
+          ansible.builtin.set_fact:
+            job_log: "{{ masked_logs.results | items2dict(key_name='item', value_name='content') }}"
+
+        - name: "6a. Opengrep: an agent's .gitignore hides no file"
+          ansible.builtin.assert:
+            that:
+              - pipeline.conclusion == 'failure'
+              - pipeline_jobs.analysis == 'failure'
+              - pipeline_jobs.secrets == 'success'
+              - job_log.analysis is search('api/masked[.]js')
+            success_msg: "OK — Opengrep analyses the file hidden by api/.gitignore: red on the analysis ({{ pipeline_jobs }})"
+            fail_msg: >-
+              FAILED — hidden file: {{ pipeline.conclusion }} ({{ pipeline_jobs }});
+              api/masked.js {{ 'vu' if job_log.analysis is search('masked') else 'ABSENT' }} — {{ pipeline.html_url }}
+
+        - name: "6b. Tests: without package.json, the job fails instead of passing"
+          ansible.builtin.assert:
+            that:
+              - pipeline_jobs.tests == 'failure'
+              - job_log.tests is search('cannot access .package[.]json.')
+            success_msg: "OK — package.json deleted: tests job red ({{ pipeline_jobs }})"
+            fail_msg: >-
+              FAILED — package.json deleted: tests job {{ pipeline_jobs.tests }};
+              {{ 'package.json reported missing' if job_log.tests is search('cannot access') else 'missing package.json NOT reported' }}
+              — {{ pipeline.html_url }}
+
+        # --- 7. postinstall and devEngines: refused by guard-rails, never run ---
+        - name: Add a witness postinstall, a devEngines and a test that requires the witness to be missing on agent/postinstall
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/contents"
+            method: POST
+            body:
+              branch: agent/builder
+              new_branch: agent/postinstall
+              message: Witness postinstall script
+              files:
+                - operation: update
+                  path: package.json
+                  sha: "{{ package_builder.json.sha }}"
+                  content: >-
+                    {{ (package_builder.json.content | b64decode | from_json)
+                       | combine({'scripts': {'postinstall': postinstall_witness}, 'devEngines': dev_engines_agent}, recursive=true)
+                       | to_nice_json(indent=2) | b64encode }}
+                - operation: create
+                  path: tests/unit/postinstall.test.js
+                  content: "{{ postinstall_test_js | b64encode }}"
+            status_code: 201
+          register: commit_postinstall
+
+        - name: Wait for the pipeline of agent/postinstall
+          ansible.builtin.include_tasks: tasks/wait-for-pipeline.yml
+          vars:
+            commit_sha: "{{ commit_postinstall.json.commit.sha }}"
+
+        - name: Read the logs of the tests and guard-rails jobs of agent/postinstall
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/actions/jobs/{{ job.id }}/logs"
+          vars:
+            job: "{{ jobs_response.json.jobs | selectattr('name', 'equalto', item) | first }}"
+          loop: [tests, guard-rails]
+          register: logs_postinstall
+
+        - name: Keep the logs by job
+          ansible.builtin.set_fact:
+            job_log: "{{ logs_postinstall.results | items2dict(key_name='item', value_name='content') }}"
+
+        - name: "7. agent/postinstall: red in guard-rails (postinstall and devEngines named), the script did not run"
+          ansible.builtin.assert:
+            that:
+              - pipeline.conclusion == 'failure'
+              - pipeline_jobs['guard-rails'] == 'failure'
+              - pipeline_jobs.image != 'success'
+              - job_log['guard-rails'] is search('lifecycle script "postinstall" refused')
+              - job_log['guard-rails'] is search('"devEngines" refused')
+              - pipeline_jobs.tests == 'success'
+              - job_log.tests is search('M2-POSTINSTALL')
+            success_msg: "OK — postinstall and devEngines refused by guard-rails; install without scripts, witness missing ({{ pipeline_jobs }})"
+            fail_msg: >-
+              FAILED — postinstall: {{ pipeline.conclusion }} ({{ pipeline_jobs }});
+              postinstall {{ 'named' if job_log['guard-rails'] is search('"postinstall"') else 'NOT NAMED' }},
+              devEngines {{ 'named' if job_log['guard-rails'] is search('devEngines') else 'NOT NAMED' }},
+              witness test {{ 'run' if job_log.tests is search('M2-POSTINSTALL') else 'NEVER RUN' }} — {{ pipeline.html_url }}
+
+        # --- 8. The agent adds exceptions: red in guard-rails ---
+        # "// nosemgrep" silences Opengrep (no option makes it red):
+        # guard-rails blocks it, for lack of a line in the registry (missing).
+        - name: Add test.skip, eslint-disable and nosemgrep on agent/exceptions
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/contents"
+            method: POST
+            body:
+              branch: agent/builder
+              new_branch: agent/exceptions
+              message: Exceptions added by the agent
+              files:
+                - operation: create
+                  path: tests/unit/skipped.test.js
+                  content: "{{ skipped_test_js | b64encode }}"
+                - operation: create
+                  path: web/exception-lint.js
+                  content: "{{ '/* eslint-disable */\nexport const x = 1;\n' | b64encode }}"
+                - operation: create
+                  path: api/lib/exception-nosemgrep.js
+                  content: "{{ 'eval(process.argv[2]); // nosemgrep\n' | b64encode }}"
+            status_code: 201
+          register: commit_exceptions
+
+        - name: Wait for the pipeline of agent/exceptions
+          ansible.builtin.include_tasks: tasks/wait-for-pipeline.yml
+          vars:
+            commit_sha: "{{ commit_exceptions.json.commit.sha }}"
+
+        - name: Read the log of the guard-rails job of agent/exceptions
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/actions/jobs/{{ job.id }}/logs"
+          vars:
+            job: "{{ jobs_response.json.jobs | selectattr('name', 'equalto', 'guard-rails') | first }}"
+          register: log_exceptions
+
+        - name: "8. agent/exceptions: red in guard-rails, each exception named"
+          ansible.builtin.assert:
+            that:
+              - pipeline.conclusion == 'failure'
+              - pipeline_jobs['guard-rails'] == 'failure'
+              - pipeline_jobs.image != 'success'
+              - log_exceptions.content is search(missing_registry)
+              - "log_exceptions.content is search('pattern .nosem. in api/lib/exception-nosemgrep[.]js: 1 found, 0 allowed by the registry')"
+              - "log_exceptions.content is search('pattern .eslint-disable. in web/exception-lint[.]js: 1 found, 0 allowed')"
+              - "log_exceptions.content is search('pattern .[.]skip[(]. in tests/unit/skipped[.]test[.]js: 1 found, 0 allowed')"
+              - log_exceptions.content is search(registry_instruction)
+            success_msg: "OK — the agent's exceptions blocked by guard-rails, each one named ({{ pipeline_jobs }})"
+            fail_msg: >-
+              FAILED — exceptions: {{ pipeline.conclusion }} ({{ pipeline_jobs }});
+              {{ log_exceptions.content.splitlines() | select('search', 'GUARD-RAIL') | list }} — {{ pipeline.html_url }}
+
+        # --- 9. Dependency under a forbidden licence: red in guard-rails ---
+        - name: Read the pnpm-lock.yaml of agent/builder
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/contents/pnpm-lock.yaml?ref=agent/builder"
+          register: lockfile_builder
+
+        - name: Add a local dependency under AGPL-3.0-only on agent/licence
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/contents"
+            method: POST
+            body:
+              branch: agent/builder
+              new_branch: agent/licence
+              message: Dependency under a forbidden licence
+              files:
+                - operation: update
+                  path: package.json
+                  sha: "{{ package_builder.json.sha }}"
+                  content: >-
+                    {{ (package_builder.json.content | b64decode | from_json)
+                       | combine({'dependencies': agpl_dependency}, recursive=true) | to_nice_json(indent=2) | b64encode }}
+                - operation: update
+                  path: pnpm-lock.yaml
+                  sha: "{{ lockfile_builder.json.sha }}"
+                  content: "{{ lookup('ansible.builtin.file', 'licence-agpl/pnpm-lock.yaml', rstrip=false) | b64encode }}"
+                - operation: create
+                  path: api/agpl-trial/package.json
+                  content: "{{ lookup('ansible.builtin.file', 'licence-agpl/package.json', rstrip=false) | b64encode }}"
+                - operation: create
+                  path: api/agpl-trial/index.js
+                  content: "{{ 'module.exports = 1;\n' | b64encode }}"
+            status_code: 201
+          register: commit_licence
+
+        - name: Wait for the pipeline of agent/licence
+          ansible.builtin.include_tasks: tasks/wait-for-pipeline.yml
+          vars:
+            commit_sha: "{{ commit_licence.json.commit.sha }}"
+
+        - name: Read the log of the guard-rails job of agent/licence
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/actions/jobs/{{ job.id }}/logs"
+          vars:
+            job: "{{ jobs_response.json.jobs | selectattr('name', 'equalto', 'guard-rails') | first }}"
+          register: log_licence
+
+        - name: "9. agent/licence: red in guard-rails, dependency and licence named"
+          ansible.builtin.assert:
+            that:
+              - pipeline.conclusion == 'failure'
+              - pipeline_jobs['guard-rails'] == 'failure'
+              - pipeline_jobs.tests == 'success'
+              - pipeline_jobs.image != 'success'
+              - "log_licence.content is search('licence refused: agpl-trial@file:api/agpl-trial [(]AGPL-3[.]0-only[)]')"
+            success_msg: "OK — AGPL dependency blocked by guard-rails ({{ pipeline_jobs }})"
+            fail_msg: >-
+              FAILED — licence: {{ pipeline.conclusion }} ({{ pipeline_jobs }});
+              {{ log_licence.content.splitlines() | select('search', 'GUARD-RAIL|ERR_PNPM') | list }} — {{ pipeline.html_url }}
+
+        # --- 10. Trivy exception without date, put on main: red ---
+        # The file is refused at push on agent/**: only a human writes it,
+        # on main (here the admin). The trial repository is not protected.
+        - name: Put on main a .trivyignore.yaml without expired_at
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/contents"
+            method: POST
+            body:
+              branch: main
+              message: Trivy exception without date
+              files:
+                - operation: create
+                  path: .trivyignore.yaml
+                  content: "{{ trivy_no_date | b64encode }}"
+            status_code: 201
+          register: commit_trivy_no_date
+
+        - name: Wait for the pipeline of main (exception without date)
+          ansible.builtin.include_tasks: tasks/wait-for-pipeline.yml
+          vars:
+            commit_sha: "{{ commit_trivy_no_date.json.commit.sha }}"
+
+        - name: Read the log of the guard-rails job (exception without date)
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/actions/jobs/{{ job.id }}/logs"
+          vars:
+            job: "{{ jobs_response.json.jobs | selectattr('name', 'equalto', 'guard-rails') | first }}"
+          register: log_trivy_no_date
+
+        - name: "10. main, Trivy exception without date: red in guard-rails, image not published"
+          ansible.builtin.assert:
+            that:
+              - pipeline.conclusion == 'failure'
+              - pipeline_jobs['guard-rails'] == 'failure'
+              - pipeline_jobs.image != 'success'
+              - log_trivy_no_date.content is search('entry no[.] 1 [(]vulnerabilities[)] must have one and only one expired_at date')
+            success_msg: "OK — Trivy exception without date refused ({{ pipeline_jobs }})"
+            fail_msg: >-
+              FAILED — exception without date: {{ pipeline.conclusion }} ({{ pipeline_jobs }});
+              {{ log_trivy_no_date.content.splitlines() | select('search', 'GUARD-RAIL') | list }} — {{ pipeline.html_url }}
+
+        # --- 11. Trivy exception for 60 days: red (30 days at most) ---
+        - name: Date the exception 60 days ahead on main
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/contents"
+            method: POST
+            body:
+              branch: main
+              message: Trivy exception for 60 days
+              files:
+                - operation: update
+                  path: .trivyignore.yaml
+                  sha: "{{ commit_trivy_no_date.json.files[0].sha }}"
+                  content: "{{ trivy_dated | b64encode }}"
+            status_code: 201
+          vars:
+            days: 60
+          register: commit_trivy_60
+
+        - name: Wait for the pipeline of main (exception for 60 days)
+          ansible.builtin.include_tasks: tasks/wait-for-pipeline.yml
+          vars:
+            commit_sha: "{{ commit_trivy_60.json.commit.sha }}"
+
+        - name: Read the log of the guard-rails job (exception for 60 days)
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/actions/jobs/{{ job.id }}/logs"
+          vars:
+            job: "{{ jobs_response.json.jobs | selectattr('name', 'equalto', 'guard-rails') | first }}"
+          register: log_trivy_60
+
+        - name: "11. main, Trivy exception for 60 days: red in guard-rails"
+          ansible.builtin.assert:
+            that:
+              - pipeline.conclusion == 'failure'
+              - pipeline_jobs['guard-rails'] == 'failure'
+              - pipeline_jobs.image != 'success'
+              - log_trivy_60.content is search('entry no[.] 1 expires on [0-9-]+, beyond 30 days')
+            success_msg: "OK — Trivy exception for 60 days refused ({{ pipeline_jobs }})"
+            fail_msg: >-
+              FAILED — exception for 60 days: {{ pipeline.conclusion }} ({{ pipeline_jobs }});
+              {{ log_trivy_60.content.splitlines() | select('search', 'GUARD-RAIL') | list }} — {{ pipeline.html_url }}
+
+        # --- 12. Trivy exception for 10 days: green, file passed to Trivy ---
+        - name: Date the exception 10 days ahead on main
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/contents"
+            method: POST
+            body:
+              branch: main
+              message: Trivy exception for 10 days
+              files:
+                - operation: update
+                  path: .trivyignore.yaml
+                  sha: "{{ commit_trivy_60.json.files[0].sha }}"
+                  content: "{{ trivy_dated | b64encode }}"
+            status_code: 201
+          vars:
+            days: 10
+          register: commit_trivy_10
+
+        - name: Wait for the pipeline of main (exception for 10 days)
+          ansible.builtin.include_tasks: tasks/wait-for-pipeline.yml
+          vars:
+            commit_sha: "{{ commit_trivy_10.json.commit.sha }}"
+
+        - name: Read the log of the image job (exception for 10 days)
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/actions/jobs/{{ job.id }}/logs"
+          vars:
+            job: "{{ jobs_response.json.jobs | selectattr('name', 'equalto', 'image') | first }}"
+          register: log_trivy_10
+
+        - name: "12. main, Trivy exception for 10 days: green, file passed to Trivy"
+          ansible.builtin.assert:
+            that:
+              - pipeline.conclusion == 'success'
+              - pipeline_jobs['guard-rails'] == 'success'
+              - pipeline_jobs.image == 'success'
+              - log_trivy_10.content is search(trivy_transmitted)
+            success_msg: "OK — exception for 10 days accepted, passed to Trivy ({{ pipeline_jobs }})"
+            fail_msg: >-
+              FAILED — exception for 10 days: {{ pipeline.conclusion }} ({{ pipeline_jobs }});
+              file {{ 'passed' if log_trivy_10.content is search(trivy_transmitted) else 'NOT passed' }} to Trivy
+              — {{ pipeline.html_url }}
+
+        # --- 13. Expired Trivy exception: the flaw comes back, red ---
+        # Three pipelines started at once (they run in parallel): the
+        # witness (agent/builder has no .trivyignore.yaml), main with the
+        # expired exception (its published image is deleted at the end), and
+        # the agent branch created from that main.
+        - name: Exception on the real flaw, expired 10 days ago, on main
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/contents"
+            method: POST
+            body:
+              branch: main
+              message: Expired Trivy exception
+              files:
+                - operation: update
+                  path: .trivyignore.yaml
+                  sha: "{{ commit_trivy_10.json.files[0].sha }}"
+                  content: "{{ trivy_dated | b64encode }}"
+            status_code: 201
+          vars:
+            days: -10
+            trivy_cve: "{{ trivy_real_cve }}"
+          register: commit_trivy_expired
+
+        - name: Add the vulnerable dependency on agent/trivy-witness (no exception)
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/contents"
+            method: POST
+            body:
+              branch: agent/builder
+              new_branch: agent/trivy-witness
+              message: Vulnerable dependency, no exception
+              files: "{{ vulnerable_files }}"
+            status_code: 201
+          register: commit_trivy_witness
+
+        - name: Add the vulnerable dependency on agent/trivy-expired (from main)
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/contents"
+            method: POST
+            body:
+              branch: main
+              new_branch: agent/trivy-expired
+              message: Vulnerable dependency, expired exception
+              files: "{{ vulnerable_files }}"
+            status_code: 201
+          register: commit_trivy_expired_branch
+
+        - name: Wait for the pipeline of agent/trivy-witness
+          ansible.builtin.include_tasks: tasks/wait-for-pipeline.yml
+          vars:
+            commit_sha: "{{ commit_trivy_witness.json.commit.sha }}"
+
+        - name: Read the log of the image job of agent/trivy-witness
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/actions/jobs/{{ job.id }}/logs"
+          vars:
+            job: "{{ jobs_response.json.jobs | selectattr('name', 'equalto', 'image') | first }}"
+          register: trivy_witness_log
+
+        - name: "13a. Witness, no exception: red in the image job, which cites the CVE"
+          ansible.builtin.assert:
+            that:
+              - pipeline.conclusion == 'failure'
+              - pipeline_jobs['guard-rails'] == 'success'
+              - pipeline_jobs.tests == 'success'
+              - pipeline_jobs.image == 'failure'
+              - trivy_witness_log.content is search(trivy_finding)
+              - trivy_witness_log.content is not search(trivy_transmitted)
+            success_msg: "OK — the dependency is indeed vulnerable: {{ trivy_real_cve }} blocks the image job ({{ pipeline_jobs }})"
+            fail_msg: >-
+              FAILED — witness: {{ pipeline.conclusion }} ({{ pipeline_jobs }});
+              {{ trivy_witness_log.content.splitlines() | select('search', 'CVE-|ERR_PNPM') | list }} — {{ pipeline.html_url }}
+
+        - name: Wait for the pipeline of agent/trivy-expired
+          ansible.builtin.include_tasks: tasks/wait-for-pipeline.yml
+          vars:
+            commit_sha: "{{ commit_trivy_expired_branch.json.commit.sha }}"
+
+        - name: Read the log of the image job of agent/trivy-expired
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/actions/jobs/{{ job.id }}/logs"
+          vars:
+            job: "{{ jobs_response.json.jobs | selectattr('name', 'equalto', 'image') | first }}"
+          register: log_trivy_expired
+
+        - name: "13b. Expired exception: the flaw comes back, red in the image job"
+          ansible.builtin.assert:
+            that:
+              - pipeline.conclusion == 'failure'
+              - pipeline_jobs['guard-rails'] == 'success'
+              - pipeline_jobs.tests == 'success'
+              - pipeline_jobs.image == 'failure'
+              - log_trivy_expired.content is search(trivy_transmitted)
+              - log_trivy_expired.content is search(trivy_finding)
+            success_msg: "OK — expired exception passed to Trivy, {{ trivy_real_cve }} comes back: image job red ({{ pipeline_jobs }})"
+            fail_msg: >-
+              FAILED — expired exception: {{ pipeline.conclusion }} ({{ pipeline_jobs }});
+              file {{ 'passed' if log_trivy_expired.content is search(trivy_transmitted) else 'NOT passed' }} to Trivy;
+              {{ log_trivy_expired.content.splitlines() | select('search', 'CVE-|ERR_PNPM') | list }} — {{ pipeline.html_url }}
+
+        - name: Wait for the pipeline of main (expired exception)
+          ansible.builtin.include_tasks: tasks/wait-for-pipeline.yml
+          vars:
+            commit_sha: "{{ commit_trivy_expired.json.commit.sha }}"
+
+        - name: "13c. main, expired exception without vulnerable dependency: green (past date accepted by guard-rails)"
+          ansible.builtin.assert:
+            that:
+              - pipeline.conclusion == 'success'
+              - pipeline_jobs['guard-rails'] == 'success'
+            success_msg: "OK — main stays green with an expired exception ({{ pipeline_jobs }})"
+            fail_msg: "FAILED — main, expired exception: {{ pipeline.conclusion }} ({{ pipeline_jobs }}) — {{ pipeline.html_url }}"
+
+        # --- 14. Exception for 10 days: the flaw is ignored, green ---
+        - name: Date the exception on the real flaw 10 days ahead on main
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/contents"
+            method: POST
+            body:
+              branch: main
+              message: Trivy exception for 10 days on the real flaw
+              files:
+                - operation: update
+                  path: .trivyignore.yaml
+                  sha: "{{ commit_trivy_expired.json.files[0].sha }}"
+                  content: "{{ trivy_dated | b64encode }}"
+            status_code: 201
+          vars:
+            days: 10
+            trivy_cve: "{{ trivy_real_cve }}"
+          register: commit_trivy_valid
+
+        - name: Add the vulnerable dependency on agent/trivy-valid (from main)
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/contents"
+            method: POST
+            body:
+              branch: main
+              new_branch: agent/trivy-valid
+              message: Vulnerable dependency, valid exception
+              files: "{{ vulnerable_files }}"
+            status_code: 201
+          register: commit_trivy_valid_branch
+
+        - name: Wait for the pipeline of agent/trivy-valid
+          ansible.builtin.include_tasks: tasks/wait-for-pipeline.yml
+          vars:
+            commit_sha: "{{ commit_trivy_valid_branch.json.commit.sha }}"
+
+        - name: Read the log of the image job of agent/trivy-valid
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/actions/jobs/{{ job.id }}/logs"
+          vars:
+            job: "{{ jobs_response.json.jobs | selectattr('name', 'equalto', 'image') | first }}"
+          register: trivy_valid_log
+
+        # "ignored/suppressed": Trivy says it set a flaw aside (proof that
+        # green comes from the exception, not from a flaw gone away).
+        - name: "14. Exception for 10 days: the flaw is ignored, green"
+          ansible.builtin.assert:
+            that:
+              - pipeline.conclusion == 'success'
+              - pipeline_jobs.image == 'success'
+              - trivy_valid_log.content is search(trivy_transmitted)
+              - trivy_valid_log.content is search('Some vulnerabilities have been ignored/suppressed')
+              - trivy_valid_log.content is not search(trivy_finding)
+            success_msg: "OK — valid exception: {{ trivy_real_cve }} ignored by Trivy, pipeline green ({{ pipeline_jobs }})"
+            fail_msg: >-
+              FAILED — valid exception: {{ pipeline.conclusion }} ({{ pipeline_jobs }});
+              file {{ 'passed' if trivy_valid_log.content is search(trivy_transmitted) else 'NOT passed' }} to Trivy;
+              {{ trivy_valid_log.content.splitlines() | select('search', 'CVE-|ignored|ERR_PNPM') | list }} — {{ pipeline.html_url }}
+
+        # Waited for only so that its published image is deleted afterwards.
+        - name: Wait for the pipeline of main (exception for 10 days on the real flaw)
+          ansible.builtin.include_tasks: tasks/wait-for-pipeline.yml
+          vars:
+            commit_sha: "{{ commit_trivy_valid.json.commit.sha }}"
+
+        # --- 15. Exceptions registry: expired line, 2 years ahead, malformed ---
+        # A single push on main, a single branch: each line targets a
+        # distinct case, the log separates them. The valid lines (nosem,
+        # eslint-disable) prove on the way that a valid line is counted.
+        - name: Put on main a registry with expired, 2-years-ahead and malformed lines
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/contents"
+            method: POST
+            body:
+              branch: main
+              message: Exceptions registry (faulty lines)
+              files:
+                - operation: create
+                  path: .gitea/exceptions.txt
+                  content: "{{ red_registry | b64encode }}"
+            status_code: 201
+          register: commit_red_registry
+
+        - name: Rerun the agent's exceptions on agent/red-registry (from agent/exceptions)
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/contents"
+            method: POST
+            body:
+              branch: agent/exceptions
+              new_branch: agent/red-registry
+              message: The agent's exceptions, faulty registry on main
+              files:
+                - operation: create
+                  path: api/lib/registry-trial.js
+                  content: "{{ trial_js | b64encode }}"
+            status_code: 201
+          register: commit_red_registry_branch
+
+        - name: Wait for the pipeline of agent/red-registry
+          ansible.builtin.include_tasks: tasks/wait-for-pipeline.yml
+          vars:
+            commit_sha: "{{ commit_red_registry_branch.json.commit.sha }}"
+
+        - name: Read the log of the guard-rails job of agent/red-registry
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/actions/jobs/{{ job.id }}/logs"
+          vars:
+            job: "{{ jobs_response.json.jobs | selectattr('name', 'equalto', 'guard-rails') | first }}"
+          register: red_registry_log
+
+        - name: "15a. Branch, faulty registry on main: red, expired line and faulty lines cited"
+          ansible.builtin.assert:
+            that:
+              - pipeline.conclusion == 'failure'
+              - pipeline_jobs['guard-rails'] == 'failure'
+              - pipeline_jobs.image != 'success'
+              - red_registry_log.content is search(registry_read_main)
+              - "red_registry_log.content is search('line [0-9]+ expired on ' ~ expired_registry ~ ': it no longer counts')"
+              - "red_registry_log.content is search('pattern .[.]skip[(]. in tests/unit/skipped[.]test[.]js: 1 found, 0 allowed')"
+              - "red_registry_log.content is search('GUARD-RAIL registry [^,]+, line [0-9]+: expires on ' ~ registry_d730 ~ ', more than a year ahead')"
+              - red_registry_log.content is search(malformed_registry)
+              - red_registry_log.content is search(registry_instruction)
+              - red_registry_log.content is not search('pattern .nosem. in api/lib/exception-nosemgrep')
+              - red_registry_log.content is not search('pattern .eslint-disable. in web/exception-lint')
+            success_msg: "OK — faulty registry: expired line ignored, 2-years-ahead and malformed lines refused, valid lines counted ({{ pipeline_jobs }})"
+            fail_msg: >-
+              FAILED — faulty registry (branch): {{ pipeline.conclusion }} ({{ pipeline_jobs }});
+              {{ red_registry_log.content.splitlines() | select('search', 'GUARD-RAIL|[Rr]egistry') | list }} — {{ pipeline.html_url }}
+
+        - name: Wait for the pipeline of main (faulty registry)
+          ansible.builtin.include_tasks: tasks/wait-for-pipeline.yml
+          vars:
+            commit_sha: "{{ commit_red_registry.json.commit.sha }}"
+
+        - name: Read the log of the guard-rails job of main (faulty registry)
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/actions/jobs/{{ job.id }}/logs"
+          vars:
+            job: "{{ jobs_response.json.jobs | selectattr('name', 'equalto', 'guard-rails') | first }}"
+          register: red_registry_main_log
+
+        - name: "15b. main, faulty registry: red (registry read in the commit itself), image not published"
+          ansible.builtin.assert:
+            that:
+              - pipeline.conclusion == 'failure'
+              - pipeline_jobs['guard-rails'] == 'failure'
+              - pipeline_jobs.image != 'success'
+              - red_registry_main_log.content is search(registry_read_commit)
+              - red_registry_main_log.content is search(malformed_registry)
+            success_msg: "OK — main red with a faulty registry ({{ pipeline_jobs }})"
+            fail_msg: >-
+              FAILED — faulty registry (main): {{ pipeline.conclusion }} ({{ pipeline_jobs }});
+              {{ red_registry_main_log.content.splitlines() | select('search', 'GUARD-RAIL|[Rr]egistry') | list }} — {{ pipeline.html_url }}
+
+        # --- 16. Registry fixed, three valid lines: green ---
+        - name: Fix the registry on main (three valid lines)
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/contents"
+            method: POST
+            body:
+              branch: main
+              message: Exceptions registry (valid lines)
+              files:
+                - operation: update
+                  path: .gitea/exceptions.txt
+                  sha: "{{ commit_red_registry.json.files[0].sha }}"
+                  content: "{{ valid_registry | b64encode }}"
+            status_code: 201
+          register: commit_valid_registry
+
+        - name: Rerun the agent's exceptions on agent/valid-registry (from agent/exceptions)
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/contents"
+            method: POST
+            body:
+              branch: agent/exceptions
+              new_branch: agent/valid-registry
+              message: The agent's exceptions, entered in the registry
+              files:
+                - operation: create
+                  path: api/lib/registry-trial.js
+                  content: "{{ trial_js | b64encode }}"
+            status_code: 201
+          register: commit_valid_registry_branch
+
+        - name: Wait for the pipeline of agent/valid-registry
+          ansible.builtin.include_tasks: tasks/wait-for-pipeline.yml
+          vars:
+            commit_sha: "{{ commit_valid_registry_branch.json.commit.sha }}"
+
+        - name: Read the log of the guard-rails job of agent/valid-registry
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/actions/jobs/{{ job.id }}/logs"
+          vars:
+            job: "{{ jobs_response.json.jobs | selectattr('name', 'equalto', 'guard-rails') | first }}"
+          register: valid_registry_log
+
+        - name: "16a. Branch, exceptions entered in main's registry: green"
+          ansible.builtin.assert:
+            that:
+              - pipeline.conclusion == 'success'
+              - pipeline_jobs['guard-rails'] == 'success'
+              - valid_registry_log.content is search(registry_read_main)
+              - "valid_registry_log.content is search('Guard-rails: nothing to report')"
+            success_msg: "OK — exceptions entered in the registry: pipeline green ({{ pipeline_jobs }})"
+            fail_msg: >-
+              FAILED — valid registry (branch): {{ pipeline.conclusion }} ({{ pipeline_jobs }});
+              {{ valid_registry_log.content.splitlines() | select('search', 'GUARD-RAIL|[Rr]egistry') | list }} — {{ pipeline.html_url }}
+
+        - name: Wait for the pipeline of main (valid registry)
+          ansible.builtin.include_tasks: tasks/wait-for-pipeline.yml
+          vars:
+            commit_sha: "{{ commit_valid_registry.json.commit.sha }}"
+
+        - name: "16b. main, valid registry: green"
+          ansible.builtin.assert:
+            that:
+              - pipeline.conclusion == 'success'
+              - pipeline_jobs['guard-rails'] == 'success'
+            success_msg: "OK — main green with a valid registry ({{ pipeline_jobs }})"
+            fail_msg: "FAILED — valid registry (main): {{ pipeline.conclusion }} ({{ pipeline_jobs }}) — {{ pipeline.html_url }}"
+      rescue:
+        # Before deleting everything: keep the end of the logs of the failed jobs.
+        - name: Read the logs of the failed jobs
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/actions/jobs/{{ item.id }}/logs"
+          loop: "{{ jobs_response.json.jobs | default([]) | selectattr('conclusion', 'equalto', 'failure') | list }}"
+          loop_control: { label: "{{ item.name }}" }
+          register: failure_logs
+          when: jobs_response is defined
+
+        - name: Show the end of the failed logs
+          ansible.builtin.debug:
+            msg: >-
+              {{ (item.content.splitlines()
+                 | select('search', '(?i)not ok|error|err_|fail|assert|expected|actual|warn|HIGH|CRITICAL')
+                 | reject('search', 'Job failed|Success -|Failure - Main') | list)[-25:] }}
+          loop: "{{ failure_logs.results | default([]) | selectattr('content', 'defined') | list }}"
+          loop_control: { label: "{{ item.item.name }}" }
+
+        - name: Failure
+          ansible.builtin.fail:
+            msg: "Template check failed (see the check above). Cleanup done."
+      always:
+        - name: Remove the throwaway badge of the signature check
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/users/svc-deployment/tokens/check-template-signature"
+            method: DELETE
+            status_code: [204, 404]
+
+        - name: Remove the registry login from the CI VM
+          ansible.builtin.file:
+            path: "{{ signature_docker_config }}"
+            state: absent
+          delegate_to: "{{ groups['ci'][0] }}"
+
+        # Each image published on main is signed: the signature is stored
+        # under the tag sha256-<digest> of the same package.
+        - name: List the versions of the trial package (signatures)
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/packages/{{ gitea_org }}?type=container&q={{ repo }}&limit=50"
+          register: packages_end
+
+        - name: Delete the signatures of the trial images
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/packages/{{ gitea_org }}/container/{{ repo }}/{{ item }}"
+            method: DELETE
+            status_code: [204, 404]
+          loop: >-
+            {{ packages_end.json | default([]) | selectattr('name', 'equalto', repo)
+               | map(attribute='version') | select('match', 'sha256-') | list }}
+
+        - name: Delete the trial image from the registry
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/packages/{{ gitea_org }}/container/{{ repo }}/{{ main_branch.json.commit.id }}"
+            method: DELETE
+            status_code: [204, 404]
+          when: main_branch.json is defined
+
+        - name: Delete the image published by scenario 12
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/packages/{{ gitea_org }}/container/{{ repo }}/{{ commit_trivy_10.json.commit.sha }}"
+            method: DELETE
+            status_code: [204, 404]
+          when: commit_trivy_10.json is defined
+
+        - name: Delete the images published by main in scenarios 13, 14 and 16
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/packages/{{ gitea_org }}/container/{{ repo }}/{{ item }}"
+            method: DELETE
+            status_code: [204, 404]
+          loop: >-
+            {{ [commit_trivy_expired | default({}), commit_trivy_valid | default({}), commit_valid_registry | default({})]
+               | selectattr('json', 'defined') | map(attribute='json.commit.sha') | list }}
+
+        - name: Delete the trial tool
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}"
+            method: DELETE
+            status_code: [204, 404]

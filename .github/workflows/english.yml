@@ -1,0 +1,44 @@
+# Enforces the English-first rule (ADR-025): no French line outside the
+# allowed paths (French copies, private notes, i18n French dictionaries,
+# docs/glossary.md, the justified entries of
+# .github/scripts/check-english-allow.txt). No path filter: French can
+# appear in any file of the repository.
+name: English only
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  english:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      # Full history: the first check compares with the base commit.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: The check itself works
+        run: python3 .github/scripts/test_check_english.py
+
+      # Base: the PR's, else the push's "before". A new branch (before =
+      # 000…) or a rewritten history (before unknown): the fork point from
+      # main. Lists the French lines this change adds.
+      - name: No French in the lines added since the base commit
+        env:
+          BASE_PR: ${{ github.event.pull_request.base.sha }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          base="${BASE_PR:-$BEFORE}"
+          if [ -z "$base" ] || ! git cat-file -e "$base^{commit}" 2> /dev/null; then
+            base="$(git merge-base origin/main HEAD)"
+          fi
+          echo "Base: $base"
+          python3 .github/scripts/check-english.py --base "$base"
+
+      - name: No French line in the whole repository
+        run: python3 .github/scripts/check-english.py

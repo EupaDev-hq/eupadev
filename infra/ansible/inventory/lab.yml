@@ -1,0 +1,31 @@
+# The lab machines (addresses set by infra/terraform).
+# maintenance_hour (UTC): nightly reboot slot, one hour per VM, after the
+# backup (02:30); agents at 04:00 (it does not build the Monday 04:00
+# golden images, which run on the ci VM); tools at 04:15.
+all:
+  children:
+    forge:
+      hosts:
+        eupadev-forge:
+          ansible_host: 10.42.0.10
+          maintenance_hour: "03:15"
+    ci:
+      hosts:
+        eupadev-ci:
+          ansible_host: 10.42.0.11
+          maintenance_hour: "03:30"
+    orchestrator:
+      hosts:
+        eupadev-orch:
+          ansible_host: 10.42.0.12
+          maintenance_hour: "03:45"
+    agents:
+      hosts:
+        eupadev-agents:
+          ansible_host: 10.42.0.13
+          maintenance_hour: "04:00"
+    tools:
+      hosts:
+        eupadev-tools:
+          ansible_host: 10.42.0.14
+          maintenance_hour: "04:15"

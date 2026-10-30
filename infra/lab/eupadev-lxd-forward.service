@@ -1,0 +1,24 @@
+# Local lab only (Docker and LXD on the same machine).
+# Docker sets the host firewall to "block everything" for the traffic that
+# crosses it: the LXD VMs reach the host but not the Internet. This service
+# adds, in the chain Docker reserves for user rules, an authorisation
+# limited to the eupadev-net network — nothing else is opened.
+# Idempotent (-C checks before adding), restarted with Docker.
+#
+# Installation:
+#   sudo cp eupadev-lxd-forward.service /etc/systemd/system/
+#   sudo systemctl enable --now eupadev-lxd-forward.service
+
+[Unit]
+Description=Lets eupadev-net (LXD) cross the Docker firewall
+After=docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'iptables -C DOCKER-USER -i eupadev-net -j ACCEPT 2>/dev/null || iptables -I DOCKER-USER -i eupadev-net -j ACCEPT'
+ExecStart=/bin/sh -c 'iptables -C DOCKER-USER -o eupadev-net -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || iptables -I DOCKER-USER -o eupadev-net -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT'
+
+[Install]
+WantedBy=docker.service

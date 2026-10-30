@@ -1,0 +1,393 @@
+# Full cycle with the real forge and the real deployer (E5, g3 of the note
+# 2026-10-21-note-e5-refresh.md) — free: the executor runs the pushing fake
+# (engine=pushing), no AI. Needs the lab switched to the real world:
+#   ansible-playbook site.yml --limit orchestrator,agents -e orchestrator_real_world=true </dev/null
+#   ansible-playbook verify-engine-deployment.yml </dev/null
+# Requester and admin are the lab's verification clients (check-requester,
+# check-admin), as in verify-engine.yml. The cycle: request → tool created on
+# the forge → scoping pushes a page → mock-up served from the scoping archive
+# → requester satisfied → hardening pushes, integration, squash, the tool's
+# real CI publishes the signed image → Gate 1 (the core tool registered by
+# register-tools.yml, as Ilan does, then approved) → Preview deployed →
+# Preview pipeline started by W1, read by the watcher (perf, accessibility,
+# DAST, acceptance: all green, recorded against the digest) → only then the
+# requester gets the link and is satisfied → Gate 2 → Prod switched →
+# end_success, Prod answers (order S5 of the note 2026-10-26 acceptance-on-preview).
+# The pushing fake writes no acceptance suite and a missing suite is red: the
+# suite of verify-engine-preview.yml (files/trial-acceptance, one scenario as a
+# "user" persona found by role) is committed on main by svc-orchestrator
+# (throwaway token) before the hardening round, as the tests role would.
+# Cleanup: cycle cancelled if still open, Prod removed, registration and token
+# removed, repository and package deleted; the Prod and registration of an
+# interrupted run are removed at the start.
+- name: E5 — full cycle, real forge and deployer
+  hosts: orchestrator
+  become: true
+  vars:
+    engine_api: http://127.0.0.1:8080
+    psql: [docker, compose, exec, -T, db, psql, -U, orchestrator, -d, orchestrator, -tAc]
+    check_forge: "{{ hostvars[groups['forge'][0]] }}"
+  module_defaults:
+    ansible.builtin.uri:
+      headers: { X-EupaDev: "1" }
+      return_content: true
+    ansible.builtin.command:
+      chdir: /opt/eupadev/orchestrator
+  tasks:
+    # Read from the engine's start-up line, never from its environment.
+    - name: External world of the engine in service
+      ansible.builtin.shell:
+        cmd: set -o pipefail; docker compose logs engine 2>&1 | grep 'external world' | tail -1
+        executable: /bin/bash
+        chdir: /opt/eupadev/orchestrator
+      register: check_world
+      changed_when: false
+
+    - name: The pilot uses the real forge and deployer
+      ansible.builtin.assert:
+        that: check_world.stdout is search('forge=gitea') and check_world.stdout is search('deployer=ssh')
+        fail_msg: >-
+          Pilot on "{{ check_world.stdout }}": first site.yml --limit orchestrator,agents -e orchestrator_real_world=true
+
+    - name: Unique name of the tool
+      ansible.builtin.set_fact:
+        engine_slug: "check-e5-{{ lookup('ansible.builtin.pipe', 'date -u +%Y%m%d%H%M%S') }}"
+
+    - name: Full cycle
+      block:
+        # An interrupted run never reaches `always`: its Prod is removed here, by the deployer, with its cycle.
+        - name: Prod tools left by an interrupted run (slug and cycle from their labels)
+          ansible.builtin.command:
+            argv:
+              [docker, ps, -a, --filter, name=prod-check-e5-, --format, "{% raw %}{{.Label \"eupadev.tool\"}} {{.Label \"eupadev.cycle\"}}{% endraw %}"]
+            chdir: /
+          delegate_to: "{{ groups['tools'][0] }}"
+          register: check_leftovers
+          changed_when: false
+
+        - name: Remove them (script of the tools VM)
+          ansible.builtin.command:
+            cmd: /usr/local/sbin/eupadev-deployer
+            chdir: /
+          environment: { SSH_ORIGINAL_COMMAND: "remove prod {{ item }}" }
+          loop: "{{ check_leftovers.stdout_lines | select('match', 'check-e5-[0-9]+ [0-9]+$') | unique }}"
+          delegate_to: "{{ groups['tools'][0] }}"
+          changed_when: true
+
+        - name: Registration left by an interrupted run
+          ansible.builtin.include_tasks: tasks/remove-core-tool.yml
+          vars: { tool_slug: "{{ check_rest.split(' ')[0] }}" }
+          loop: "{{ check_leftovers.stdout_lines | select('match', 'check-e5-[0-9]+ [0-9]+$') | unique }}"
+          loop_control: { loop_var: check_rest }
+
+        - name: Requester token
+          ansible.builtin.include_tasks: tasks/engine-token.yml
+          vars: { engine_hat: requester }
+
+        - name: Request through the API
+          ansible.builtin.uri:
+            url: "{{ engine_api }}/requests"
+            method: POST
+            headers: { X-EupaDev: "1", Authorization: "Bearer {{ engine_token }}", Idempotency-Key: "{{ engine_slug }}" }
+            body_format: json
+            body: { type: creation, name: "Check E5", slug: "{{ engine_slug }}", owner_service: lab, need: "Lab check: follow the lent gear" }
+            status_code: 201
+          register: check_request
+
+        - name: Keep the cycle
+          ansible.builtin.set_fact:
+            engine_cycle: "{{ check_request.json.cycle_id }}"
+
+        - name: Wait for the feedback on the mock-up (repository created, scoping pushed, mock-up deployed)
+          ansible.builtin.command:
+            argv: "{{ psql + ['select state from cycles where id = ' ~ engine_cycle] }}"
+          register: check_state
+          until: check_state.stdout == 'waiting_scoping_feedback'
+          retries: 60
+          delay: 10
+          changed_when: false
+
+        - name: Mock-up link sent to the requester
+          vars:
+            sql: >-
+              select substring(content from 'https://mockup[^ ]*') from messages where cycle_id = {{ engine_cycle }}
+              and starts_with(content, '{{ engine_texts['chat.mockupAvailable'].split('{url}')[0] | replace("'", "''") }}')
+              order by id desc limit 1
+          ansible.builtin.command:
+            argv: "{{ psql + [sql] }}"
+          register: check_link
+          changed_when: false
+          failed_when: check_link.stdout is not match('https://mockup\\.' ~ (base_domain | regex_escape) ~ '/[0-9a-f]{64}/$')
+
+        # The pushing fake names its page after the task (web/mockup-<task id>.html).
+        - name: Scoping task
+          ansible.builtin.command:
+            argv: "{{ psql + [\"select id from tasks where role = 'scoping' and cycle_id = \" ~ engine_cycle ~ \" order by created_at desc limit 1\"] }}"
+          register: check_scoping_task
+          changed_when: false
+          failed_when: check_scoping_task.stdout == ''
+
+        - name: The mock-up serves the page pushed by the scoping (in the frame)
+          ansible.builtin.command:
+            argv: [curl, -sS, --max-time, "20", -H, "Sec-Fetch-Dest: iframe", "{{ check_link.stdout }}mockup-{{ check_scoping_task.stdout }}.html"]
+          register: check_mockup
+          changed_when: false
+          failed_when: "'Mock-up of task' not in check_mockup.stdout"
+
+        # S5: the acceptance job of the Preview pipeline needs a suite in the tool; committed on main
+        # (only svc-orchestrator writes there) before the hardening branches start from main.
+        - name: Throwaway token of svc-orchestrator (acceptance suite on main)
+          ansible.builtin.uri:
+            url: "{{ check_forge.gitea_api }}/users/svc-orchestrator/tokens"
+            method: POST
+            url_username: "{{ gitea_admin_user }}"
+            url_password: "{{ vault_gitea_admin_password }}"
+            force_basic_auth: true
+            body_format: json
+            body: { name: "{{ engine_slug }}", scopes: ["write:repository"] }
+            status_code: 201
+          register: check_orch_token
+          delegate_to: "{{ groups['forge'][0] }}"
+          changed_when: true
+          no_log: true
+
+        - name: Acceptance suite committed on main (files/trial-acceptance, as the tests role would write it)
+          ansible.builtin.uri:
+            url: "{{ check_forge.gitea_api }}/repos/eupadev/{{ engine_slug }}/contents"
+            method: POST
+            headers: { Authorization: "token {{ check_orch_token.json.sha1 }}" }
+            body_format: json
+            body:
+              branch: main
+              message: verify-engine-deployment acceptance suite
+              files: >-
+                {%- set l = [] -%}
+                {%- for f in ['playwright.config.js', 'features/sign-in.feature', 'steps/sign-in.js'] -%}
+                  {%- set _ = l.append({'operation': 'create', 'path': 'tests/acceptance/' ~ f,
+                      'content': lookup('ansible.builtin.file', playbook_dir ~ '/files/trial-acceptance/' ~ f) | b64encode}) -%}
+                {%- endfor -%}
+                {{ l }}
+            status_code: 201
+          delegate_to: "{{ groups['forge'][0] }}"
+          changed_when: true
+          no_log: true
+
+        - name: Requester's feedback on the mock-up
+          ansible.builtin.include_tasks: tasks/engine-step.yml
+          vars:
+            engine_state: waiting_scoping_feedback
+            engine_message: { type: scoping_feedback, outcome: satisfied }
+
+        - name: Wait for Gate 1 (hardening, integration, squash, real CI, digest)
+          ansible.builtin.command:
+            argv: "{{ psql + ['select state from cycles where id = ' ~ engine_cycle] }}"
+          register: check_state
+          until: check_state.stdout in ['gate_1', 'gate_incident', 'gate_delivery_blocked', 'gate_hardening_blocked']
+          retries: 180
+          delay: 10
+          changed_when: false
+          failed_when: check_state.stdout != 'gate_1'
+
+        # The tool is a core tool: before approving Gate 1, Ilan registers it
+        # (D-E5); the test runs the same playbook for its slug.
+        - name: Gate 1 registration of the test tool (register-tools.yml)
+          ansible.builtin.command:
+            argv: [ansible-playbook, "{{ playbook_dir }}/register-tools.yml", -e, "{{ {'core_tools': [check_entry]} | to_json }}"]
+            chdir: "{{ playbook_dir }}"
+          vars:
+            check_entry:
+              slug: "{{ engine_slug }}"
+              roles: [{ name: user, description: "Role of the template's contract and of files/trial-acceptance (verify-engine-deployment.yml)" }]
+              retentions: { RETENTION_AUDIT: "400 days" }
+          delegate_to: localhost
+          become: false
+          changed_when: true
+
+        - name: Gate 1 decision
+          ansible.builtin.include_tasks: tasks/engine-step.yml
+          vars:
+            engine_state: gate_1
+            engine_message: { type: decision, gate: gate_1, outcome: approved }
+
+        # S5: Preview deployed by SSH, then its pipeline (started by W1, read by the watcher) before the requester is told.
+        - name: Wait for the feedback on the Preview (Preview deployed, Preview pipeline green)
+          ansible.builtin.command:
+            argv: "{{ psql + ['select state from cycles where id = ' ~ engine_cycle] }}"
+          register: check_state
+          until: check_state.stdout in ['waiting_preview_feedback', 'hardening_execution', 'gate_incident', 'gate_delivery_blocked']
+          retries: 180
+          delay: 10
+          changed_when: false
+          failed_when: check_state.stdout != 'waiting_preview_feedback'
+
+        - name: The Preview answers (Caddy of the CI VM)
+          ansible.builtin.command:
+            argv: [curl, -sS, -o, /dev/null, -w, "%{http_code}", --max-time, "20", "https://{{ engine_slug }}.preview.{{ base_domain }}/health"]
+          register: check_preview
+          changed_when: false
+          failed_when: check_preview.stdout != '200'
+
+        - name: The four Preview checks are green, against the served digest, before any feedback of the requester
+          vars:
+            sql: >-
+              select string_agg(check_name || ':' || result, ' ' order by check_name) from pipeline_results
+              where cycle_id = {{ engine_cycle }} and pipeline = 'preview' and digest = (select digest from deployments
+              where cycle_id = {{ engine_cycle }} and environment = 'preview' and health = 'ok' order by id desc limit 1)
+          ansible.builtin.command:
+            argv: "{{ psql + [sql] }}"
+          register: check_checks
+          changed_when: false
+          failed_when: check_checks.stdout != 'acceptance:green accessibility-preview:green pentest-dast:green perf:green'
+
+        - name: The requester was told only after the pipeline (entry into waiting_preview_feedback from preview_pipeline, link sent)
+          vars:
+            sql: >-
+              select string_agg(previous_state || ' ' || trigger, ',') from tool_history
+              where cycle_id = {{ engine_cycle }} and state = 'waiting_preview_feedback' and trigger not like 'timeout%'
+          ansible.builtin.command:
+            argv: "{{ psql + [item] }}"
+          loop:
+            - "{{ sql }}"
+            - >-
+              select count(*) from messages where cycle_id = {{ engine_cycle }} and starts_with(content,
+              '{{ engine_texts['chat.previewAvailable'].split('{url}')[0] | replace("'", "''") }}https://{{ engine_slug }}.preview.{{ base_domain }}')
+          register: check_order
+          changed_when: false
+          failed_when: check_order.stdout not in ['preview_pipeline event:preview_pipeline_finished:green', '1']
+
+        - name: Requester's feedback on the Preview
+          ansible.builtin.include_tasks: tasks/engine-step.yml
+          vars:
+            engine_state: waiting_preview_feedback
+            engine_message: { type: preview_feedback, outcome: satisfied }
+
+        - name: Wait for Gate 2 (no new pipeline, the digest is already checked)
+          ansible.builtin.command:
+            argv: "{{ psql + ['select state from cycles where id = ' ~ engine_cycle] }}"
+          register: check_state
+          until: check_state.stdout in ['gate_2', 'preview_pipeline', 'hardening_execution', 'gate_incident', 'gate_delivery_blocked']
+          retries: 30
+          delay: 10
+          changed_when: false
+          failed_when: check_state.stdout != 'gate_2'
+
+        - name: Gate 2 decision (on the candidate digest)
+          ansible.builtin.include_tasks: tasks/engine-step.yml
+          vars:
+            engine_state: gate_2
+            engine_message: { type: decision, gate: gate_2, outcome: approved }
+
+        - name: Wait for the end of the cycle (Prod)
+          ansible.builtin.command:
+            argv: "{{ psql + ['select state from cycles where id = ' ~ engine_cycle] }}"
+          register: check_state
+          until: check_state.stdout in ['end_success', 'gate_prod_blocked', 'gate_incident']
+          retries: 60
+          delay: 10
+          changed_when: false
+          failed_when: check_state.stdout != 'end_success'
+
+        - name: The Prod answers (Caddy of the tools VM)
+          ansible.builtin.command:
+            argv: [curl, -sS, -o, /dev/null, -w, "%{http_code}", --max-time, "20", "https://{{ engine_slug }}.{{ base_domain }}/health"]
+          register: check_prod
+          changed_when: false
+          failed_when: check_prod.stdout != '200'
+
+      rescue:
+        - name: Cycle history (diagnosis)
+          vars:
+            sql: >-
+              select coalesce(previous_state, '-') || ' --[' || trigger || ']--> ' || state
+              from tool_history where cycle_id = {{ engine_cycle }} order by id
+          ansible.builtin.command:
+            argv: "{{ psql + [sql] }}"
+          register: check_history
+          changed_when: false
+          failed_when: false
+          when: engine_cycle is defined
+
+        - name: Reason and last messages (diagnosis)
+          ansible.builtin.command:
+            argv: "{{ psql + [\"select left(content, 300) from messages where cycle_id = \" ~ engine_cycle ~ \" order by id desc limit 5\"] }}"
+          register: check_msgs
+          changed_when: false
+          failed_when: false
+          when: engine_cycle is defined
+
+        - name: Show the diagnosis
+          ansible.builtin.debug:
+            msg: "{{ (check_history.stdout_lines | default([])) + ['---'] + (check_msgs.stdout_lines | default([])) }}"
+
+        - name: Failure
+          ansible.builtin.fail:
+            msg: "Full cycle failed ({{ check_state.stdout | default('?') }}): see the diagnosis"
+
+      always:
+        - name: Admin token (cleanup)
+          ansible.builtin.include_tasks: tasks/engine-token.yml
+          vars: { engine_hat: admin }
+          when: engine_cycle is defined
+
+        - name: Cancel the cycle if it was left open
+          ansible.builtin.uri:
+            url: "{{ engine_api }}/messages"
+            method: POST
+            headers: { X-EupaDev: "1", Authorization: "Bearer {{ engine_token }}", Idempotency-Key: "{{ engine_slug }}-cancellation" }
+            body_format: json
+            body: "{{ {'cycle_id': engine_cycle | int, 'message': {'type': 'cancellation'}} }}"
+            status_code: [202, 409, 422]
+          when: engine_cycle is defined
+          changed_when: true
+          failed_when: false
+
+        # chdir /: the play's command chdir (/opt/eupadev/orchestrator) is absent on the CI and tools VMs,
+        # the command would never start (silently, failed_when: false).
+        - name: Remove Preview and mock-up (script of the CI VM)
+          ansible.builtin.command:
+            cmd: /usr/local/sbin/eupadev-deployer
+            chdir: /
+          environment: { SSH_ORIGINAL_COMMAND: "remove {{ item }} {{ engine_slug }} {{ engine_cycle }}" }
+          loop: [preview, mockup]
+          delegate_to: "{{ groups['ci'][0] }}"
+          when: engine_cycle is defined
+          changed_when: false
+          failed_when: false
+
+        - name: Remove the Prod (script of the tools VM)
+          ansible.builtin.command:
+            cmd: /usr/local/sbin/eupadev-deployer
+            chdir: /
+          environment: { SSH_ORIGINAL_COMMAND: "remove prod {{ engine_slug }} {{ engine_cycle }}" }
+          delegate_to: "{{ groups['tools'][0] }}"
+          when: engine_cycle is defined
+          changed_when: false
+          failed_when: false
+
+        - name: Registration of the test (clients, database, roles, secrets, entry)
+          ansible.builtin.include_tasks: tasks/remove-core-tool.yml
+          vars: { tool_slug: "{{ engine_slug }}" }
+
+        - name: Throwaway token of svc-orchestrator
+          ansible.builtin.uri:
+            url: "{{ check_forge.gitea_api }}/users/svc-orchestrator/tokens/{{ engine_slug }}"
+            method: DELETE
+            url_username: "{{ gitea_admin_user }}"
+            url_password: "{{ vault_gitea_admin_password }}"
+            force_basic_auth: true
+            status_code: [204, 404, 422]
+          delegate_to: "{{ groups['forge'][0] }}"
+          changed_when: true
+
+        - name: Repository and package of the trial tool
+          ansible.builtin.uri:
+            url: "{{ check_forge.gitea_api }}{{ item }}"
+            method: DELETE
+            url_username: "{{ gitea_admin_user }}"
+            url_password: "{{ vault_gitea_admin_password }}"
+            force_basic_auth: true
+            status_code: [204, 404]
+          loop:
+            - "/repos/eupadev/{{ engine_slug }}"
+            - "/packages/eupadev/container/{{ engine_slug }}"
+          delegate_to: "{{ groups['forge'][0] }}"

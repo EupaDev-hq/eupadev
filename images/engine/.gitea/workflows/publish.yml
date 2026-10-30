@@ -1,0 +1,97 @@
+# Builds, checks, publishes (by digest) and SIGNS the EupaDev engine image
+# in the forge's registry (ROADMAP §8.16 M2, ADR-005). Started on every
+# change of the `engine` repository (synced by Ansible from EupaDev) or by
+# hand. Model: the base-image repository (golden images).
+# The image is never deployed by this pipeline: Ansible pulls it by its
+# digest (`orchestrator_image`) after checking the signature.
+name: Engine image
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  publish:
+    # Runner "image": the only one that gives access to the CI VM's Docker.
+    runs-on: ci-image
+    timeout-minutes: 30
+    env:
+      # Official cosign binary, checked by its sha256 sum (the one in
+      # cosign_checksums.txt of the version published on GitHub).
+      COSIGN_VERSION: v3.1.3
+      COSIGN_SHA256: 4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # Context = repository root (the reports' schema lives outside
+      # orchestrator/), filtered by orchestrator/Dockerfile.dockerignore.
+      - name: Build the image
+        run: |
+          REG="${GITHUB_SERVER_URL#https://}"
+          IMAGE="$(echo "$REG/${GITHUB_REPOSITORY%%/*}/engine" | tr '[:upper:]' '[:lower:]')"
+          TAG="$(echo "$GITHUB_SHA" | cut -c1-12)"
+          { echo "REG=$REG"; echo "IMAGE=$IMAGE"; echo "TAG=$TAG"; } >> "$GITHUB_ENV"
+          # --no-cache: the Dockerfile's Debian update is redone on every
+          # build (security fixes).
+          docker build -q --pull --no-cache -f orchestrator/Dockerfile -t "$IMAGE:$TAG" .
+
+      - name: Known vulnerabilities (Trivy)
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            -v trivy-cache:/root/.cache/ aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa image \
+            --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed "$IMAGE:$TAG"
+
+      - name: Check the image's promises
+        run: |
+          test "$(docker run --rm "$IMAGE:$TAG" whoami)" = node
+          echo "OK: the engine runs as a non-root user (node)."
+          if docker run --rm "$IMAGE:$TAG" sh -c 'command -v npm || command -v npx || command -v corepack || command -v yarn'; then
+            echo "FAILED: a package manager was left in the image."; exit 1
+          fi
+          echo "OK: no package manager in the image."
+          docker run --rm "$IMAGE:$TAG" test -s /app/schemas/report.schema.json
+          echo "OK: reports' schema present in the image."
+          # Role instructions (note docs/reflexions/2026-10-15-note-consignes-agents.md): one
+          # non-empty file per engine role, the charter, the rules.
+          docker run --rm "$IMAGE:$TAG" sh -c 'test -s /app/instructions/AGENTS.md && for r in overlap scoping contract tests builder security-reviewer quality-reviewer; do test -s "/app/instructions/agents/$r.md" || exit 1; done && for d in backend frontend security quality tests; do test -s "/app/instructions/.claude/rules/$d.md" || exit 1; done'
+          echo "OK: role instructions present in the image."
+
+      # Tag = short commit (trace); the digest is the only reference used to
+      # sign and deploy.
+      - name: Publish to the forge's registry
+        env:
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+        run: |
+          echo "$REGISTRY_TOKEN" | docker login "$REG" -u svc-ci --password-stdin
+          docker push -q "$IMAGE:$TAG"
+          REF="$(docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$IMAGE:$TAG" | grep "^$IMAGE@sha256:")"
+          echo "REF=$REF" >> "$GITHUB_ENV"
+
+      # Signed by key (secrets of the `engine` repository, set by Ansible
+      # from the vault). Signing configuration WITHOUT any service: nothing is
+      # sent to the public transparency log (Rekor) nor to a timestamp
+      # authority — the name and digest of an internal image do not leave the
+      # forge.
+      - name: Sign the image (cosign)
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+        run: |
+          curl -fsSLo /tmp/cosign "https://github.com/sigstore/cosign/releases/download/$COSIGN_VERSION/cosign-linux-amd64"
+          echo "$COSIGN_SHA256  /tmp/cosign" | sha256sum -c -
+          chmod 0755 /tmp/cosign
+          /tmp/cosign signing-config create --out /tmp/signing-config.json
+          /tmp/cosign sign --yes --key env://COSIGN_PRIVATE_KEY --signing-config /tmp/signing-config.json "$REF"
+          # The versioned public key (cosign.pub of this repository) is the one
+          # the deployment will use: check with it, not with the private one.
+          /tmp/cosign verify --key cosign.pub --insecure-ignore-tlog=true "$REF" > /dev/null
+          echo "OK: signature checked with the repository's public key."
+          echo "Engine digest: $REF"
+
+      - name: Clean up
+        if: always()
+        run: |
+          docker logout "$REG" > /dev/null 2>&1 || true
+          docker rmi "$IMAGE:$TAG" > /dev/null 2>&1 || true
+          rm -f /tmp/cosign /tmp/signing-config.json

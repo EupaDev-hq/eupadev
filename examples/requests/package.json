@@ -1,0 +1,29 @@
+{
+  "name": "requests",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Example tool \"maintenance requests\" on @eupadev/core (step 8 of the core)",
+  "license": "Apache-2.0",
+  "type": "module",
+  "packageManager": "pnpm@12.16.1",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "verify": "node node_modules/@eupadev/core/bin/start.js --verify",
+    "test:unit": "node --test 'tests/unit/*.test.js'",
+    "test:db": "node --test tests/db.test.js",
+    "test:kit": "node --test tests/kit.test.js",
+    "test:acceptance": "bddgen && playwright test"
+  },
+  "dependencies": {
+    "@eupadev/core": "file:../../core",
+    "nodemailer": "10.1.7"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "4.14.0",
+    "@playwright/test": "1.64.1",
+    "playwright": "1.64.1",
+    "playwright-bdd": "9.2.1"
+  }
+}

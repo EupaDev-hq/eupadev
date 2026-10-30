@@ -1,0 +1,38 @@
+name: Bug
+description: Something does not work as documented.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what you expected
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Commands, playbook (`infra/ansible/verify-*.yml`), request text. Remove any secret.
+    validations:
+      required: true
+  - type: input
+    id: commit
+    attributes:
+      label: Commit of EupaDev
+      placeholder: output of `git rev-parse --short HEAD`
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      render: text
+  - type: dropdown
+    id: ai
+    attributes:
+      label: Was this report written or found with AI?
+      options:
+        - "No"
+        - "Yes, and I reproduced it myself"
+    validations:
+      required: true

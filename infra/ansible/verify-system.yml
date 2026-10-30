@@ -1,0 +1,124 @@
+# Real test of the system base (role base) — rerunnable, read only.
+#   ansible-playbook verify-system.yml
+# On each VM: swap file on, automatic updates limited to security and without
+# reboot, SSH refusing passwords and root (the effective configuration, then a
+# real refusal), needrestart in list mode, maintenance slot scheduled (one hour
+# per VM), no reboot pending for more than 7 days.
+- name: Verify the system base
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Active swap files and swappiness
+      ansible.builtin.command:
+        cmd: sh -c 'swapon --show=NAME --noheadings; sysctl -n vm.swappiness'
+      register: system_swap
+      changed_when: false
+
+    - name: Swap file on, used as a last resort
+      ansible.builtin.assert:
+        that: system_swap.stdout_lines == ['/swapfile', '10']
+        fail_msg: "Unexpected swap: {{ system_swap.stdout_lines }}"
+
+    - name: Effective APT configuration
+      ansible.builtin.command:
+        cmd: apt-config dump
+      register: system_apt
+      changed_when: false
+
+    - name: Allowed origins of the automatic updates
+      ansible.builtin.set_fact:
+        system_origins: >-
+          {{ system_apt.stdout_lines | select('match', 'Unattended-Upgrade::(Allowed-Origins|Origins-Pattern):: ')
+          | list }}
+
+    - name: Daily automatic updates, security only, without reboot
+      ansible.builtin.assert:
+        that:
+          - system_apt.stdout is search('(?m)^APT::Periodic::Unattended-Upgrade "1";$')
+          - system_apt.stdout is search('(?m)^Unattended-Upgrade::Automatic-Reboot "false";$')
+          - system_origins | length > 0
+          - system_origins | reject('search', 'security";$') | list == []
+        fail_msg: "Automatic updates badly set; origins: {{ system_origins }}"
+
+    - name: State of the automatic updates timer
+      ansible.builtin.systemd_service:
+        name: apt-daily-upgrade.timer
+      register: system_timer
+
+    - name: Automatic updates timer active
+      ansible.builtin.assert:
+        that: system_timer.status.ActiveState == 'active'
+        fail_msg: apt-daily-upgrade.timer is {{ system_timer.status.ActiveState }}
+
+    - name: Effective sshd configuration
+      ansible.builtin.command:
+        cmd: sshd -T
+      register: system_sshd
+      changed_when: false
+
+    - name: The SSH server refuses password, keyboard-interactive and root
+      ansible.builtin.assert:
+        that:
+          - system_sshd.stdout is search('(?m)^passwordauthentication no$')
+          - system_sshd.stdout is search('(?m)^kbdinteractiveauthentication no$')
+          - system_sshd.stdout is search('(?m)^permitrootlogin no$')
+        fail_msg: SSH configuration too permissive (sshd -T)
+
+    # Real trial without a key, from the VM itself: the server must offer only
+    # "publickey".
+    - name: SSH connection without a key
+      ansible.builtin.command:
+        argv: [ssh, -o, BatchMode=yes, -o, PubkeyAuthentication=no, -o, StrictHostKeyChecking=no,
+               -o, UserKnownHostsFile=/dev/null, -o, ConnectTimeout=10, root@127.0.0.1, "true"]
+      register: system_ssh_trial
+      changed_when: false
+      failed_when: system_ssh_trial.rc == 0 or system_ssh_trial.stderr is not search('Permission denied \(publickey\)')
+
+    # $nrconf{restart} read the way needrestart reads it (needrestart.conf then
+    # loads conf.d); empty = Ubuntu mode, which restarts services by itself.
+    - name: Effective restart mode of needrestart
+      ansible.builtin.command:
+        cmd: perl -e 'our %nrconf; do "/etc/needrestart/needrestart.conf"; print $nrconf{restart} // ""'
+      register: system_needrestart
+      changed_when: false
+
+    - name: No service restarted by needrestart on its own
+      ansible.builtin.assert:
+        that: system_needrestart.stdout == 'l'
+        fail_msg: "needrestart in mode '{{ system_needrestart.stdout }}' instead of 'l'"
+
+    - name: State of the maintenance slot
+      ansible.builtin.systemd_service:
+        name: eupadev-maintenance.timer
+      register: system_slot
+
+    - name: Maintenance slot active, at the VM's hour
+      ansible.builtin.assert:
+        that:
+          - system_slot.status.ActiveState == 'active'
+          - system_slot.status.NextElapseUSecRealtime is search(' ' ~ maintenance_hour ~ ':00 UTC$')
+        fail_msg: "Unexpected slot: {{ system_slot.status.ActiveState }}, {{ system_slot.status.TimersCalendar }}"
+
+    - name: Never two VMs rebooted at the same hour
+      ansible.builtin.assert:
+        that: >-
+          (ansible_play_hosts_all | map('extract', hostvars, 'maintenance_hour') | unique | length)
+          == (ansible_play_hosts_all | length)
+        fail_msg: Two VMs share the same maintenance_hour (inventory)
+
+    # Age read from the file's creation date (%W, kept by the /run tmpfs):
+    # Ubuntu touches it again for each package that asks for a reboot. Pending
+    # for less than 7 days = normal, the night slot takes care of it.
+    - name: How long a reboot has been pending (seconds, empty otherwise)
+      ansible.builtin.shell:
+        cmd: test -e /var/run/reboot-required && echo $(( $(date +%s) - $(stat -c %W /var/run/reboot-required) )) || true
+      register: system_reboot_age
+      changed_when: false
+
+    - name: No reboot pending for more than 7 days
+      ansible.builtin.assert:
+        that: system_reboot_age.stdout == '' or (system_reboot_age.stdout | int) < 7 * 86400
+        fail_msg: >-
+          Reboot pending for {{ (system_reboot_age.stdout | int / 86400) | round(1) }} days:
+          the maintenance slot no longer runs (journalctl -u eupadev-maintenance); maintenance.yml

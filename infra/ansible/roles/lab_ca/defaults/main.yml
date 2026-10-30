@@ -1,0 +1,3 @@
+# True only where the Caddys of the deployment targets already exist (last
+# play of site.yml, lab-host.yml): see tasks/main.yml.
+lab_ca_targets: false

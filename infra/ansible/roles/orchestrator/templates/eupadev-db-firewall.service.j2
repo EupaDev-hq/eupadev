@@ -1,0 +1,21 @@
+# Managed by Ansible (orchestrator role, db-tls.yml) — do not edit by hand.
+# PostgreSQL port published on {{ ansible_host }}: only {{ orchestrator_db_tls_clients | join(', ') }}
+# reach it, the rest is dropped. DOCKER-USER chain (Docker documentation):
+# Docker takes it over without flushing it. conntrack: original address and
+# port (before the DNAT).
+[Unit]
+Description=EupaDev: filter of the orchestrator database port
+Before=docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'iptables -N DOCKER-USER 2>/dev/null || true'
+ExecStart=/bin/sh -c 'iptables -C DOCKER-USER -p tcp -m conntrack --ctorigdst {{ ansible_host }} --ctorigdstport 5432 -j DROP 2>/dev/null || iptables -I DOCKER-USER -p tcp -m conntrack --ctorigdst {{ ansible_host }} --ctorigdstport 5432 -j DROP'
+{% for ip in orchestrator_db_tls_clients %}
+ExecStart=/bin/sh -c 'iptables -C DOCKER-USER -p tcp -m conntrack --ctorigsrc {{ ip }} --ctorigdst {{ ansible_host }} --ctorigdstport 5432 -j ACCEPT 2>/dev/null || iptables -I DOCKER-USER -p tcp -m conntrack --ctorigsrc {{ ip }} --ctorigdst {{ ansible_host }} --ctorigdstport 5432 -j ACCEPT'
+{% endfor %}
+
+[Install]
+WantedBy=docker.service

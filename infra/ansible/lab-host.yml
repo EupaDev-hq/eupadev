@@ -1,0 +1,62 @@
+# Settings of the lab's HOST machine (your PC), not of the VMs.
+# Only for a lab where Docker and LXD run on the same machine.
+# Asks for the sudo password:
+#   ansible-playbook lab-host.yml --ask-become-pass
+- name: Lab host machine
+  # No "connection: local" at play level: it would also apply to the tasks
+  # delegated to the VMs (lab_ca), which would then run on the host. Ansible's
+  # implicit localhost already uses a local connection.
+  hosts: localhost
+  become: true
+  tasks:
+    # Docker blocks the traffic crossing the host: without this rule, the VMs
+    # have no Internet access (details in the service file).
+    - name: Install the service that lets the VMs' network through
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../lab/eupadev-lxd-forward.service"
+        dest: /etc/systemd/system/eupadev-lxd-forward.service
+        mode: "0644"
+
+    - name: Enable this service (and at every boot)
+      ansible.builtin.systemd:
+        name: eupadev-lxd-forward.service
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    # Wildcard DNS of the lab (ADR-014, dnsmasq of the LXD network, infra/terraform):
+    # the platform domain is asked to that dnsmasq, the rest of the DNS does not
+    # change. Method of the LXD docs ("Integrate with systemd-resolved").
+    - name: Service that sends the platform domain to the DNS of the LXD network
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/eupadev-lxd-dns.service
+        content: |
+          [Unit]
+          Description=EupaDev lab DNS ({{ base_domain }} to the eupadev-net network)
+          BindsTo=sys-subsystem-net-devices-eupadev\x2dnet.device
+          After=sys-subsystem-net-devices-eupadev\x2dnet.device
+
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/bin/resolvectl dns eupadev-net 10.42.0.1
+          ExecStart=/usr/bin/resolvectl domain eupadev-net ~{{ base_domain }}
+          ExecStopPost=/usr/bin/resolvectl revert eupadev-net
+          RemainAfterExit=yes
+
+          [Install]
+          WantedBy=sys-subsystem-net-devices-eupadev\x2dnet.device
+        mode: "0644"
+
+    - name: Enable this service (and each time the network appears)
+      ansible.builtin.systemd:
+        name: eupadev-lxd-dns.service
+        enabled: true
+        state: started
+        daemon_reload: true
+
+  # Address of the forge + trust in its certificate and in those of the
+  # deployment targets (command-line tools; Firefox keeps its own list of
+  # authorities). Needs the VMs configured: on the first setup, run first
+  # with --skip-tags forge-ca.
+  roles:
+    - { role: lab_ca, lab_ca_targets: true, tags: forge-ca }

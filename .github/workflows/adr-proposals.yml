@@ -1,0 +1,53 @@
+# Reports the ADRs "proposed" for more than 30 days (format rule,
+# docs/adr/026-*.md). The age counts from the commit that added the file,
+# renames followed, on the main branch. This check blocks no PR: it keeps
+# ONE GitHub issue up to date (same title, reopened if needed, never
+# duplicated), closed when nothing is late any more.
+name: ADRs proposed for more than 30 days
+
+on:
+  schedule:
+    - cron: "17 6 * * 1"  # every Monday, 06:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  proposals:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      # Full history: the date an ADR was added is read in git.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Late proposed ADRs
+        run: python3 .github/scripts/verify-adr.py --proposals "$RUNNER_TEMP/late.md"
+
+      - name: Single issue kept up to date
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TITLE: ADRs proposed for more than 30 days
+          # Title of the issue before the English switch (ADR-026): found under it, the issue gets TITLE.
+          OLD_TITLE: ADR proposés depuis plus de 30 jours
+        run: |
+          set -eu
+          # The most recent issue with this title (or the old one), open or closed (gh lists the most recent first).
+          num=$(gh issue list --state all --limit 1000 --json number,title,state \
+            --jq 'map(select(.title == $ENV["TITLE"] or .title == $ENV["OLD_TITLE"])) | .[0] | select(. != null) | "\(.number) \(.state)"')
+          state=${num#* }; num=${num%% *}
+          if [ -s "$RUNNER_TEMP/late.md" ]; then
+            if [ -z "$num" ]; then
+              gh issue create --title "$TITLE" --body-file "$RUNNER_TEMP/late.md"
+            else
+              gh issue edit "$num" --title "$TITLE" --body-file "$RUNNER_TEMP/late.md"
+              [ "$state" = OPEN ] || gh issue reopen "$num"
+            fi
+          elif [ -n "$num" ] && [ "$state" = OPEN ]; then
+            gh issue edit "$num" --title "$TITLE"
+            gh issue close "$num" --comment "No ADR proposed for more than 30 days any more."
+          fi

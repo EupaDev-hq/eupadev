@@ -1,0 +1,64 @@
+# Secrets of the orchestrator (ROADMAP §8.16 M1, "engine for real" note §3.3):
+# never in clear on disk.
+#   1. Ansible encrypts each secret of the vault ON the VM with systemd-creds
+#      (--with-key=auto: host key /var/lib/systemd/credential.secret, plus the
+#      TPM chip when the VM has one) → /etc/eupadev/credstore.encrypted.
+#      The clear text goes through the standard input, never a file nor an argument.
+#   2. eupadev-secrets.service (before Docker, at each boot) decrypts them
+#      into /run/eupadev/secrets (tmpfs), owner = uid of the container,
+#      0400: Compose ignores uid/gid/mode of a file secret, it mounts the file
+#      as it is.
+#   3. Compose mounts them as secrets; the code reads <VARIABLE>_FILE.
+- name: Folder of the encrypted secrets (root only)
+  ansible.builtin.file:
+    path: /etc/eupadev/credstore.encrypted
+    state: directory
+    mode: "0700"
+
+# An encrypted value is never the same twice (randomness): the decrypted value
+# is compared in memory with the vault, to encrypt again only what is missing
+# or has changed.
+- name: Read the secrets already encrypted
+  ansible.builtin.command:
+    argv: [systemd-creds, decrypt, --newline=no, "--name={{ item.name }}",
+           "/etc/eupadev/credstore.encrypted/{{ item.name }}", "-"]
+  loop: "{{ orchestrator_secrets }}"
+  register: orchestrator_secrets_read
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+- name: Encrypt the missing or changed secrets
+  ansible.builtin.command:
+    argv: [systemd-creds, encrypt, --with-key=auto, "--name={{ item.item.name }}", "-",
+           "/etc/eupadev/credstore.encrypted/{{ item.item.name }}"]
+    stdin: "{{ item.item.value }}"
+    stdin_add_newline: false
+  loop: "{{ orchestrator_secrets_read.results }}"
+  # stdout loses its final newlines: compare without them (an SSH key must
+  # end with one, E5d).
+  when: item.rc != 0 or item.stdout != item.item.value | regex_replace('\n+$', '')
+  register: orchestrator_encrypted_secrets
+  changed_when: true
+  no_log: true
+
+# Neither value nor secret in the unit: only the names and the owners.
+- name: Decryption service at boot
+  ansible.builtin.template:
+    src: eupadev-secrets.service.j2
+    dest: /etc/systemd/system/eupadev-secrets.service
+    mode: "0644"
+  register: orchestrator_secrets_unit
+
+# Restarted when the unit or a secret changed: the files of /run are made
+# again; the containers, which keep the old mounted file, are recreated next.
+- name: Enable the service and decrypt the secrets (again)
+  ansible.builtin.systemd_service:
+    name: eupadev-secrets.service
+    enabled: true
+    daemon_reload: "{{ orchestrator_secrets_unit.changed }}"
+    state: "{{ 'restarted' if (orchestrator_secrets_unit.changed or orchestrator_encrypted_secrets.changed) else 'started' }}"
+
+- name: Remember whether the containers must be recreated (new secrets)
+  ansible.builtin.set_fact:
+    orchestrator_recreate: "{{ orchestrator_secrets_unit.changed or orchestrator_encrypted_secrets.changed }}"

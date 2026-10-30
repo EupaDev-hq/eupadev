@@ -1,0 +1,72 @@
+# Owner of @eupadev/core (ADR-023): Gitea grants package writes per owner,
+# never per package, so the core lives in its own organisation
+# (gitea_core_org), readable by any signed-in account (limited: the tools'
+# read badges read it without being members), where only svc-core writes
+# packages. Included from main.yml (admin credentials by module_defaults).
+- name: Does the core organisation exist?
+  ansible.builtin.uri:
+    url: "{{ gitea_api }}/orgs/{{ gitea_core_org.org }}"
+    status_code: [200, 404]
+  register: gitea_org_core
+
+- name: Create the core organisation
+  ansible.builtin.uri:
+    url: "{{ gitea_api }}/orgs"
+    method: POST
+    body: { username: "{{ gitea_core_org.org }}", visibility: "{{ gitea_core_org.visibility }}" }
+    status_code: 201
+  when: gitea_org_core.status == 404
+  changed_when: true
+
+- name: Visibility of the core organisation
+  ansible.builtin.uri:
+    url: "{{ gitea_api }}/orgs/{{ gitea_core_org.org }}"
+    method: PATCH
+    body: { visibility: "{{ gitea_core_org.visibility }}" }
+    status_code: 200
+  when: gitea_org_core.status == 200 and gitea_org_core.json.visibility != gitea_core_org.visibility
+  changed_when: true
+
+- name: Teams of the core organisation
+  ansible.builtin.uri:
+    url: "{{ gitea_api }}/orgs/{{ gitea_core_org.org }}/teams?limit=50"
+  register: gitea_org_core_teams
+
+- name: Create the core publication team
+  ansible.builtin.uri:
+    url: "{{ gitea_api }}/orgs/{{ gitea_core_org.org }}/teams"
+    method: POST
+    body:
+      name: "{{ gitea_core_org.team }}"
+      description: "{{ gitea_core_org.description }}"
+      includes_all_repositories: false
+      can_create_org_repo: false
+      units_map: "{{ gitea_core_org.units_map }}"
+    status_code: 201
+  register: gitea_org_core_team_created
+  when: gitea_core_org.team not in (gitea_org_core_teams.json | map(attribute='name'))
+  changed_when: true
+
+- name: Align the rights of the publication team
+  vars:
+    gitea_org_core_team: "{{ gitea_org_core_teams.json | selectattr('name', 'equalto', gitea_core_org.team) | first }}"
+  ansible.builtin.uri:
+    url: "{{ gitea_api }}/teams/{{ gitea_org_core_team.id }}"
+    method: PATCH
+    body: { name: "{{ gitea_core_org.team }}", units_map: "{{ gitea_core_org.units_map }}" }
+    status_code: 200
+  when:
+    - gitea_org_core_team_created is skipped
+    - gitea_org_core_team.units_map | default({}, true) != gitea_core_org.units_map
+  changed_when: true
+
+- name: Put svc-core in the publication team
+  vars:
+    gitea_org_core_team_id: >-
+      {{ gitea_org_core_team_created.json.id if gitea_org_core_team_created is not skipped
+         else (gitea_org_core_teams.json | selectattr('name', 'equalto', gitea_core_org.team) | first).id }}
+  ansible.builtin.uri:
+    url: "{{ gitea_api }}/teams/{{ gitea_org_core_team_id }}/members/{{ gitea_core_org.user }}"
+    method: PUT
+    status_code: 204
+  changed_when: false

@@ -1,0 +1,21 @@
+# Every pnpm pin of the repository names the same version
+# (.github/scripts/check-pnpm-version.py): an upgrade is done everywhere or
+# not at all. No path filter: a pin can live in any file.
+name: pnpm version
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  pnpm-version:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: One pnpm version everywhere
+        run: python3 .github/scripts/check-pnpm-version.py

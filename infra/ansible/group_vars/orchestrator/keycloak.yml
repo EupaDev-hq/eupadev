@@ -1,0 +1,159 @@
+# Realm eupadev declared as code (role keycloak, tasks/realm.yml;
+# decisions D1-D15 of docs/reflexions/2026-10-15-analyse-keycloak.md).
+# verify-keycloak.yml compares the actual realm with these lists: any client,
+# role or group not declared here makes it fail (Ansible deletes nothing).
+
+# Client scopes: those Keycloak 26.8 sets by default, without offline_access
+# (D8: an offline token never expires by lifespan).
+keycloak_default_scopes: [acr, basic, email, profile, roles, web-origins]
+keycloak_optional_scopes: [address, microprofile-jwt, organization, phone]
+
+# Set on every declared client (item first, then this: cannot be overridden).
+keycloak_common_client:
+  realm: eupadev
+  full_scope_allowed: false
+  direct_access_grants_enabled: false
+  implicit_flow_enabled: false
+  state: present
+
+# `at+jwt` (RFC 9068, D7): attribute of every client that issues tokens for
+# the API; the engine refuses `typ: JWT`.
+keycloak_at_jwt: { access.token.header.type.rfc9068: "true" }
+
+# Languages of Keycloak's own screens (login, logout confirmation) for the
+# realm eupadev (chat note 2026-10-25 §4, decision 8; step 5): the page
+# sends its language as `ui_locales`, Keycloak follows it; French by default.
+keycloak_locales: { supported: [fr, en], default: fr }
+
+keycloak_clients:
+  # The engine's API: carries the roles, issues nothing (no flow).
+  - client_id: eupadev-api
+    description: API of the EupaDev engine (carries the requester and admin roles)
+    public_client: false
+    standard_flow_enabled: false
+    service_accounts_enabled: false
+    client_scopes_behavior: idempotent
+    default_client_scopes: "{{ keycloak_default_scopes }}"
+    optional_client_scopes: []
+  # Terminal client of the people: code + PKCE S256, EXACT loopback redirect
+  # (D15: the port is free, RFC 8252 §7.3), no wildcard.
+  - client_id: eupadev-cli
+    description: Terminal client (sign-in of people, PKCE)
+    public_client: true
+    standard_flow_enabled: true
+    service_accounts_enabled: false
+    redirect_uris: ["http://127.0.0.1/callback"]
+    web_origins: []
+    attributes: "{{ keycloak_at_jwt | combine({'pkce.code.challenge.method': 'S256'}) }}"
+    client_scopes_behavior: idempotent
+    default_client_scopes: "{{ keycloak_default_scopes }}"
+    optional_client_scopes: []
+  # Requesters' web page (chat note 2026-10-25, decision 2; ADR-024): the
+  # engine signs people in server side (code + PKCE S256, confidential
+  # client, cookie session); exact redirect URL of the page at its public
+  # name (chat step 6: chat_domain, through caddy-auth). The
+  # secret lives in the vault vault-keycloak-web.yml and reaches the engine as
+  # OIDC_WEB_CLIENT_SECRET_FILE (orchestrator_secrets). Same scope as the
+  # CLI: roles of eupadev-api in its access token (keycloak_scope_mappings).
+  - client_id: eupadev-web
+    description: Requesters' web page (server-side sign-in by the engine, PKCE)
+    public_client: false
+    standard_flow_enabled: true
+    service_accounts_enabled: false
+    redirect_uris: ["https://{{ chat_domain }}/auth/callback"]
+    web_origins: []
+    secret: "{{ vault_keycloak_web_secret }}"
+    attributes: "{{ keycloak_at_jwt | combine({'pkce.code.challenge.method': 'S256', 'post.logout.redirect.uris': 'https://' ~ chat_domain ~ '/'}) }}"
+    client_scopes_behavior: idempotent
+    default_client_scopes: "{{ keycloak_default_scopes }}"
+    optional_client_scopes: []
+  # Ansible (D5): realm-management/realm-admin of the realm eupadev only.
+  - client_id: eupadev-config
+    description: Ansible (realm configuration as code)
+    public_client: false
+    standard_flow_enabled: false
+    service_accounts_enabled: true
+    secret: "{{ vault_keycloak_config_secret }}"
+    client_scopes_behavior: idempotent
+    default_client_scopes: "{{ keycloak_default_scopes + ['service_account'] }}"
+    optional_client_scopes: []
+  # Check accounts: LAB ONLY (verify-*.yml); they must not exist at a client
+  # (their sub changes if the client is recreated).
+  - client_id: check-requester
+    description: Lab only — checks (requester hat)
+    public_client: false
+    standard_flow_enabled: false
+    service_accounts_enabled: true
+    secret: "{{ vault_keycloak_check_requester_secret }}"
+    attributes: "{{ keycloak_at_jwt }}"
+    client_scopes_behavior: idempotent
+    default_client_scopes: "{{ keycloak_default_scopes + ['service_account'] }}"
+    optional_client_scopes: []
+  - client_id: check-admin
+    description: Lab only — checks (admin hat)
+    public_client: false
+    standard_flow_enabled: false
+    service_accounts_enabled: true
+    secret: "{{ vault_keycloak_check_admin_secret }}"
+    attributes: "{{ keycloak_at_jwt }}"
+    client_scopes_behavior: idempotent
+    default_client_scopes: "{{ keycloak_default_scopes + ['service_account'] }}"
+    optional_client_scopes: []
+  # Clients created by Keycloak with full scope (and direct password for
+  # admin-cli): turned off too (D4, D8).
+  - client_id: admin-cli
+  - client_id: security-admin-console
+
+# Clients created by Keycloak in every realm, kept as they are (full scope
+# already off): only for the inventory of verify-keycloak.yml.
+keycloak_builtin_clients: [account, account-console, broker, realm-management]
+
+# Roles of the API, each carried by a group (D4): people get a group, never
+# a role directly.
+keycloak_api_roles:
+  - { role: requester, group: eupadev-requesters, description: "Submits and follows their tool requests" }
+  - { role: admin, group: eupadev-admins, description: "Decides at the gates, cancels" }
+
+# Scope mappings and, if service_account, roles of the service account.
+keycloak_scope_mappings:
+  - { client: eupadev-cli, from: eupadev-api, roles: [requester, admin] }
+  - { client: eupadev-web, from: eupadev-api, roles: [requester, admin] }
+  - { client: eupadev-config, from: realm-management, roles: [realm-admin], service_account: true }
+  - { client: check-requester, from: eupadev-api, roles: [requester], service_account: true }
+  - { client: check-admin, from: eupadev-api, roles: [admin], service_account: true }
+
+# People: temporary password from the vault (name of the variable), change
+# required at the first sign-in.
+keycloak_people:
+  - username: ilan
+    first_name: Ilan
+    last_name: ""
+    email: "ilan@{{ base_domain }}"
+    groups: [eupadev-requesters, eupadev-admins]
+    temporary_password: vault_keycloak_ilan_temp_password
+
+# Realm master (D5): named administrators only, role `admin` of master,
+# temporary password from the vault (name of the variable), change and OTP
+# enrolment required at the first sign-in (tasks/master.yml).
+keycloak_master_admins:
+  - username: ilan-admin
+    first_name: Ilan
+    last_name: ""
+    email: "{{ gitea_admin_email }}"
+    temporary_password: vault_keycloak_admin_ilan_temp_password
+
+# OTP policy of master: TOTP HmacSHA1, 6 digits, 30 s (Keycloak's default).
+# Google Authenticator and Microsoft Authenticator accept only this one
+# (Keycloak says so in otpSupportedApplications, checked by
+# verify-keycloak.yml); FreeOTP also accepts SHA256. Window ±1 period.
+keycloak_master_otp: { type: totp, algorithm: HmacSHA1, digits: 6, period: 30, look_ahead: 1 }
+
+# Realm of the generated tools (R8, docs/reflexions/2026-10-18-note-realm-outils.md):
+# described once, in the import file of the core's CI. The lab takes all of it
+# except the secrets (the client's is generated by Keycloak, the people have no
+# password) and the address of each tool, below, which replaces the origin of
+# the file's addresses (redirect, sign-out, back-channel). verify-keycloak.yml
+# compares the lab realm with that file.
+keycloak_tools_realm: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../../core/tests/keycloak/realm-test.json') | from_json }}"
+keycloak_tool_addresses:
+  trial-tool: "https://trial-tool.{{ base_domain }}"

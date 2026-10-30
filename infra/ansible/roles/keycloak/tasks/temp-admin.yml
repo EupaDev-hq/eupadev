@@ -1,0 +1,71 @@
+# temp-admin (realm master): created by the one-off command
+# `kc.sh bootstrap-admin user`, Keycloak stopped (the documentation requires
+# it: "All the Keycloak nodes need to be stopped"); never by the service's
+# KC_BOOTSTRAP_ADMIN_* variables, which recreate it at every start (trial of
+# 2026-10-15). Nothing is done if it already answers. Used by the bootstrap,
+# the configuration of master and verify-keycloak.yml; each deletes it
+# afterwards.
+- name: Does the temp-admin account answer?
+  ansible.builtin.uri:
+    url: "{{ keycloak_admin_url }}/realms/master/protocol/openid-connect/token"
+    method: POST
+    body_format: form-urlencoded
+    body:
+      grant_type: password
+      client_id: admin-cli
+      username: temp-admin
+      password: "{{ vault_keycloak_bootstrap_admin_password }}"
+    status_code: [200, 400, 401]
+  register: keycloak_temp_token
+  no_log: true
+
+- name: Create temp-admin (Keycloak stopped for the command)
+  when: keycloak_temp_token.status != 200
+  block:
+    - name: Stop Keycloak
+      ansible.builtin.command:
+        argv: [docker, compose, stop, keycloak]
+        chdir: /opt/eupadev/orchestrator
+      changed_when: true
+
+    # Password read from the secret by the shell of the one-off container:
+    # neither an argument nor a variable visible from the host.
+    - name: Create temp-admin (kc.sh bootstrap-admin)
+      ansible.builtin.command:
+        argv:
+          - docker
+          - compose
+          - run
+          - --rm
+          - --no-deps
+          - -T
+          - --entrypoint
+          - /bin/bash
+          - keycloak
+          - -c
+          - >-
+            export KC_DB_PASSWORD="$(cat /run/secrets/keycloak_db_password)"
+            KC_BOOTSTRAP="$(cat /run/secrets/keycloak_bootstrap_admin_password)";
+            exec /opt/keycloak/bin/kc.sh bootstrap-admin user --username temp-admin
+            --password:env KC_BOOTSTRAP --optimized
+        chdir: /opt/eupadev/orchestrator
+      register: keycloak_bootstrap
+      changed_when: true
+      failed_when: keycloak_bootstrap.rc != 0 or (keycloak_bootstrap.stdout ~ keycloak_bootstrap.stderr) is not search('Created temporary admin user')
+
+  always:
+    - name: Restart Keycloak
+      ansible.builtin.command:
+        argv: [docker, compose, up, -d, --wait, --wait-timeout, "300", keycloak]
+        chdir: /opt/eupadev/orchestrator
+      changed_when: true
+
+    # `--wait` returns before the end of the initialisation (requests answered 503
+    # "Request received during bootstrapping", trial of 2026-10-16).
+    - name: Wait until master answers
+      ansible.builtin.uri:
+        url: "{{ keycloak_admin_url }}/realms/master"
+      register: keycloak_master_ready
+      until: keycloak_master_ready.status == 200
+      retries: 60
+      delay: 2

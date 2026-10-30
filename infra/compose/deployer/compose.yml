@@ -1,0 +1,57 @@
+# Caddy of a deployment target VM (CI VM: mock-up and Previews; tools VM:
+# Prod), ADR-014. The Caddyfile is written by Ansible (role deployer) from the
+# VM's environments; it never changes while running (admin API off): a change
+# goes through Ansible, which recreates the container. The tool containers
+# are not here: eupadev-deployer starts them and plugs Caddy into them
+# (step E5d).
+# Image by digest (.env written by Ansible): the platform's Caddy with the
+# OVH DNS module (caddy_image, pulled and signature-verified by Ansible) or
+# the official one; OVH credentials of Let's Encrypt DNS-01 in the secrets
+# (systemd-creds, eupadev-secrets.service), read by {file.*}.
+name: deployer
+
+services:
+  caddy:
+    image: ${CADDY_IMAGE:?missing}
+    restart: unless-stopped
+    # 443 only: nothing to serve over HTTP.
+    ports:
+      - "443:443"
+    secrets: [ovh_application_key, ovh_application_secret, ovh_consumer_key]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Mock-ups written by eupadev-deployer (E5e), read only here.
+      - /srv/eupadev/mockups:/srv/mockups:ro
+      - caddy-data:/data
+    mem_limit: 128m
+
+  # Egress proxy of the core tools (S6, ADR-022): the identity provider
+  # only (acl.yaml, config.yaml written by Ansible, role deployer). Plugged
+  # by eupadev-deployer into each core tool network; its own way out is
+  # the project's default network. Same image and binary as the agents'
+  # Smokescreen (infra/compose/agents). Never relays packets (ip_forward 0).
+  smokescreen:
+    image: gcr.io/distroless/static:nonroot@sha256:e2e927ec666bae08560abb3c55d0659eceabb657f56b6782ab500a9fc7f555e3
+    entrypoint: ["/smokescreen"]
+    command: ["--config-file=/etc/smokescreen/config.yaml"]
+    volumes:
+      - ./smokescreen-bin:/smokescreen:ro
+      - ./smokescreen:/etc/smokescreen:ro
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    sysctls: { net.ipv4.ip_forward: 0 }
+    mem_limit: 64m
+    pids_limit: 128
+    restart: unless-stopped
+
+secrets:
+  ovh_application_key:
+    file: ${SECRETS_DIR:-/run/eupadev/secrets}/ovh_application_key
+  ovh_application_secret:
+    file: ${SECRETS_DIR:-/run/eupadev/secrets}/ovh_application_secret
+  ovh_consumer_key:
+    file: ${SECRETS_DIR:-/run/eupadev/secrets}/ovh_consumer_key
+
+volumes:
+  caddy-data:

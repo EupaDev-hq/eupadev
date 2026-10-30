@@ -1,0 +1,308 @@
+# Real-conditions check of the agent image (launcher note, step 2;
+# ROADMAP §8.11 no. 21, ADR-013) — can be rerun, leaves nothing behind
+# (except the image if it was already on the agents VM).
+#   ansible-playbook verify-image-agent.yml
+#   ansible-playbook verify-image-agent.yml -e rebuild=true
+#     → first reruns a build (e.g. Trivy reports a fix released since then:
+#       rebuild the golden image first with
+#       verify-base-image.yml -e rebuild=true) and checks that one.
+# On the forge: waits for the pipeline of the last commit of the `agent`
+# repository, wants it green, finds in its log the trace of each check (the
+# cosign signature included) and the published digest.
+# On the agents VM, from the published image, pulled BY DIGEST:
+#   1. neither `docker` nor `sudo`, no setuid/setgid file;
+#   2. image user ≠ 0;
+#   3. `claude --version` = version pinned in images/agent/Dockerfile;
+#   4. clean Trivy (fixable HIGH/CRITICAL);
+#   5. cosign signature checked on the agents VM as the launcher will do
+#      before each launch (same command as claude-engine.ts, ADR-013):
+#      accepted with the installation's key, refused with a throwaway key.
+# The trial containers run under gVisor (runsc), without network, hardened
+# as the agents' ones will be.
+- name: Pipeline of the agent image
+  hosts: forge
+  become: true
+  gather_facts: false
+  vars:
+    repo: agent
+    rebuild: false
+  module_defaults:
+    ansible.builtin.uri:
+      url_username: "{{ gitea_admin_user }}"
+      url_password: "{{ vault_gitea_admin_password }}"
+      force_basic_auth: true
+      body_format: json
+      return_content: true
+  tasks:
+    - name: Read the last commit of the agent repository
+      ansible.builtin.uri:
+        url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/branches/main"
+      register: main_branch
+
+    - name: Rerun a build on demand
+      ansible.builtin.include_tasks: tasks/rebuild-pipeline.yml
+      vars: { pipeline_workflow: publish.yml }
+      when: rebuild | bool
+
+    - name: Wait for the pipeline of the last commit
+      ansible.builtin.include_tasks: tasks/wait-for-pipeline.yml
+      vars:
+        commit_sha: "{{ main_branch.json.commit.id }}"
+      when: not (rebuild | bool)
+
+    - name: The agent image pipeline is green
+      ansible.builtin.assert:
+        that: pipeline.conclusion == 'success'
+        success_msg: "OK — pipeline green"
+        fail_msg: "FAILED — {{ pipeline.conclusion }} ({{ pipeline_jobs }}) — {{ pipeline.html_url }}"
+
+    - name: Read the job log
+      ansible.builtin.uri:
+        url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ repo }}/actions/jobs/{{ (jobs_response.json.jobs | first).id }}/logs"
+      register: log_job
+
+    - name: The pipeline checks really ran
+      ansible.builtin.assert:
+        # Timestamped line that STARTS with "OK:": the log also holds the
+        # script's text (echo "OK: …"), which must not count.
+        that: log_job.content is search('(?m)^(\\S+Z )?' ~ item)
+        fail_msg: "FAILED — trace missing from the log: {{ item }}"
+        quiet: true
+      loop:
+        - "OK: the image runs as a non-root user"
+        - "OK: neither docker nor sudo in the image"
+        - "OK: no setuid/setgid file in the image"
+        - "OK: claude --version = [0-9.]+ \\(Claude Code\\), the pinned version"
+        - "OK: Claude Code accepts the engine's options and report schema"
+        - "OK: signature verified with the installation's public key"
+
+    - name: Published digest
+      ansible.builtin.set_fact:
+        published_agent_image: "{{ log_job.content | regex_search(\"Agent image digest: (\\S+/agent@sha256:[0-9a-f]{64})\", '\\1') | first }}"
+
+    - name: Show the published digest
+      ansible.builtin.debug:
+        msg: "{{ published_agent_image }}"
+
+- name: Agent image seen from the agents VM
+  hosts: agents
+  become: true
+  gather_facts: false
+  vars:
+    check_forge: "{{ groups['forge'][0] }}"
+    check_image: "{{ hostvars[check_forge].published_agent_image }}"
+    check_version: >-
+      {{ lookup('ansible.builtin.file', playbook_dir ~ '/../../images/agent/Dockerfile')
+         | regex_search('ARG CLAUDE_CODE_VERSION=(\S+)', '\1') | first }}
+    check_trivy: aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa
+    check_docker_config: /run/eupadev/check-registry
+    # cosign: same version and same sum as the orchestrator role; binary
+    # placed for the trial in a temporary directory removed at the end
+    # (not under /run, mounted noexec).
+    check_cosign_defaults: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/roles/orchestrator/defaults/main.yml') | from_yaml }}"
+    # Trial container: like the agents' ones, without network.
+    check_hardened:
+      - --rm
+      - --runtime=runsc
+      - --network=none
+      - --read-only
+      - --tmpfs=/tmp
+      - --tmpfs=/home/agent:uid=10001,gid=10001  # otherwise root 700: pnpm/claude cannot write there
+      - --cap-drop=ALL
+      - --security-opt=no-new-privileges
+      - --memory=1g
+      - --pids-limit=512
+  module_defaults:
+    ansible.builtin.uri:
+      url_username: "{{ gitea_admin_user }}"
+      url_password: "{{ vault_gitea_admin_password }}"
+      force_basic_auth: true
+  tasks:
+    - name: Images already on the VM (to remove only ours)
+      ansible.builtin.command:
+        argv: [docker, image, inspect, --format, "{{ '{{' }}.Id{{ '}}' }}", "{{ item }}"]
+      loop: ["{{ check_image }}", "{{ check_trivy }}"]
+      register: check_before
+      changed_when: false
+      failed_when: false
+
+    - name: Trials (cleanup guaranteed)
+      block:
+        # Throwaway registry read badge (svc-deployment), deleted at the end;
+        # Docker login in memory (/run), never in /root/.docker.
+        - name: Remove an old throwaway badge (interrupted run)
+          ansible.builtin.uri:
+            url: "{{ hostvars[check_forge].gitea_api }}/users/svc-deployment/tokens/check-image-agent"
+            method: DELETE
+            status_code: [204, 404]
+          delegate_to: "{{ check_forge }}"
+
+        - name: Create the throwaway registry read badge
+          ansible.builtin.uri:
+            url: "{{ hostvars[check_forge].gitea_api }}/users/svc-deployment/tokens"
+            method: POST
+            body_format: json
+            body: { name: check-image-agent, scopes: ["read:package"] }
+            status_code: 201
+          delegate_to: "{{ check_forge }}"
+          register: check_badge
+          changed_when: false
+          no_log: true
+
+        - name: Registry login directory (memory)
+          ansible.builtin.file:
+            path: "{{ check_docker_config }}"
+            state: directory
+            mode: "0700"
+
+        - name: Log in to the forge's registry
+          ansible.builtin.command:
+            argv: [docker, login, "{{ gitea_domain }}", -u, svc-deployment, --password-stdin]
+            stdin: "{{ check_badge.json.sha1 }}"
+          environment: { DOCKER_CONFIG: "{{ check_docker_config }}" }
+          changed_when: false
+          no_log: true
+
+        - name: Pull the published image by its digest
+          ansible.builtin.command:
+            argv: [docker, pull, -q, "{{ check_image }}"]
+          environment: { DOCKER_CONFIG: "{{ check_docker_config }}" }
+          changed_when: false
+
+        - name: Executable temporary directory for cosign
+          ansible.builtin.tempfile:
+            state: directory
+            suffix: -cosign
+          register: check_cosign_dir
+
+        - name: Install cosign for the trial (sha256 sum checked)
+          ansible.builtin.get_url:
+            url: "https://github.com/sigstore/cosign/releases/download/{{ check_cosign_defaults.orchestrator_cosign_version }}/cosign-linux-amd64"
+            dest: "{{ check_cosign_dir.path }}/cosign"
+            checksum: "sha256:{{ check_cosign_defaults.orchestrator_cosign_sha256 }}"
+            mode: "0700"
+          changed_when: false
+
+        - name: Public key of the installation (for the trial)
+          ansible.builtin.copy:
+            src: "{{ playbook_dir }}/../../images/engine/cosign.pub"
+            dest: "{{ check_docker_config }}/cosign.pub"
+            mode: "0600"
+          changed_when: false
+
+        - name: Create a throwaway key (counter-check)
+          ansible.builtin.command:
+            argv: ["{{ check_cosign_dir.path }}/cosign", generate-key-pair, --output-key-prefix, "{{ check_docker_config }}/other"]
+            stdin: ""
+          environment: { COSIGN_PASSWORD: "" }
+          changed_when: false
+
+        # Same command as the launcher (orchestrator/src/external/claude-engine.ts).
+        - name: Image signature with the installation's key, then with the throwaway key
+          ansible.builtin.command:
+            argv: ["{{ check_cosign_dir.path }}/cosign", verify, --key, "{{ check_docker_config }}/{{ item }}.pub",
+                   --insecure-ignore-tlog=true, "{{ check_image }}"]
+          environment: { DOCKER_CONFIG: "{{ check_docker_config }}" }
+          loop: [cosign, other]
+          register: check_signature
+          changed_when: false
+          failed_when: false
+
+        - name: Signature accepted with the right key, refused with the other
+          ansible.builtin.assert:
+            that:
+              - check_signature.results[0].rc == 0
+              - check_signature.results[1].rc != 0 and check_signature.results[1].stderr is search('failed to verify signature')
+            success_msg: "OK — cosign signature checked on the agents VM; another key is refused"
+            fail_msg: >-
+              FAILED — right key: {{ check_signature.results[0].stderr_lines[-3:] }};
+              other key (rc {{ check_signature.results[1].rc }}): {{ check_signature.results[1].stderr_lines[-3:] }}
+
+        - name: User declared by the image
+          ansible.builtin.command:
+            argv: [docker, image, inspect, --format, "{{ '{{' }}.Config.User{{ '}}' }}", "{{ check_image }}"]
+          register: check_user_image
+          changed_when: false
+
+        - name: Effective user in the container
+          ansible.builtin.command:
+            argv: "{{ ['docker', 'run'] + check_hardened + [check_image, 'id', '-u'] }}"
+          register: check_uid
+          changed_when: false
+
+        - name: Docker or sudo in the image
+          ansible.builtin.command:
+            argv: "{{ ['docker', 'run'] + check_hardened + [check_image, 'sh', '-c', 'command -v docker || command -v sudo'] }}"
+          register: check_tools
+          changed_when: false
+          failed_when: false
+
+        # --user 0: only root sees the whole file system (/root…).
+        # Root without capabilities cannot read 700 directories (/home/node…):
+        # DAC_READ_SEARCH (read-only) so that the search sees everything.
+        - name: Setuid/setgid files in the image
+          ansible.builtin.command:
+            argv: "{{ ['docker', 'run', '--user', '0'] + check_hardened + ['--cap-add=DAC_READ_SEARCH'] + check_find }}"
+          vars:
+            check_find: ["{{ check_image }}", find, /, -xdev, -type, f, -perm, /6000]
+          register: check_suid
+          changed_when: false
+
+        - name: Claude Code version in the image
+          ansible.builtin.command:
+            argv: "{{ ['docker', 'run'] + check_hardened + [check_image, 'claude', '--version'] }}"
+          register: check_claude
+          changed_when: false
+
+        - name: Trivy on the published image (fixable HIGH/CRITICAL)
+          ansible.builtin.command:
+            argv: [docker, run, --rm, -v, /var/run/docker.sock:/var/run/docker.sock, "{{ check_trivy }}", image,
+                   --exit-code, "1", --severity, "HIGH,CRITICAL", --ignore-unfixed, "{{ check_image }}"]
+          register: check_trivy_scan
+          changed_when: false
+          failed_when: false
+
+        - name: The four criteria of step 2
+          ansible.builtin.assert:
+            that:
+              - check_tools.rc != 0 and check_tools.stdout == ''
+              - check_suid.stdout == ''
+              - check_user_image.stdout not in ['', '0', 'root'] and not check_user_image.stdout.startswith('0:')
+              - check_uid.stdout != '0'
+              - check_claude.stdout == check_version ~ ' (Claude Code)'
+              - check_trivy_scan.rc == 0
+            success_msg: >-
+              OK — neither docker nor sudo nor setuid; user {{ check_user_image.stdout }} (uid {{ check_uid.stdout }});
+              {{ check_claude.stdout }}; clean Trivy ({{ check_image }})
+            fail_msg: >-
+              FAILED — docker/sudo: {{ check_tools.stdout }}; setuid: {{ check_suid.stdout }};
+              user: {{ check_user_image.stdout }} / {{ check_uid.stdout }};
+              version: {{ check_claude.stdout }} (expected {{ check_version }});
+              Trivy: {{ check_trivy_scan.stdout_lines[-30:] + check_trivy_scan.stderr_lines[-5:] }}
+
+      always:
+        - name: Remove cosign
+          ansible.builtin.file:
+            path: "{{ check_cosign_dir.path }}"
+            state: absent
+          when: check_cosign_dir.path is defined
+
+        - name: Forget the registry login
+          ansible.builtin.file:
+            path: "{{ check_docker_config }}"
+            state: absent
+
+        - name: Delete the throwaway badge
+          ansible.builtin.uri:
+            url: "{{ hostvars[check_forge].gitea_api }}/users/svc-deployment/tokens/check-image-agent"
+            method: DELETE
+            status_code: [204, 404]
+          delegate_to: "{{ check_forge }}"
+
+        - name: Remove the images pulled for the trial
+          ansible.builtin.command:
+            argv: [docker, image, rm, "{{ item.item }}"]
+          loop: "{{ check_before.results | selectattr('rc', 'ne', 0) | list }}"
+          loop_control: { label: "{{ item.item }}" }
+          changed_when: false
+          failed_when: false

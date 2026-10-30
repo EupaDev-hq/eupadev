@@ -1,0 +1,132 @@
+# Measure of the real consumption of the VMs during a real work cycle, for
+# the client prerequisites sheet (measured figures, not estimates).
+#   ansible-playbook measure-resources.yml -e mode=start </dev/null
+#   … real work cycle (tool request → agents → CI → deployment) …
+#   ansible-playbook measure-resources.yml -e mode=end </dev/null
+# Option: -e measure_interval=5 (seconds) -e measure_max_duration=4h.
+#
+# start: on each VM, files/measure-resources.sh runs as a transient service
+# (systemd-run): /proc/meminfo (MemAvailable), /proc/stat, df of / and
+# /var/lib/docker, and per container memory.current, memory.peak and
+# cpu.stat (cgroups v2). RuntimeMaxSec stops it by itself; --collect removes
+# the unit even when it ended in failure (timeout).
+# end: stops the service, prints the table per VM, brings the raw data back
+# to ~/eupadev-measures/, then deletes everything on the VM.
+#
+# memory.peak (kernel docs, cgroup-v2.rst): read only from 5.19 to 6.11
+# (peak since the creation of the cgroup); since 6.12, writing to it resets
+# the peak for that file descriptor only. Ubuntu 24.04 (kernel 6.8) therefore
+# allows no reset: the memory.peak column is the peak since the container
+# started (exact for a container created during the measure, may predate it
+# for an older container); the "sampled" column is the peak during the
+# measure. The root cgroup has no memory.peak: the VM's memory is sampled.
+- name: Measure the resources of the VMs
+  hosts: all
+  become: true
+  gather_facts: false
+  vars:
+    measure_dir: /var/tmp/measure-resources
+    measure_interval: 5
+    measure_max_duration: 4h
+    measure_local: "{{ lookup('env', 'HOME') }}/eupadev-measures"
+  tasks:
+    - name: Requested mode
+      ansible.builtin.assert:
+        that: mode | default('') in ['start', 'end']
+        fail_msg: "Give -e mode=start or -e mode=end"
+
+    - name: State of the sampler
+      ansible.builtin.systemd_service:
+        name: measure-resources.service
+      register: measure_state
+
+    - name: Start the collection
+      when: mode == 'start'
+      block:
+        - name: No measure already running
+          ansible.builtin.assert:
+            that: measure_state.status.ActiveState not in ['active', 'activating']
+            fail_msg: "Measure already running: end it with -e mode=end"
+
+        - name: Empty measure directory
+          ansible.builtin.file:
+            path: "{{ measure_dir }}"
+            state: absent
+
+        - name: Measure directory
+          ansible.builtin.file:
+            path: "{{ measure_dir }}"
+            state: directory
+            owner: root
+            group: root
+            mode: "0700"
+
+        - name: Sampler
+          ansible.builtin.copy:
+            src: measure-resources.sh
+            dest: "{{ measure_dir }}/measure-resources.sh"
+            owner: root
+            group: root
+            mode: "0700"
+
+        - name: Start the sampler, automatic stop after {{ measure_max_duration }}
+          ansible.builtin.command:
+            argv:
+              - systemd-run
+              - --unit=measure-resources
+              - --collect
+              - --property=RuntimeMaxSec={{ measure_max_duration }}
+              - --property=Nice=10
+              - "{{ measure_dir }}/measure-resources.sh"
+              - collect
+              - "{{ measure_interval }}"
+              - "{{ measure_dir }}/data.txt"
+          changed_when: true
+
+    - name: Stop the collection and show the result
+      when: mode == 'end'
+      block:
+        # Inactive: already stopped by itself (maximum duration reached).
+        - name: Stop the sampler
+          ansible.builtin.systemd_service:
+            name: measure-resources.service
+            state: stopped
+          when: measure_state.status.ActiveState in ['active', 'activating']
+
+        - name: Table of the VM
+          ansible.builtin.command:
+            argv:
+              - "{{ measure_dir }}/measure-resources.sh"
+              - summary
+              - "{{ measure_dir }}/data.txt"
+          register: measure_summary
+          changed_when: false
+
+        - name: Result of {{ inventory_hostname }}
+          ansible.builtin.debug:
+            msg: "{{ measure_summary.stdout_lines }}"
+
+        - name: Name of the files brought back
+          ansible.builtin.set_fact:
+            measure_file: "{{ measure_local }}/{{ inventory_hostname }}-{{ now(fmt='%Y%m%d-%H%M') }}"
+
+        - name: Bring the raw data back
+          ansible.builtin.fetch:
+            src: "{{ measure_dir }}/data.txt"
+            dest: "{{ measure_file }}.txt"
+            flat: true
+
+        - name: Keep the table beside it
+          ansible.builtin.copy:
+            content: "{{ measure_summary.stdout }}\n"
+            dest: "{{ measure_file }}-summary.txt"
+            mode: "0644"
+          delegate_to: localhost
+          become: false
+
+        # Only after bringing them back: on failure, the data stays to run
+        # "end" again.
+        - name: Delete the data and the sampler from the VM
+          ansible.builtin.file:
+            path: "{{ measure_dir }}"
+            state: absent

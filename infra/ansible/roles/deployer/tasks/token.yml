@@ -1,0 +1,67 @@
+# E5d: durable read token of svc-deployment (read:package only), used by
+# eupadev-deployer to verify and pull tool images. Same pattern as the
+# executor's token (roles/executor/tasks/token.yml): Gitea never shows a
+# token twice, so the one already encrypted on the VM is kept while the forge
+# accepts it, else recreated. Encrypted by systemd-creds (host key), decrypted
+# in memory by the script at each call; never on disk in clear.
+- name: Read the registry token already encrypted on the VM
+  ansible.builtin.command:
+    argv: [systemd-creds, decrypt, --newline=no, --name=deployer_registry_token,
+           /etc/eupadev/credstore.encrypted/deployer_registry_token, "-"]
+  register: deployer_token_read
+  changed_when: false
+  failed_when: false
+  check_mode: false  # read only
+  no_log: true
+
+- name: Does the forge accept this token?
+  ansible.builtin.uri:
+    url: "{{ hostvars[groups['forge'][0]].gitea_api }}/packages/eupadev?limit=1"
+    headers:
+      Authorization: "token {{ deployer_token_read.stdout }}"
+    status_code: [200, 401, 403]
+  delegate_to: "{{ groups['forge'][0] }}"
+  register: deployer_token_trial
+  when: deployer_token_read.rc == 0
+  no_log: true
+
+- name: Create and encrypt a new token (missing or refused)
+  when: deployer_token_read.rc != 0 or deployer_token_trial.status | default(0) != 200
+  module_defaults:
+    ansible.builtin.uri:
+      url_username: "{{ gitea_admin_user }}"
+      url_password: "{{ vault_gitea_admin_password }}"
+      force_basic_auth: true
+  block:
+    - name: Remove the old token of this target
+      ansible.builtin.uri:
+        url: "{{ hostvars[groups['forge'][0]].gitea_api }}/users/svc-deployment/tokens/deployer-{{ inventory_hostname }}"
+        method: DELETE
+        status_code: [204, 404]
+      delegate_to: "{{ groups['forge'][0] }}"
+
+    - name: Create the registry read token
+      ansible.builtin.uri:
+        url: "{{ hostvars[groups['forge'][0]].gitea_api }}/users/svc-deployment/tokens"
+        method: POST
+        body_format: json
+        body: { name: "deployer-{{ inventory_hostname }}", scopes: ["read:package"] }
+        status_code: 201
+      delegate_to: "{{ groups['forge'][0] }}"
+      register: deployer_token_created
+      no_log: true
+
+    - name: Folder of the encrypted secrets (root only)
+      ansible.builtin.file:
+        path: /etc/eupadev/credstore.encrypted
+        state: directory
+        mode: "0700"
+
+    - name: Encrypt the token (systemd-creds)
+      ansible.builtin.command:
+        argv: [systemd-creds, encrypt, --with-key=auto, --name=deployer_registry_token, "-",
+               /etc/eupadev/credstore.encrypted/deployer_registry_token]
+        stdin: "{{ deployer_token_created.json.sha1 }}"
+        stdin_add_newline: false
+      changed_when: true
+      no_log: true

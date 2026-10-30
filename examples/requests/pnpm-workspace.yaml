@@ -1,0 +1,6 @@
+# Same supply-chain settings as the core (core/pnpm-workspace.yaml).
+packages: []
+allowBuilds: {}
+strictDepBuilds: true
+blockExoticSubdeps: true
+minimumReleaseAge: 1440

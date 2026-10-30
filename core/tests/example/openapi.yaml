@@ -1,0 +1,200 @@
+# Minimal example contract: what the linter accepts. The handlers are in api/ (one file per operationId).
+openapi: 3.1.0
+info:
+  title: Example
+  version: 1.0.0
+paths:
+  /api/items:
+    get:
+      operationId: listItems
+      x-roles: [reader, manager]
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+        - name: status
+          in: query
+          schema: { type: string, enum: [open, closed] }
+        - name: tags
+          in: query
+          schema: { type: array, maxItems: 5, items: { type: string, maxLength: 20 } }
+      responses:
+        '200':
+          description: List
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ItemList' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '429': { $ref: '#/components/responses/Problem' }
+    post:
+      operationId: createItem
+      x-roles: [manager]
+      x-rate-limit: 10
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NewItem' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Item' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '415': { $ref: '#/components/responses/Problem' }
+        '429': { $ref: '#/components/responses/Problem' }
+  /api/items/{id}:
+    get:
+      operationId: getItem
+      x-roles: [reader, manager]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: One item
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Item' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '429': { $ref: '#/components/responses/Problem' }
+    delete:
+      operationId: deleteItem
+      x-roles: [manager]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '204': { description: Deleted }
+        '404': { $ref: '#/components/responses/Problem' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '429': { $ref: '#/components/responses/Problem' }
+  /api/items/{id}/attachment:
+    put:
+      operationId: putItemAttachment
+      description: One file per item (PNG or PDF, 1 KiB at most here, so the tests stay small).
+      x-roles: [manager]
+      x-max-bytes: 1024
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          image/png: {}
+          application/pdf: {}
+      responses:
+        '200':
+          description: Stored
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [type, size]
+                properties:
+                  type: { type: string }
+                  size: { type: integer }
+        '400': { $ref: '#/components/responses/Problem' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '413': { $ref: '#/components/responses/Problem' }
+        '415': { $ref: '#/components/responses/Problem' }
+        '429': { $ref: '#/components/responses/Problem' }
+  /files/items/{id}/attachment:
+    get:
+      operationId: getItemAttachment
+      x-roles: [reader, manager]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: The item's file (download)
+          content:
+            image/png: {}
+            application/pdf: {}
+        '400': { $ref: '#/components/responses/Problem' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '429': { $ref: '#/components/responses/Problem' }
+  /files/items.csv:
+    get:
+      operationId: exportItems
+      x-roles: [reader, manager]
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string, enum: [open, closed] }
+        - name: trap
+          in: query
+          schema: { type: string, enum: [name, type, cap] }
+      responses:
+        '200':
+          description: CSV export of the items (download)
+          content:
+            text/csv: {}
+        '400': { $ref: '#/components/responses/Problem' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '429': { $ref: '#/components/responses/Problem' }
+components:
+  schemas:
+    Item:
+      type: object
+      additionalProperties: false
+      required: [id, name, status]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string, maxLength: 80 }
+        status: { type: string, enum: [open, closed] }
+        note: { type: string, maxLength: 500 }
+    NewItem:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 80, pattern: '^[^<>]*$' }
+        status: { type: string, enum: [open, closed], default: open }
+        note: { type: string, maxLength: 500 }
+    ItemList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/Item' } }
+        next: { type: [string, 'null'], maxLength: 200 }
+    Problem:
+      type: object
+      additionalProperties: false
+      properties:
+        type: { type: string }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        instance: { type: string }
+        code: { type: string }
+        error_id: { type: string }
+        errors:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [pointer, message]
+            properties:
+              pointer: { type: string }
+              message: { type: string }
+  responses:
+    Problem:
+      description: RFC 9457 error
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }

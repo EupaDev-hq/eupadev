@@ -1,0 +1,15 @@
+# Written by Ansible (role gitea): do not edit on the VM.
+# Caddy, the receptionist: receives the visitors over HTTPS and forwards them
+# to Gitea. caddy_tls is "internal" on a first pass (certificate made by
+# Caddy, role lab_ca) or an email address: Let's Encrypt by the DNS-01
+# challenge at OVH (global options, group_vars/all caddy_acme_global).
+{% if caddy_tls != 'internal' %}
+{
+{{ caddy_acme_global | indent('\t', first=true) }}
+}
+
+{% endif %}
+{{ gitea_domain }} {
+	tls {{ caddy_tls }}
+	reverse_proxy gitea:3000
+}

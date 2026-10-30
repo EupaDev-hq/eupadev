@@ -1,0 +1,4 @@
+-- What the purge erases and after how long (ADR-003), run by the core's bin/purge.js with the purge account, in one
+-- transaction, after the core's own purge. Each period is read with current_setting('purge.retention_<x>'), set from
+-- the variable RETENTION_<X> fixed at Gate 1 (no default: a missing one stops the purge). Reference:
+-- examples/requests/db/purge.sql. Nothing to purge until the tool stores personal data.

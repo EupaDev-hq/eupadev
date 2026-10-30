@@ -1,0 +1,274 @@
+# Deployment target VM (ADR-014): generic Caddy (E5a), then the engine's
+# access by forced-command SSH (E5b). Same role on the CI VM (mock-up,
+# Previews) and on the tools VM (Prod); only deployer_envs changes.
+
+# ── E5a: Caddy of the target ──────────────────────────────────────────────
+- name: Folder of the deployer stack
+  ansible.builtin.file:
+    path: /opt/eupadev/deployer
+    state: directory
+    mode: "0755"
+
+# E5e: mock-ups written by the script, mounted read-only in Caddy.
+- name: Folder of the mock-ups
+  ansible.builtin.file:
+    path: /srv/eupadev/mockups
+    state: directory
+    mode: "0755"
+
+- name: Compose file of Caddy
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../compose/deployer/compose.yml"
+    dest: /opt/eupadev/deployer/compose.yml
+    mode: "0644"
+  register: deployer_compose
+
+- name: Caddyfile from the VM's environments
+  ansible.builtin.template:
+    src: Caddyfile.j2
+    dest: /opt/eupadev/deployer/Caddyfile
+    mode: "0644"
+  register: deployer_caddyfile
+
+# Let's Encrypt DNS-01 at OVH: the credentials as secrets decrypted in memory
+# (same tasks as the orchestrator's secrets), the Caddy image with the OVH
+# module pulled by digest, signature verified (same tasks as the engine's).
+- name: Compose variables (Caddy image by digest)
+  ansible.builtin.copy:
+    dest: /opt/eupadev/deployer/.env
+    content: |
+      # Written by Ansible (role deployer): do not edit on the VM.
+      CADDY_IMAGE={{ caddy_image or caddy_image_official }}
+    mode: "0644"
+
+- name: OVH credentials of Caddy (systemd-creds)
+  ansible.builtin.include_role:
+    name: orchestrator
+    tasks_from: systemd-creds
+  vars:
+    orchestrator_secrets: "{{ caddy_ovh_secrets }}"
+
+- name: EupaDev configuration folder
+  ansible.builtin.file:
+    path: /etc/eupadev
+    state: directory
+    mode: "0755"
+
+- name: Caddy image (download, signature)
+  ansible.builtin.include_role:
+    name: orchestrator
+    tasks_from: image.yml
+  vars:
+    orchestrator_image: "{{ caddy_image }}"
+  when: caddy_image | length > 0
+
+# d5: egress proxy of the core tools (S6), same binary as the agents' one.
+- name: Download Smokescreen (pinned version and sha256)
+  ansible.builtin.get_url:
+    url: "https://github.com/stripe/smokescreen/releases/download/{{ agent_proxies_smk_version }}/{{ agent_proxies_smk_name }}.tar.gz"
+    dest: "/opt/eupadev/deployer/{{ agent_proxies_smk_name }}.tar.gz"
+    checksum: "sha256:{{ agent_proxies_smk_sha256 }}"
+    mode: "0644"
+
+- name: Extract the Smokescreen binary
+  ansible.builtin.unarchive:
+    src: "/opt/eupadev/deployer/{{ agent_proxies_smk_name }}.tar.gz"
+    dest: /opt/eupadev/deployer
+    remote_src: true
+    include: ["{{ agent_proxies_smk_name }}/smokescreen"]
+    creates: "/opt/eupadev/deployer/{{ agent_proxies_smk_name }}/smokescreen"
+
+- name: Smokescreen binary under a fixed name (mounted by the Compose file)
+  ansible.builtin.copy:
+    src: "/opt/eupadev/deployer/{{ agent_proxies_smk_name }}/smokescreen"
+    dest: /opt/eupadev/deployer/smokescreen-bin
+    remote_src: true
+    mode: "0755"
+  register: deployer_smk_bin
+
+- name: Smokescreen configuration folder
+  ansible.builtin.file:
+    path: /opt/eupadev/deployer/smokescreen
+    state: directory
+    mode: "0755"
+
+- name: Smokescreen configuration and allowlist (identity provider only)
+  ansible.builtin.template:
+    src: "smokescreen/{{ item }}.j2"
+    dest: "/opt/eupadev/deployer/smokescreen/{{ item }}"
+    mode: "0644"
+  loop: [config.yaml, acl.yaml]
+  register: deployer_smk_conf
+
+# Caddy does not reread its configuration (admin off) and a rewritten file is a
+# new inode, invisible to the running container: recreated when it changes
+# (same for a remade secret, orchestrator_recreate).
+# Smokescreen does not reread its ACL either.
+- name: Start Caddy
+  ansible.builtin.command:
+    cmd: >-
+      docker compose up -d --wait --remove-orphans
+      {{ '--force-recreate' if (deployer_compose.changed or deployer_caddyfile.changed
+                                or deployer_smk_bin.changed or deployer_smk_conf.changed
+                                or orchestrator_recreate | default(false)) else '' }}
+    chdir: /opt/eupadev/deployer
+  register: deployer_up
+  changed_when: deployer_up.stderr is search('Created|Recreated|Started|Pulled|Removed')
+
+# E5d: a recreated Caddy has lost the tool networks the script plugged it
+# into; plug it back (networks of the platform model carry the label
+# eupadev.env). noqa: no-handler — right after the recreation, so that
+# running Previews answer again before the rest of the play.
+- name: Tool networks  # noqa: no-handler
+  ansible.builtin.command: docker network ls -q --filter label=eupadev.env
+  register: deployer_networks
+  changed_when: false
+  when: deployer_up.changed
+
+- name: Plug Caddy back into the tool networks  # noqa: no-handler
+  ansible.builtin.command:
+    argv: [docker, network, connect, "{{ item }}", deployer-caddy-1]
+  loop: "{{ deployer_networks.stdout_lines | default([]) }}"
+  register: deployer_caddy_reconnected
+  changed_when: true
+  failed_when: deployer_caddy_reconnected.rc != 0 and 'already exists' not in deployer_caddy_reconnected.stderr
+  when: deployer_up.changed
+
+- name: Core tool networks  # noqa: no-handler
+  ansible.builtin.command: docker network ls -q --filter label=eupadev.core
+  register: deployer_core_networks
+  changed_when: false
+  when: deployer_up.changed
+
+- name: Plug Smokescreen back into the core tool networks  # noqa: no-handler
+  ansible.builtin.command:
+    argv: [docker, network, connect, "{{ item }}", deployer-smokescreen-1]
+  loop: "{{ deployer_core_networks.stdout_lines | default([]) }}"
+  register: deployer_smk_reconnected
+  changed_when: true
+  failed_when: deployer_smk_reconnected.rc != 0 and 'already exists' not in deployer_smk_reconnected.stderr
+  when: deployer_up.changed
+
+# ── E5b: the engine's access ──────────────────────────────────────────────
+# Shell /bin/sh: sshd runs the forced command through the account's shell. No
+# password (locked), outside the docker group (socket = root).
+- name: Deployment account
+  ansible.builtin.user:
+    name: "{{ deployer_user }}"
+    shell: /bin/sh
+    create_home: true
+    password_lock: true
+
+# Home folder and keys owned by root: the account cannot change anything there,
+# even if it ever managed to run code (sshd accepts root-owned files).
+- name: Home folder and .ssh folder owned by root
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "/home/{{ deployer_user }}"
+    - "/home/{{ deployer_user }}/.ssh"
+
+# restrict: no forwarding (port, agent, X11), no terminal, no ~/.ssh/rc;
+# from: the orchestrator only; command: the script, whatever the client asks
+# (its request arrives in SSH_ORIGINAL_COMMAND). Doc: sshd(8).
+- name: Engine key, forced command
+  ansible.builtin.copy:
+    dest: "/home/{{ deployer_user }}/.ssh/authorized_keys"
+    content: >
+      restrict,from="{{ deployer_engine_ip }}",command="sudo -n /usr/local/sbin/eupadev-deployer"
+      {{ vault_deployer_ssh_public_key | trim }}
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Script eupadev-deployer
+  ansible.builtin.copy:
+    src: deployer.py
+    dest: /usr/local/sbin/eupadev-deployer
+    owner: root
+    group: root
+    mode: "0755"
+
+# The registry is fixed here, never passed as an argument: a compromised engine
+# cannot make the target pull an image from elsewhere.
+- name: Script configuration
+  ansible.builtin.copy:
+    dest: /etc/eupadev/deployer.json
+    content: "{{ {'envs': deployer_envs, 'registry': gitea_domain, 'slug_max': deployer_slug_max, 'reserved': deployer_reserved_names,
+                  'domain': base_domain, 'quota': deployer_preview_quota, 'issuer': deployer_oidc_issuer} | to_nice_json }}\n"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Single sudo rule (script without arguments)
+  ansible.builtin.template:
+    src: sudoers.j2
+    dest: /etc/sudoers.d/eupadev-deployer
+    owner: root
+    group: root
+    mode: "0440"
+    validate: /usr/sbin/visudo -cf %s
+
+# ── E5c: signature verification (used by the script in E5d) ──────────────
+- name: Install cosign (official binary, sha256 checked)
+  ansible.builtin.get_url:
+    url: "https://github.com/sigstore/cosign/releases/download/{{ deployer_cosign_version }}/cosign-linux-amd64"
+    dest: /usr/local/bin/cosign
+    checksum: "sha256:{{ deployer_cosign_sha256 }}"
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Public signing key of the tools
+  ansible.builtin.copy:
+    dest: /etc/eupadev/cosign-tools.pub
+    content: "{{ deployer_cosign_tools_pub }}\n"
+    owner: root
+    group: root
+    mode: "0644"
+
+# ── E5d: real deployment (Preview, platform Compose model) ───────────────
+# Read by the script at each call: the tool's own Compose is never used.
+- name: Compose model of the tools
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../compose/deployer/{{ item }}"
+    dest: "/etc/eupadev/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  # d5: core mode, merged over the base model for a core image.
+  loop: [tool.compose.yml, core-tool.compose.yml]
+
+- name: Registry read token (svc-deployment)
+  ansible.builtin.include_tasks: token.yml
+
+# ── d5 / S7: daily purge of the core tools (Prod only) ────────────────────
+- name: Purge of the core tools (Prod)
+  when: "'prod' in deployer_envs"
+  block:
+    - name: Purge script
+      ansible.builtin.copy:
+        src: eupadev-purge
+        dest: /usr/local/sbin/eupadev-purge
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Purge service and timer
+      ansible.builtin.template:
+        src: "eupadev-purge.{{ item }}.j2"
+        dest: "/etc/systemd/system/eupadev-purge.{{ item }}"
+        mode: "0644"
+      loop: [service, timer]
+      register: deployer_purge_units
+
+    - name: Enable the daily purge timer
+      ansible.builtin.systemd_service:
+        name: eupadev-purge.timer
+        enabled: true
+        state: started
+        daemon_reload: "{{ deployer_purge_units is changed }}"

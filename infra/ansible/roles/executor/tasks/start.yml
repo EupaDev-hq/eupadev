@@ -1,0 +1,39 @@
+# Start of the executor and "healthy" check (executor role and
+# emergency-stop.yml: a single definition).
+# No --wait: the executor has no API, so no Docker health check; "healthy" =
+# it runs and has not restarted 20 s later (it stops, code 1, without a
+# database, without the lock or on an invalid configuration).
+- name: Start or update the executor
+  ansible.builtin.command:
+    argv: >-
+      {{ ['docker', 'compose', 'up', '-d']
+         + (['--force-recreate'] if executor_force | default(false) | bool else []) }}
+    chdir: /opt/eupadev/executor
+  register: executor_up
+  changed_when: executor_up.stderr is search('executor-1\s+(Created|Recreated|Started)')
+
+- name: Read the state of the executor
+  ansible.builtin.command:
+    argv: [docker, inspect, --format, "{{ '{{' }}.State.Status{{ '}}' }} {{ '{{' }}.State.StartedAt{{ '}}' }}", executor-executor-1]
+  register: executor_state
+  changed_when: false
+
+# noqa: no-handler — must come before the state is read again, not at the end of the recipe.
+- name: Give the executor 20 s (database, lock, DBOS)  # noqa: no-handler
+  ansible.builtin.wait_for:
+    timeout: 20
+  when: executor_up is changed
+
+- name: Read the state of the executor again
+  ansible.builtin.command:
+    argv: [docker, inspect, --format, "{{ '{{' }}.State.Status{{ '}}' }} {{ '{{' }}.State.StartedAt{{ '}}' }}", executor-executor-1]
+  register: executor_state_after
+  changed_when: false
+
+- name: The executor runs without having restarted
+  ansible.builtin.assert:
+    that:
+      - executor_state_after.stdout is match('running ')
+      - executor_state_after.stdout == executor_state.stdout
+    fail_msg: "Unstable executor ({{ executor_state.stdout }} → {{ executor_state_after.stdout }}): docker compose logs executor"
+    quiet: true

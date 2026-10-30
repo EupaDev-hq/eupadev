@@ -1,0 +1,46 @@
+# Maintenance: reboots the VMs that wait for it (kernel or library updated by
+# unattended-upgrades), one at a time.
+#   ansible-playbook maintenance.yml
+# A VM is rebooted only if Ubuntu wrote /var/run/reboot-required. Before
+# moving to the next one, the containers that ran before must be back (and
+# "healthy" if they have a health check): a VM that does not come back stops
+# the recipe, the others keep running.
+- name: Reboot the VMs that wait for it
+  hosts: all
+  become: true
+  gather_facts: false
+  serial: 1
+  tasks:
+    - name: Is a reboot requested?
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: maintenance_requested
+
+    - name: Containers running before
+      ansible.builtin.command:
+        cmd: docker ps --format '{{ "{{" }}.Names{{ "}}" }}'
+      register: maintenance_before
+      changed_when: false
+
+    - name: Reboot the VM
+      ansible.builtin.reboot:
+        reboot_timeout: 600
+      when: maintenance_requested.stat.exists
+
+    # Status "Up … (health: starting)" or "(unhealthy)" = not back yet.
+    - name: The same containers run again, none unhealthy
+      ansible.builtin.command:
+        cmd: docker ps --format '{{ "{{" }}.Names{{ "}}" }} {{ "{{" }}.Status{{ "}}" }}'
+      register: maintenance_after
+      changed_when: false
+      until: >-
+        (maintenance_after.stdout_lines | map('split') | map('first') | sort) == (maintenance_before.stdout_lines | sort)
+        and maintenance_after.stdout is not search('health: starting|unhealthy')
+      retries: 30
+      delay: 10
+
+    - name: No reboot pending any more
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: maintenance_remaining
+      failed_when: maintenance_remaining.stat.exists

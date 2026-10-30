@@ -1,0 +1,319 @@
+# The orchestrator ("engine for real" note §3.2):
+#   db     — dedicated PostgreSQL: state machine, tasks, decisions, and the
+#            memory of the DBOS workflows. TLS 1.3 required; port published
+#            on the VM's IP for the executor of the agents VM only (client
+#            certificate, DOCKER-USER filter); services of this Compose file
+#            through the name "db".
+#   migrate — one-off: versioned migrations then the DBOS schema, with the
+#            owner account; started again on every `up` (idempotent).
+#   mailpit — lab only ("mailpit" profile, §8.16 M7): mail trap, nothing goes
+#            out; at the client, the engine talks to their SMTP relay.
+#   engine — the conductor (DBOS) and its local API. ONE replica only (D23:
+#            the database refuses a second engine; fixed port); never set
+#            DBOS__VMID (an executor that changes identity leaves its
+#            workflows to nobody).
+#   keycloak — identity (note docs/reflexions/2026-10-15-note-keycloak-labo.md):
+#            database `keycloak` of this same PostgreSQL (verified TLS); the
+#            engine reads the JWKS through http://keycloak:8080; admin through
+#            127.0.0.1:8180 of the VM only (SSH tunnel); 9000 (health,
+#            metrics) never published.
+#   caddy-auth — the only public door of Keycloak: https://auth.<domain>,
+#            /realms/eupadev/* and /resources/* only (404 otherwise);
+#            also the requesters' page, https://<chat_domain> → engine:8080
+#            (chat step 6, network `page`).
+# keycloak and caddy-auth are in the "keycloak" profile (KEYCLOAK_IMAGE).
+# migrate and engine are in the "engine" profile, switched on by the variables
+# file when an image is set (ORCHESTRATOR_IMAGE, by digest, signature checked
+# by Ansible before `up`; never pulled by Compose).
+#
+# Non-secret configuration through the .env file put beside it by Ansible.
+# Secrets: files decrypted in memory by eupadev-secrets.service
+# (systemd-creds) into SECRETS_DIR, mounted as Compose secrets
+# (/run/secrets/<name>) and read through <VARIABLE>_FILE; never in .env.
+# Pinned version: an upgrade is a deliberate change.
+name: orchestrator
+
+services:
+  db:
+    image: postgres:18.6-alpine@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: orchestrator
+      POSTGRES_USER: orchestrator
+      POSTGRES_PASSWORD_FILE: /run/secrets/orch_db_password
+    secrets: [orch_db_password]
+    # TLS 1.3 required outside the local socket, our own access rules (tls/,
+    # orchestrator role, db-tls.yml); reread on SIGHUP.
+    command:
+      - postgres
+      - -c
+      - ssl=on
+      - -c
+      - ssl_cert_file=/tls/server.crt
+      - -c
+      - ssl_key_file=/tls/server.key
+      - -c
+      - ssl_ca_file=/tls/ca.crt
+      - -c
+      - ssl_min_protocol_version=TLSv1.3
+      - -c
+      - hba_file=/tls/pg_hba.conf
+      - -c
+      - password_encryption=scram-sha-256
+    # Port published on the VM's IP only (executor of the agents VM),
+    # filtered by eupadev-db-firewall.service; 127.0.0.1 by default.
+    ports: ["${ORCH_DB_ADDRESS:-127.0.0.1}:5432:5432"]
+    volumes:
+      - db:/var/lib/postgresql
+      - ./tls:/tls:ro
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "orchestrator", "-d", "orchestrator"]
+      interval: 10s
+      retries: 6
+    mem_limit: 512m
+
+  migrate:
+    image: ${ORCHESTRATOR_IMAGE:-}
+    profiles: [engine]
+    pull_policy: never
+    command: ["node", "src/migrate.ts"]
+    restart: "no"
+    environment:
+      ORCH_MIGRATION_DATABASE_URL_FILE: /run/secrets/orch_migration_database_url
+    secrets: [orch_migration_database_url]
+    # Database authority: the URL requires sslmode=verify-full.
+    volumes: ["./tls/ca.crt:/run/tls/ca.crt:ro"]
+    depends_on:
+      db: { condition: service_healthy }
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 256m
+
+  # Lab (E1): the engine sends its mails there (SMTP_URL=smtp://mailpit:1025).
+  # SMTP reachable by the services of this Compose file only (no published
+  # port); read page and API on 127.0.0.1 of the VM only (SSH tunnel:
+  # ssh -N -L 8025:127.0.0.1:8025 <vm>). Mails in memory (/tmp), lost at the
+  # restart: it is a trap, not a mailbox.
+  mailpit:
+    image: axllent/mailpit:v1.31.5@sha256:94f6b70c1436defae6799d9ac7ff0eeff9540465b842026d5cdb018f1c0234ea
+    profiles: [mailpit]
+    restart: unless-stopped
+    user: "65534:65534"
+    environment:
+      # Otherwise /api/v1/info asks GitHub (latest version): nothing goes out.
+      MP_DISABLE_VERSION_CHECK: "true"
+    ports: ["127.0.0.1:8025:8025"]
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 128m
+
+  engine:
+    image: ${ORCHESTRATOR_IMAGE:-}
+    profiles: [engine]
+    pull_policy: never
+    restart: unless-stopped
+    environment:
+      # Outside world (orchestrator_config): fake-auto by default (everything
+      # answers "all is well" by itself, only the humans answer, through the
+      # local API); on the lab, notifications=smtp (E1) to Mailpit.
+      EUPADEV_EXTERNAL: ${EUPADEV_EXTERNAL:-fake-auto}
+      # pilot: the agent tasks are run by the executor of the agents VM
+      # (compose/executor); all-in-one: this process does everything.
+      EUPADEV_ROLE: ${EUPADEV_ROLE:-all-in-one}
+      # Language of the end-user texts (mails, chat, gate reasons, L10): English by default; fr on the lab.
+      EUPADEV_LANGUAGE: ${EUPADEV_LANGUAGE:-en}
+      # Relay that requires a password (client): SMTP_URL_FILE, a Compose
+      # secret decrypted by systemd-creds, never the variables file.
+      SMTP_URL: ${SMTP_URL:-}
+      MAIL_FROM: ${MAIL_FROM:-}
+      ORCH_DATABASE_URL_FILE: /run/secrets/orch_database_url
+      # In the container; the port is published only on 127.0.0.1 of the VM.
+      API_ADDRESS: 0.0.0.0
+      ADMIN_ESCALATION_ADDRESS: ${ADMIN_ESCALATION_ADDRESS:-}
+      TOOL_DOMAIN: ${TOOL_DOMAIN:-}
+      DASHBOARD_URL: ${DASHBOARD_URL:-}
+      AGENT_CONCURRENCY: ${AGENT_CONCURRENCY:-1}
+      # I0 (ADR-017): the IdP (Keycloak) seen by the API — fixed public issuer,
+      # JWKS through the internal network, audience; four-eyes exemption (OIDC
+      # subject, empty = none). Values set by Ansible (orchestrator role).
+      OIDC_ISSUER: ${OIDC_ISSUER:-}
+      OIDC_JWKS_URL: ${OIDC_JWKS_URL:-}
+      OIDC_AUDIENCE: ${OIDC_AUDIENCE:-eupadev-api}
+      FOUR_EYES_EXEMPTION_SUBJECT: ${FOUR_EYES_EXEMPTION_SUBJECT:-}
+      # Chat step 2 (ADR-024): browser sign-in by the engine (client
+      # eupadev-web); empty client id = /auth/* off, the API unchanged.
+      OIDC_WEB_CLIENT_ID: ${OIDC_WEB_CLIENT_ID:-}
+      OIDC_WEB_REDIRECT_URL: ${OIDC_WEB_REDIRECT_URL:-}
+      OIDC_WEB_CLIENT_SECRET_FILE: /run/secrets/oidc_web_client_secret
+      # E5d, real deployer (read only with deployer=ssh in EUPADEV_EXTERNAL).
+      DEPLOYER_HOSTS: ${DEPLOYER_HOSTS:-}
+      DEPLOYER_KEY_FILE: /run/secrets/deployer_key
+      DEPLOYER_KNOWN_HOSTS_FILE: /run/secrets/deployer_known_hosts
+      # Real forge (read only with forge=gitea): svc-orchestrator's durable
+      # token; Node and git trust the VM's authorities (lab CA included);
+      # git writes its caches in memory.
+      FORGE_URL: ${FORGE_URL:-}
+      FORGE_TOKEN_FILE: /run/secrets/orch_forge_token
+      NODE_EXTRA_CA_CERTS: /etc/ssl/certs/ca-certificates.crt
+      HOME: /tmp
+    # Emergency stop level 1 (emergency-stop.yml): PAUSE_AGENTS=1, put in this
+    # separate file so that a pass of Ansible does not lift the pause.
+    env_file:
+      - path: pause-agents.conf
+        required: false
+    secrets: [orch_database_url, deployer_key, deployer_known_hosts, orch_forge_token, oidc_web_client_secret]
+    volumes: ["./tls/ca.crt:/run/tls/ca.crt:ro", "/etc/ssl/certs/ca-certificates.crt:/etc/ssl/certs/ca-certificates.crt:ro"]
+    extra_hosts: ["${FORGE_HOST:?missing}:${FORGE_IP:?missing}"]
+    ports: ["127.0.0.1:8080:8080"]
+    # Chat step 6: reached by caddy-auth (the page's public name) on a network
+    # of its own, not on auth (fixed addresses only, trusted by Keycloak).
+    networks: [default, page]
+    depends_on:
+      db: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
+      # Started with the engine when its profile is active; ignored otherwise.
+      mailpit: { condition: service_healthy, required: false }
+    # Throwaway Git clones in /tmp (memory); nothing else is written.
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 512m
+    # Time for DBOS.shutdown; the "single engine" lock is given back last.
+    stop_grace_period: 60s
+
+  # Image built for PostgreSQL (images/keycloak), pulled by digest, signature
+  # checked by Ansible; never pulled by Compose.
+  # Database password read from the secret by the entry shell, then `exec`:
+  # it appears neither in `docker inspect` nor in the arguments.
+  keycloak:
+    image: ${KEYCLOAK_IMAGE:-}
+    profiles: [keycloak]
+    pull_policy: never
+    restart: unless-stopped
+    entrypoint: ["/bin/bash", "-c", "KC_DB_PASSWORD=\"$$(cat /run/secrets/keycloak_db_password)\" exec /opt/keycloak/bin/kc.sh \"$$@\"", "kc"]
+    command: [start, --optimized]
+    environment:
+      KC_DB_URL: "jdbc:postgresql://db:5432/keycloak?sslmode=verify-full&sslrootcert=/run/tls/ca.crt"
+      KC_DB_USERNAME: keycloak
+      KC_DB_POOL_MAX_SIZE: "20"
+      # Fixed issuer (D2): never a Frontend URL.
+      KC_HOSTNAME: ${KEYCLOAK_HOSTNAME:-}
+      KC_HOSTNAME_STRICT: "true"
+      # Administration console through an SSH tunnel only
+      # (ssh -N -L 8180:127.0.0.1:8180 <vm>): without this setting it redirects
+      # to https://auth.<domain>/admin, which Caddy refuses. Tried on
+      # 2026-10-16: the issuers (eupadev, master) do not change.
+      KC_HOSTNAME_ADMIN: http://127.0.0.1:8180
+      # HTTP on the internal networks only; TLS ended by caddy-auth.
+      KC_HTTP_ENABLED: "true"
+      KC_PROXY_HEADERS: xforwarded
+      # X-Forwarded-* headers accepted from caddy-auth only (D12).
+      KC_PROXY_TRUSTED_ADDRESSES: ${KEYCLOAK_PROXY_IP:-}
+      # Successful events in the log too (D11), so in journald.
+      KC_SPI_EVENTS_LISTENER__JBOSS_LOGGING__SUCCESS_LEVEL: info
+    # bootstrap: read only by the one-off bootstrap (keycloak role), never by
+    # the service: otherwise temp-admin comes back at every start (tried on
+    # 2026-10-15: deleted, it is created again at the next restart).
+    secrets: [keycloak_db_password, keycloak_bootstrap_admin_password]
+    volumes: ["./tls/ca.crt:/run/tls/ca.crt:ro"]
+    # Fixed address too: otherwise Keycloak, started before Caddy, can get
+    # Caddy's ("Address already in use", 2026-10-16).
+    networks:
+      default:
+      auth: { ipv4_address: "${KEYCLOAK_IP:-}" }
+    ports: ["127.0.0.1:8180:8080"]
+    depends_on:
+      db: { condition: service_healthy }
+    # read_only (tried on 2026-10-15): Keycloak writes into /tmp, data/tmp and
+    # data/transaction-logs (Narayana's recovery log, useless without XA,
+    # disabled by default); without the latter, 3 × 10 s of waiting at start.
+    read_only: true
+    # Folders in memory owned by the image's user (1000): otherwise Keycloak cannot write there
+    # (gzip cache of the resources → the administration console gets 404 on its JavaScript and stays stuck).
+    tmpfs:
+      - /tmp
+      - /opt/keycloak/data/tmp:uid=1000,gid=0,mode=0700
+      - /opt/keycloak/data/transaction-logs:uid=1000,gid=0,mode=0700
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    # Image without curl: health read on the management port by bash.
+    healthcheck:
+      test: ["CMD", "/bin/bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q '\"status\": \"UP\"' <&3"]
+      interval: 10s
+      start_period: 180s
+      retries: 6
+    # Log (sign-in events included) in the VM's journald:
+    # journalctl CONTAINER_NAME=orchestrator-keycloak-1
+    logging:
+      driver: journald
+    mem_limit: 1280m
+
+  # TLS (`tls internal` on a first pass, else Let's Encrypt DNS-01 at OVH with
+  # the credentials in the secrets), path filter. Image by digest: the
+  # platform's Caddy with the OVH DNS module (caddy_image, pulled and
+  # signature-verified by Ansible) or the official one.
+  caddy-auth:
+    image: ${CADDY_IMAGE:?missing}
+    profiles: [keycloak]
+    restart: unless-stopped
+    ports: ["${ORCH_AUTH_ADDRESS:-127.0.0.1}:443:443"]
+    secrets: [ovh_application_key, ovh_application_secret, ovh_consumer_key]
+    volumes:
+      - ./Caddyfile-auth:/etc/caddy/Caddyfile:ro
+      - caddy-auth-data:/data
+    networks:
+      auth: { ipv4_address: "${KEYCLOAK_PROXY_IP:-}" }
+      page:
+    read_only: true
+    tmpfs: [/config]
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 128m
+
+# Network of caddy-auth and keycloak: fixed address of Caddy, the only one
+# whose X-Forwarded-* headers Keycloak trusts.
+networks:
+  auth:
+    ipam:
+      config: [{ subnet: "${KEYCLOAK_NETWORK:-172.30.42.0/29}" }]
+  # caddy-auth and the engine only (chat step 6).
+  page:
+
+# Compose mounts the file as it is (it ignores uid/gid/mode of a file
+# secret): owner and rights are set by eupadev-secrets.service.
+secrets:
+  orch_db_password:
+    file: ${SECRETS_DIR:-/run/eupadev/secrets}/orch_db_password
+  orch_database_url:
+    file: ${SECRETS_DIR:-/run/eupadev/secrets}/orch_database_url
+  orch_migration_database_url:
+    file: ${SECRETS_DIR:-/run/eupadev/secrets}/orch_migration_database_url
+  keycloak_db_password:
+    file: ${SECRETS_DIR:-/run/eupadev/secrets}/keycloak_db_password
+  keycloak_bootstrap_admin_password:
+    file: ${SECRETS_DIR:-/run/eupadev/secrets}/keycloak_bootstrap_admin_password
+  deployer_key:
+    file: ${SECRETS_DIR:-/run/eupadev/secrets}/deployer_key
+  deployer_known_hosts:
+    file: ${SECRETS_DIR:-/run/eupadev/secrets}/deployer_known_hosts
+  orch_forge_token:
+    file: ${SECRETS_DIR:-/run/eupadev/secrets}/orch_forge_token
+  oidc_web_client_secret:
+    file: ${SECRETS_DIR:-/run/eupadev/secrets}/oidc_web_client_secret
+  # OVH credentials of caddy-auth (Let's Encrypt DNS-01), read by {file.*}.
+  ovh_application_key:
+    file: ${SECRETS_DIR:-/run/eupadev/secrets}/ovh_application_key
+  ovh_application_secret:
+    file: ${SECRETS_DIR:-/run/eupadev/secrets}/ovh_application_secret
+  ovh_consumer_key:
+    file: ${SECRETS_DIR:-/run/eupadev/secrets}/ovh_consumer_key
+
+volumes:
+  db:
+  caddy-auth-data:

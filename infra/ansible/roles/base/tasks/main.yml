@@ -1,0 +1,190 @@
+- name: Update the package list
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+  # Refreshing the list is not a configuration change: without this, the
+  # "2nd pass = 0 change" check would fail once an hour.
+  changed_when: false
+
+- name: Folder of the system journal settings
+  ansible.builtin.file:
+    path: /etc/systemd/journald.conf.d
+    state: directory
+    mode: "0755"
+
+- name: Cap the system journal at 500 MB
+  ansible.builtin.copy:
+    dest: /etc/systemd/journald.conf.d/eupadev.conf
+    content: |
+      [Journal]
+      SystemMaxUse=500M
+    mode: "0644"
+  notify: Restart journald
+
+- name: Install the firewall
+  ansible.builtin.apt:
+    name: ufw
+    state: present
+
+# SSH allowed BEFORE the firewall is enabled, otherwise we lock ourselves out.
+- name: Open the needed ports
+  community.general.ufw:
+    rule: allow
+    port: "{{ item }}"
+    proto: tcp
+  loop: "{{ ufw_allowed_ports }}"
+
+- name: Everything else closed inbound, firewall on
+  community.general.ufw:
+    state: enabled
+    default: deny
+    direction: incoming
+
+# Swap file: keeps a memory peak (build, CI) from killing a service.
+# Enabled by a native systemd unit (swapfile.swap, name = path), with no
+# swapon command to make idempotent. Changing swap_size does not resize an
+# existing file (delete it first, swap off).
+# Prepared under a temporary name then renamed: a failure halfway never
+# leaves an unformatted /swapfile that "creates" would then skip.
+- name: Create and format the swap file
+  ansible.builtin.shell:
+    cmd: >-
+      fallocate -l {{ swap_size }} /swapfile.tmp && chmod 600 /swapfile.tmp
+      && mkswap /swapfile.tmp && mv /swapfile.tmp /swapfile
+    creates: /swapfile
+
+- name: Swap file readable by root only
+  ansible.builtin.file:
+    path: /swapfile
+    mode: "0600"
+
+- name: Systemd unit of the swap file
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/swapfile.swap
+    content: |
+      [Swap]
+      What=/swapfile
+
+      [Install]
+      WantedBy=swap.target
+    mode: "0644"
+
+- name: Swap file active, and at boot
+  ansible.builtin.systemd_service:
+    name: swapfile.swap
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Use the swap only as a last resort
+  ansible.posix.sysctl:
+    name: vm.swappiness
+    value: "10"
+    sysctl_file: /etc/sysctl.d/60-eupadev.conf
+
+# Security updates: Ubuntu's native unattended-upgrades (already in the cloud
+# image, declared here). The file 52eupadev is read after
+# 50unattended-upgrades: "#clear" empties Ubuntu's list of origins (which also
+# holds the release archive), then only the "security" origins are put back.
+# No reboot by unattended-upgrades: it goes through the maintenance slot
+# (below) or through maintenance.yml.
+- name: Install unattended-upgrades
+  ansible.builtin.apt:
+    name: unattended-upgrades
+    state: present
+
+- name: Daily automatic updates
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/20auto-upgrades
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+    mode: "0644"
+
+- name: Security only, no automatic reboot
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/52eupadev-unattended-upgrades
+    content: |
+      #clear Unattended-Upgrade::Allowed-Origins;
+      #clear Unattended-Upgrade::Origins-Pattern;
+      Unattended-Upgrade::Allowed-Origins {
+        "${distro_id}:${distro_codename}-security";
+        "${distro_id}ESMApps:${distro_codename}-apps-security";
+        "${distro_id}ESM:${distro_codename}-infra-security";
+      };
+      Unattended-Upgrade::Automatic-Reboot "false";
+    mode: "0644"
+
+- name: Timers of the automatic updates active
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop: [apt-daily.timer, apt-daily-upgrade.timer]
+
+# needrestart (called by APT after each update): on Ubuntu, it restarts the
+# affected services on its own (mode "a"). List mode ("l"): it only lists
+# them; they move to the new libraries when the VM restarts, in the slot
+# below.
+- name: Services to restart listed by needrestart, never restarted on their own
+  ansible.builtin.copy:
+    dest: /etc/needrestart/conf.d/eupadev.conf
+    content: |
+      $nrconf{restart} = 'l';
+    mode: "0644"
+
+# Maintenance slot: every night at maintenance_hour (one hour per VM,
+# inventory), the VM restarts if and only if Ubuntu asks for it
+# (ConditionPathExists). No Persistent: a VM off at that hour does not
+# restart in the daytime when switched back on. maintenance.yml stays for an
+# immediate restart, with a check that the containers come back.
+- name: Restart service when requested
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/eupadev-maintenance.service
+    content: |
+      [Unit]
+      Description=Maintenance restart when Ubuntu asks for it
+      ConditionPathExists=/var/run/reboot-required
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/bin/systemctl reboot
+    mode: "0644"
+
+- name: Timer of the maintenance slot
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/eupadev-maintenance.timer
+    content: |
+      [Unit]
+      Description=Nightly maintenance slot
+
+      [Timer]
+      OnCalendar=*-*-* {{ maintenance_hour }}:00 UTC
+
+      [Install]
+      WantedBy=timers.target
+    mode: "0644"
+  register: base_maintenance_timer
+
+- name: Maintenance slot active
+  ansible.builtin.systemd_service:
+    name: eupadev-maintenance.timer
+    enabled: true
+    state: "{{ 'restarted' if base_maintenance_timer is changed else 'started' }}"
+    daemon_reload: true
+
+# Hardened SSH. sshd keeps the FIRST value read and reads sshd_config.d in
+# alphabetical order: "10-" comes before the cloud-init files (50-, 60-). The
+# file is validated before it is put in place, and Ubuntu's reload
+# (ExecReload) validates the whole configuration again: an error does not
+# cut access. Open connections stay open during a reload.
+- name: Harden SSH (key only, no root)
+  ansible.builtin.copy:
+    dest: /etc/ssh/sshd_config.d/10-eupadev.conf
+    content: |
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
+      PermitRootLogin no
+    mode: "0644"
+    validate: /usr/sbin/sshd -t -f %s
+  notify: Reload SSH

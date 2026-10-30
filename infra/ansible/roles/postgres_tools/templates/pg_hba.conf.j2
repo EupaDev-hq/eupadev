@@ -1,0 +1,12 @@
+# Managed by Ansible (role postgres_tools) — do not edit on the VM.
+# First matching line decides (PostgreSQL docs, pg_hba.conf).
+# TYPE     DATABASE  USER      ADDRESS  METHOD
+# Local socket of the container: docker exec (root of the VM) only.
+local      all       all                trust
+# The superuser never over the network.
+hostssl    all       postgres  all      reject
+# Tool roles (<tool>_owner|_app|_purge): TLS + password; roles.sql of the
+# core lets each role connect to its own tool's database only.
+hostssl    all       all       all      scram-sha-256
+# Everything else refused, in clear text as in TLS (CIS §6.8).
+host       all       all       all      reject

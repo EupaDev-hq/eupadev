@@ -1,0 +1,86 @@
+/* The requester's page: my requests on the left, settings and account in the top bar, one conversation with
+   iMessage-like bubbles (light: blue for mine, green for the others; dark: white and graphite on black).
+   Light and dark by `prefers-color-scheme` or the theme selector (`data-theme`); CSS variables shared with deep-chat's style objects (app.js). */
+:root {
+  --bg: #ffffff; --side: #f2f2f7; --surface: #ffffff; --surface-2: #f2f2f7; --text: #111111; --muted: #5c5c63; --border: #dcdce1;
+  --accent: #0a66d8; --accent-text: #ffffff; --danger: #c4261d; --ok: #1d7f3e; --warn: #9a5b00; --active: #e3e3ea;
+  --mine: #0a66d8; --mine-text: #ffffff; --theirs: #dcf8c6; --theirs-text: #111111;
+  --radius: 12px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #000000; --side: #1c1c1e; --surface: #1c1c1e; --surface-2: #2c2c2e; --text: #ffffff; --muted: #a1a1a8; --border: #38383a;
+    --accent: #409cff; --accent-text: #000000; --danger: #ff6961; --ok: #30d158; --warn: #ffd60a; --active: #2c2c2e;
+    --mine: #ffffff; --mine-text: #000000; --theirs: #262629; --theirs-text: #ffffff; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #000000; --side: #1c1c1e; --surface: #1c1c1e; --surface-2: #2c2c2e; --text: #ffffff; --muted: #a1a1a8; --border: #38383a;
+  --accent: #409cff; --accent-text: #000000; --danger: #ff6961; --ok: #30d158; --warn: #ffd60a; --active: #2c2c2e;
+  --mine: #ffffff; --mine-text: #000000; --theirs: #262629; --theirs-text: #ffffff; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html { font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: var(--text); background: var(--bg); }
+body { margin: 0; height: 100vh; display: grid; grid-template-columns: 16.5rem 1fr; }
+a { color: var(--accent); }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* Left: brand, "New request", my requests. */
+.side { display: flex; flex-direction: column; gap: 0.75rem; min-height: 0; padding: 0.9rem 0.6rem; background: var(--side); border-right: 1px solid var(--border); }
+.brand { font-weight: 700; font-size: 1.05rem; text-decoration: none; color: var(--text); padding: 0.2rem 0.6rem; }
+.requests { flex: 1; min-height: 0; overflow-y: auto; display: grid; align-content: start; gap: 0.15rem; }
+.requests h2 { font-size: 0.78rem; font-weight: 600; color: var(--muted); margin: 0.9rem 0.6rem 0.3rem; }
+.requests a { display: block; padding: 0.4rem 0.6rem; border-radius: 8px; color: var(--text); text-decoration: none; font-size: 0.92rem; }
+.requests a:hover, .requests a[aria-current="page"] { background: var(--active); }
+.requests a .sub { display: block; font-size: 0.78rem; color: var(--muted); }
+.requests a.new { font-weight: 600; }
+.requests a.new::before { content: "+"; display: inline-block; width: 1.2rem; color: var(--accent); font-weight: 700; }
+.requests .empty { margin: 0 0.6rem; color: var(--muted); font-size: 0.88rem; }
+.top { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 0.5rem 0.75rem; padding: 0.6rem 1rem; border-bottom: 1px solid var(--border); }
+.account { font-weight: 600; font-size: 0.92rem; margin-right: auto; }
+.account .roles { font-weight: 400; color: var(--muted); }
+
+/* Right: one centred column, like a chat. */
+.column { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.main { flex: 1; min-height: 0; width: min(100%, 48rem); margin: 0 auto; padding: 1rem 1rem 0.5rem; display: flex; flex-direction: column; }
+.notice { padding: 0.25rem 1rem 0.75rem; color: var(--muted); font-size: 0.75rem; text-align: center; }
+.notice p { margin: 0 auto; max-width: 48rem; }
+
+h1 { font-size: 1.35rem; margin: 0 0 1rem; text-wrap: balance; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1rem; }
+.badge { display: inline-block; padding: 0.1rem 0.55rem; border-radius: 999px; font-size: 0.75rem; font-weight: 600; background: var(--surface-2); color: var(--muted); }
+.badge.you { background: var(--accent); color: var(--accent-text); }
+.badge.gate { color: var(--warn); }
+.badge.done { color: var(--ok); }
+
+button, select, input, textarea { font: inherit; color: inherit; }
+button, .button { display: inline-block; cursor: pointer; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); padding: 0.4rem 0.85rem; text-decoration: none; line-height: 1.3; }
+button.primary, .button.primary { background: var(--accent); color: var(--accent-text); border-color: transparent; font-weight: 600; }
+button.danger { color: var(--danger); }
+button.ghost { background: transparent; border-color: transparent; color: var(--muted); }
+button:disabled { opacity: 0.6; cursor: default; }
+button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+select { padding: 0.25rem 0.4rem; border-radius: 8px; border: 1px solid var(--border); background: var(--surface); font-size: 0.85rem; }
+form.fields { display: grid; gap: 0.75rem; }
+form.fields label { display: grid; gap: 0.25rem; font-size: 0.9rem; color: var(--muted); }
+input, textarea { padding: 0.55rem 0.7rem; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+textarea { min-height: 7rem; resize: vertical; }
+.row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+.error { color: var(--danger); margin: 0.5rem 0 0; }
+
+.home { margin: auto 0; padding-block: 1rem; }
+.home h1 { font-size: 1.7rem; font-weight: 600; text-align: center; }
+.conv-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 0.25rem 1rem; padding-bottom: 0.5rem; }
+.conv-head h1 { margin: 0; font-size: 1.05rem; font-weight: 600; }
+.conv-head .slug { color: var(--muted); font-weight: 400; }
+deep-chat { display: block; flex: 1; min-height: 0; width: 100%; }
+.opinions { display: grid; gap: 0.5rem; padding-top: 0.5rem; }
+.opinions input { flex: 1 1 16rem; }
+
+/* Phones: the list above the conversation, the page scrolls. */
+@media (max-width: 760px) {
+  body { display: block; height: auto; }
+  .side { border-right: 0; border-bottom: 1px solid var(--border); }
+  .requests { max-height: 30vh; }
+  .main { min-height: 80vh; }
+}

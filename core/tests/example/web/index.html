@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Example — demonstration of the core's modules</title>
+  <link rel="stylesheet" href="/style.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <header>
+    <h1>Example</h1>
+    <nav aria-label="Pages">
+      <a href="#/">List</a>
+      <a href="#/new">New item</a>
+      <a href="#/stats">Statistics</a>
+      <a href="#/rich">Rich text</a>
+    </nav>
+  </header>
+  <main id="main">
+    <p>Loading…</p>
+  </main>
+
+  <template id="tpl-list">
+    <section>
+      <h2>Items</h2>
+      <p data-state="" aria-live="polite" class="state"></p>
+      <ul id="items" class="items"></ul>
+      <p id="empty" hidden>No item.</p>
+      <p><a id="export" href="#/">Export as CSV</a></p>
+    </section>
+  </template>
+
+  <template id="tpl-item">
+    <li>
+      <a data-field="name" data-link="detail" href="#/"></a>
+      <span class="status" data-field="status"></span>
+      <span class="note" data-field="note"></span>
+      <button type="button" data-action="delete">Delete</button>
+    </li>
+  </template>
+
+  <template id="tpl-detail">
+    <section>
+      <h2 data-field="name"></h2>
+      <dl>
+        <dt>Identifier</dt><dd data-field="id"></dd>
+        <dt>Status</dt><dd data-field="status"></dd>
+        <dt>Note</dt><dd data-field="note"></dd>
+      </dl>
+      <a href="#/">Back to the list</a>
+    </section>
+  </template>
+
+  <template id="tpl-new">
+    <section>
+      <h2>New item</h2>
+      <form id="form-item" novalidate>
+        <div class="field">
+          <label for="name">Name</label>
+          <input id="name" name="name" type="text" autocomplete="off">
+        </div>
+        <div class="field">
+          <label for="status">Status</label>
+          <select id="status" name="status">
+            <option value="open">Open</option>
+            <option value="closed">Closed</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="note">Note</label>
+          <textarea id="note" name="note" rows="3"></textarea>
+        </div>
+        <button type="submit">Create</button>
+        <p data-state="" aria-live="polite" class="state"></p>
+      </form>
+    </section>
+  </template>
+
+  <template id="tpl-stats">
+    <section>
+      <h2>Statistics</h2>
+      <div id="chart"></div>
+    </section>
+  </template>
+
+  <template id="tpl-rich">
+    <section>
+      <h2>Rich text</h2>
+      <p>Last note shown in two ways: escaped (<code>html</code> template) then sanitised (DOMPurify).</p>
+      <h3>Escaped</h3>
+      <div id="escaped"></div>
+      <h3>Sanitised</h3>
+      <div id="sanitized"></div>
+    </section>
+  </template>
+
+  <template id="tpl-not-found">
+    <section>
+      <h2>Page not found</h2>
+      <p>The path <code data-field="path"></code> does not exist. <a href="#/">Back to the list</a></p>
+    </section>
+  </template>
+</body>
+</html>

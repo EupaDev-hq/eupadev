@@ -1,0 +1,137 @@
+# Non-secret settings, common to every machine.
+# The secrets are in vault.yml (encrypted), under the names vault_*.
+
+base_domain: eupadev.org
+
+# Public name of the requesters' page (chat step 6, ADR-024): second site
+# block of caddy-auth, reverse proxy to the engine; DASHBOARD_URL, the
+# eupadev-web callback and its Keycloak redirect URI derive from it. "chat"
+# is in deployer_reserved_names: no tool slug can take it (tools are
+# <slug>.<base_domain>).
+chat_domain: "chat.{{ base_domain }}"
+
+# Language of the end-user texts (L10, ADR-025): the engine's mails and pages
+# (EUPADEV_LANGUAGE, orchestrator/lang/<language>.json) and the mock-up frame
+# page of the deployer (roles/deployer/lang/<language>.json). French on the lab.
+eupadev_language: fr
+
+gitea_domain: "git.{{ base_domain }}"
+
+# TLS of the public Caddys (forge, auth.<domain> and the chat page, Previews
+# and mock-ups, Prod): "internal" = Caddy's own authority (first pass of a new
+# lab, role lab_ca); an email address = Let's Encrypt by the DNS-01 challenge
+# at OVH (ADR-015, option 1: wildcard certificates, nothing exposed), which
+# needs caddy_image (OVH DNS module) and the vault vault-ovh.yml
+# (vault_ovh_application_key, vault_ovh_application_secret, vault_ovh_consumer_key).
+caddy_tls: admin@eupadev.org
+
+# Caddy image WITH the OVH DNS module, BY DIGEST (registry/eupadev/caddy@sha256:…):
+# last line "Caddy digest: …" of the pipeline of the `caddy` repository
+# (engine-digest.yml -e repo=caddy). Empty: the official image (plain Caddy,
+# caddy_tls internal only).
+caddy_image: "git.eupadev.org/eupadev/caddy@sha256:c1684114136c4aabb91cb0bd6b64fb2d993521e19025f86212bdf6c61d5d1591"
+caddy_image_official: caddy:2.11.6-alpine@sha256:d44355d3c2149dc580ce2cac735955d1c08d3d00882c30489c241aa51a5c10d9
+
+# Let's Encrypt STAGING (certificates trusted by nobody, no rate limit): first
+# run of a lab or after a change of the OVH credentials
+# (-e caddy_acme_staging=true), then back to production (new certificates).
+caddy_acme_staging: false
+caddy_acme_ca: "https://acme{{ '-staging' if caddy_acme_staging | bool else '' }}-v02.api.letsencrypt.org/directory"
+
+# How each Caddy reads the OVH credentials: Compose secrets decrypted in memory
+# by systemd-creds (orchestrator, CI and tools VMs); the forge overrides it
+# (its .env already carries its secrets, group_vars/forge).
+caddy_ovh:
+  application_key: "{file./run/secrets/ovh_application_key}"
+  application_secret: "{file./run/secrets/ovh_application_secret}"
+  consumer_key: "{file./run/secrets/ovh_consumer_key}"
+
+# Global options of every public Caddyfile (caddy_tls != internal): one
+# certificate per site block, wildcard ones (*.<domain>, *.preview.<domain>)
+# by DNS-01, so no tool name leaks in the Certificate Transparency logs and
+# each Caddy asks for a distinct set of names (no duplicate-certificate limit).
+caddy_acme_global: |-
+  acme_ca {{ caddy_acme_ca }}
+  acme_dns ovh {
+  	endpoint ovh-eu
+  	application_key {{ caddy_ovh.application_key }}
+  	application_secret {{ caddy_ovh.application_secret }}
+  	consumer_key {{ caddy_ovh.consumer_key }}
+  }
+
+# OVH credentials as systemd-creds secrets of the CI and tools VMs (role
+# deployer; uid 0: the Caddy image runs as root); the orchestrator VM lists
+# the same three in orchestrator_secrets. Empty when the vault is absent
+# (caddy_tls internal).
+caddy_ovh_secrets:
+  - name: ovh_application_key
+    uid: 0
+    value: "{{ vault_ovh_application_key | default('') }}"
+  - name: ovh_application_secret
+    uid: 0
+    value: "{{ vault_ovh_application_secret | default('') }}"
+  - name: ovh_consumer_key
+    uid: 0
+    value: "{{ vault_ovh_consumer_key | default('') }}"
+
+forge_ip: "{{ hostvars[groups['forge'][0]].ansible_host }}"
+
+# Image the jobs of the "image" runner run in: pinned version AND digest
+# (a public tag can be moved, ROADMAP §8.14 B).
+runner_job_image: gitea/runner-images:ubuntu-24.04-v26.10.01@sha256:0e62e56b382ebf485bff1e51a05cbe27c708545a2e91425467fd31eb3e249521
+
+# The two runners of the CI VM (audit I13, ROADMAP §8.14 B). A pipeline
+# picks its own with `runs-on`; its files are protected on agent/**
+# (gitea_branch_protections), so an agent cannot change runner.
+runner_instances:
+  - name: standard
+    description: secrets, tests, analysis — runs the agents' code, WITHOUT Docker
+    # Default image = CI golden image (private: the jobs name it with
+    # `container:` and the registry read badge). Pulled again for each job:
+    # it is rebuilt every week under the same tag.
+    label: "ci-standard:docker://{{ hostvars[groups['forge'][0]].gitea_org_variables.CI_IMAGE }}"
+    docker: false
+    force_pull: true
+  - name: image
+    description: build, scan and publication of the images — WITH the VM's Docker
+    label: "ci-image:docker://{{ runner_job_image }}"
+    docker: true
+    # Pinned public image, already present: no new pull (Docker Hub
+    # limits).
+    force_pull: false
+
+gitea_admin_user: forgeadmin
+gitea_admin_email: "admin@{{ base_domain }}"
+
+# Disk dedicated to /var/lib/docker, as LXD presents it in the VM
+# ("docker" device declared in infra/terraform). At a hosting provider,
+# replace it with the path of its volume.
+docker_disk_device: /dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_lxd_docker
+
+# Storage of containerd (images, containers): on the separate Docker disk,
+# in a folder of its own (never shared with dockerd).
+containerd_root: /var/lib/docker/containerd-store
+# Size beyond which BuildKit's garbage collector empties the cache.
+docker_buildkit_cache_max: 10GB
+
+# Ports open in the firewall of each VM (completed per group).
+ufw_allowed_ports: [22]
+
+# Backups (backup role, verify-backup.yml): on the separate Docker disk,
+# 7 dumps of the forge (≈ 0.9 GB each) do not fit on the system disk.
+backup_dir: /var/lib/docker/backups
+
+# Swap file of each VM (base role): size passed to fallocate.
+swap_size: 2G
+
+# Smokescreen (Stripe, MIT), shared by the agents' proxy (role agent_proxies)
+# and the core tools' egress proxy (deployer role, d5).
+# Binary published by its CI (static, built by go build -trimpath, GitHub
+# provenance attestation), version and sha256 pinned. Only release published
+# on 2026-10-13: v0.1.0 (the rest of the development is continuous on
+# master). Sum read in the release's SHA256SUMS:
+# https://github.com/stripe/smokescreen/releases/tag/v0.1.0
+agent_proxies_smk_version: v0.1.0
+agent_proxies_smk_sha256: 4e1e447449e3cc653dae956208588722b5c8fe8ce894f633adc756a851d1ec46
+# Name of the published archive and of its folder.
+agent_proxies_smk_name: "smokescreen_{{ agent_proxies_smk_version }}_linux_amd64"

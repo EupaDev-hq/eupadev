@@ -1,0 +1,19 @@
+# Schemathesis settings for this tool, mounted by the kit (argsSchemathesis, option config). Only what the contract
+# cannot say goes here; every other check keeps its default.
+
+# 422 is the answer of a business rule to a request the schema accepts (unknown or inactive category, a note on a
+# status that takes none, a transition the database refuses, nothing to restore): expected, not over-strict
+# validation. 5xx is left out on purpose.
+[checks.positive_data_acceptance]
+expected-statuses = ["2xx", "401", "403", "404", "409", "422", "429"]
+
+# The list cursor is opaque: any string matches its schema, only one the API issued can be read (400 otherwise).
+[[operations]]
+include-operation-id = "listRequests"
+checks.positive_data_acceptance.expected-statuses = ["2xx", "400", "401", "403", "404", "409", "422", "429"]
+
+# A file body: Schemathesis sends bytes the contract allows (any bytes for image/png), the core refuses content
+# whose signature is not its declared type (415), and the cap is 5 MiB (413); an empty body is FILE_REQUIRED (400).
+[[operations]]
+include-operation-id = "uploadAttachment"
+checks.positive_data_acceptance.expected-statuses = ["2xx", "400", "401", "403", "404", "413", "415", "422", "429"]

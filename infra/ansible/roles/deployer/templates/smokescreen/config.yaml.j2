@@ -1,0 +1,10 @@
+# Managed by Ansible (deployer role) — Smokescreen of the core tools.
+port: 4750
+acl_file: /etc/smokescreen/acl.yaml
+# Without client TLS, Smokescreen refuses everything unless this applies the
+# ACL's "default" rule (config file only).
+allow_missing_role: true
+# The identity provider has a private address: allowed explicitly, its port
+# only (private ranges stay refused for everything else).
+allow_addresses:
+  - "{{ deployer_idp_address }}"

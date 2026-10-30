@@ -1,0 +1,96 @@
+# Real check of the public certificates (ADR-015, option 1): Let's Encrypt by
+# the DNS-01 challenge at OVH, obtained by each Caddy of the platform.
+#   ansible-playbook verify-letsencrypt.yml </dev/null
+# 1. From the CI VM, as an outside browser would (lab DNS): every public site
+#    presents a certificate issued by Let's Encrypt (production, or staging
+#    when caddy_acme_staging), for the right names (wildcards for Previews
+#    and Prod: only possible by DNS-01), valid for at least 7 more days.
+# 2. On each VM with a public Caddy: the running image is caddy_image (OVH
+#    module) and the Caddyfile carries the renewal configuration (acme_dns
+#    ovh, ACME directory of the switch); Caddy renews by itself.
+- name: Public certificates seen from the CI VM
+  hosts: "{{ groups['ci'][0] }}"
+  become: true
+  gather_facts: false
+  vars:
+    # Staging and production share O = Let's Encrypt; only staging has (STAGING) in its CN.
+    issuer: "Let's Encrypt{{ ' (STAGING)' if caddy_acme_staging | bool else '' }}"
+    sites:
+      - { name: "git.{{ base_domain }}", san: "git.{{ base_domain }}" }
+      - { name: "auth.{{ base_domain }}", san: "auth.{{ base_domain }}" }
+      - { name: "{{ chat_domain }}", san: "{{ chat_domain }}" }
+      - { name: "mockup.{{ base_domain }}", san: "mockup.{{ base_domain }}" }
+      - { name: "check-{{ 999999 | random }}.preview.{{ base_domain }}", san: "*.preview.{{ base_domain }}" }
+      - { name: "check-{{ 999999 | random }}.{{ base_domain }}", san: "*.{{ base_domain }}" }
+  tasks:
+    - name: Let's Encrypt is switched on
+      ansible.builtin.assert:
+        that: caddy_tls != 'internal'
+        fail_msg: "caddy_tls: internal (group_vars/all/vars.yml): nothing to test."
+        quiet: true
+
+    # No verification by openssl here (staging is trusted by nobody): the
+    # certificate is read, then its issuer and names are asserted.
+    - name: Certificate of each site (issuer, names, 7 days left)
+      ansible.builtin.shell:
+        cmd: >-
+          set -o pipefail;
+          openssl s_client -connect {{ item.name }}:443 -servername {{ item.name }} </dev/null 2>/dev/null
+          | openssl x509 -noout -issuer -ext subjectAltName -checkend 604800
+        executable: /bin/bash
+      loop: "{{ sites }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: certs
+      changed_when: false
+      failed_when: false
+
+    - name: Issued by Let's Encrypt for the expected name, not about to expire
+      ansible.builtin.assert:
+        that:
+          - item.rc == 0
+          - item.stdout is search("O ?= ?Let's Encrypt,")
+          - (item.stdout is search("\\(STAGING\\)")) == (caddy_acme_staging | bool)
+          - item.stdout is search("DNS:" ~ (item.item.san | regex_escape) ~ "(,|\\s|$)")
+        fail_msg: "{{ item.item.name }} (expected {{ issuer }}, {{ item.item.san }}, rc={{ item.rc }}):\n{{ item.stdout }}\n{{ item.stderr }}"
+        quiet: true
+      loop: "{{ certs.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+
+- name: Renewal configuration on each public Caddy
+  hosts: forge:orchestrator:ci:tools
+  become: true
+  gather_facts: false
+  vars:
+    caddy:
+      forge: { dir: /opt/eupadev/forge, service: caddy, file: Caddyfile }
+      orchestrator: { dir: /opt/eupadev/orchestrator, service: caddy-auth, file: Caddyfile-auth }
+      ci: { dir: /opt/eupadev/deployer, service: caddy, file: Caddyfile }
+      tools: { dir: /opt/eupadev/deployer, service: caddy, file: Caddyfile }
+    mine: "{{ caddy[group_names | select('in', caddy) | first] }}"
+  tasks:
+    - name: Running image of Caddy
+      ansible.builtin.command:
+        cmd: "docker compose ps --format '{{ '{{' }}.Image{{ '}}' }}' {{ mine.service }}"
+        chdir: "{{ mine.dir }}"
+      register: image
+      changed_when: false
+
+    - name: Caddyfile on the VM
+      ansible.builtin.command:
+        cmd: "cat {{ mine.dir }}/{{ mine.file }}"
+      register: caddyfile
+      changed_when: false
+
+    - name: Platform image (OVH module) and ACME configuration of the switch
+      ansible.builtin.assert:
+        that:
+          - image.stdout.strip() == caddy_image
+          - "'acme_dns ovh' in caddyfile.stdout"
+          - ('acme_ca ' ~ caddy_acme_ca) in caddyfile.stdout
+        fail_msg: >-
+          {{ mine.service }}: image {{ image.stdout }} (expected {{ caddy_image }});
+          acme_dns ovh in {{ mine.file }}: {{ 'acme_dns ovh' in caddyfile.stdout }};
+          acme_ca {{ caddy_acme_ca }}: {{ ('acme_ca ' ~ caddy_acme_ca) in caddyfile.stdout }}
+        quiet: true

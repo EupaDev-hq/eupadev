@@ -1,0 +1,53 @@
+# PostgreSQL of the core tools on a deployment target VM (S4, ADR-022): one
+# server per VM (CI VM: Previews; tools VM: Prod), one database and three
+# roles per tool, created by register-tools.yml (Gate 1 entry, D-E5).
+# Never published: eupadev-deployer plugs this container into the
+# internal network of each core tool, like Caddy. TLS 1.3 only, certificate
+# signed by the base authority (role db_pki), our own pg_hba.
+name: tools-db
+
+services:
+  db:
+    image: postgres:18.6-alpine@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873
+    # Fixed name: the tools reach it as `tools-db` (certificate name).
+    container_name: tools-db
+    restart: unless-stopped
+    environment:
+      # Only for initdb: the superuser gets no password at all. Our hba_file
+      # replaces the image's (which this setting would open): the superuser
+      # connects through the local socket only (docker exec, root of the VM).
+      POSTGRES_HOST_AUTH_METHOD: trust
+    command:
+      - postgres
+      - -c
+      - ssl=on
+      - -c
+      - ssl_cert_file=/tls/server.crt
+      - -c
+      - ssl_key_file=/tls/server.key
+      - -c
+      - ssl_min_protocol_version=TLSv1.3
+      - -c
+      - hba_file=/tls/pg_hba.conf
+      - -c
+      - password_encryption=scram-sha-256
+    volumes:
+      - db:/var/lib/postgresql
+      - ./tls:/tls:ro
+    # Plugged into many tool networks: never relays between them.
+    sysctls: { net.ipv4.ip_forward: 0 }
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 10s
+      retries: 6
+    mem_limit: 256m
+    networks: [internal]
+
+# A network is needed to exist; internal, no egress. The tool networks are
+# added by eupadev-deployer.
+networks:
+  internal:
+    internal: true
+
+volumes:
+  db:

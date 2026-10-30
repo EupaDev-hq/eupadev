@@ -1,0 +1,143 @@
+# CI of the common core (@eupadev/core, ADR-019): types (JSDoc checked by
+# tsc), HTTP tests, auth without network and permanent replay of the
+# advisories, database and session tests against a throwaway PostgreSQL run
+# by Docker (image by digest, tests/helpers/), test realm imported into a
+# throwaway Keycloak (tests/keycloak/), OIDC + sessions + sign-outs against
+# both (step 4), web protections (step 5: CSRF, rate limit across two
+# instances, in test and test:db), front modules in a real Chromium
+# (Playwright + axe-core, step 6), Squawk on the core's migrations (ADR-004),
+# package cap (85, Fastify arm) and size bound (≤ 3,000 lines outside tests
+# for 0.1.0, §5). Job `kit` (step 7): the kit's twelve SEC-* on the example
+# tool run by kit/compose.test.yml (two instances, Caddy, PostgreSQL,
+# Keycloak, Mailpit), deliberate mutations, two-user helpers, Schemathesis
+# and k6.
+name: Core — types, tests, migration
+
+on:
+  push:
+    paths: ["core/**", "images/keycloak/Dockerfile", ".github/workflows/core.yml"]
+  pull_request:
+    paths: ["core/**", "images/keycloak/Dockerfile", ".github/workflows/core.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        # Explicit bash = -eo pipefail.
+        shell: bash
+        working-directory: core
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Node ≥ 24 (§2.1.4 "common settings"); the golden image will follow (R3).
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.22.1
+
+      # pnpm of packageManager (12.16.1) through corepack, like the golden image.
+      - name: Pinned pnpm
+        run: |
+          npm install -g corepack@0.36.0
+          corepack enable
+          pnpm --version
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Types (JSDoc, tsc --checkJs --strict)
+        run: pnpm typecheck
+
+      - name: HTTP tests, contract linter, auth without network, advisory replay, pure front functions
+        run: pnpm test
+
+      # Step 6: demonstration page under the core's CSP (Trusted Types),
+      # zero securitypolicyviolation outside DOMPurify parsing, SEC-XSS, axe-core.
+      - name: Front modules (real Chromium)
+        run: |
+          pnpm exec playwright install --with-deps chromium
+          pnpm test:front
+
+      - name: Database and session tests (throwaway PostgreSQL)
+        run: pnpm test:db
+
+      # Test realm `tools` (R8) imported by the platform's Keycloak (same
+      # digest as the base of keycloak_image), sign-in of each person, client
+      # roles in the ID token.
+      - name: Keycloak test realm (throwaway Keycloak)
+        run: |
+          base="$(grep -m1 -oE 'quay\.io/keycloak/keycloak:[^ ]+@sha256:[0-9a-f]{64}' ../images/keycloak/Dockerfile)"
+          grep -qF "'$base'" tests/helpers/throwaway-keycloak.js || { echo "test image ≠ base of images/keycloak/Dockerfile ($base)"; exit 1; }
+          pnpm test:keycloak
+
+      # Step 4: real sign-in through the Keycloak form, callback, refusals,
+      # regeneration, token_version, clock moved forward, two instances on the
+      # same database, RP-initiated and back-channel logout (Keycloak →
+      # host.docker.internal:3000: instance A listens on port 3000).
+      - name: OIDC, sessions, sign-outs (throwaway Keycloak + PostgreSQL)
+        run: pnpm test:auth
+
+      # Squawk, official binary pinned by digest (ADR-005), same rules
+      # excluded as ADR-004 (prefer-robust-stmts, require-concurrent-index-*).
+      - name: Squawk on the core's migrations
+        run: |
+          curl -fsSLo "$RUNNER_TEMP/squawk" "https://github.com/sbdchd/squawk/releases/download/v2.70.0/squawk-linux-x64"
+          echo "836ba2ab0c0ec30ae02c9f2cec065b341ff853765ceaa3965c22109c2f53eb1c  $RUNNER_TEMP/squawk" | sha256sum -c -
+          chmod 0755 "$RUNNER_TEMP/squawk"
+          "$RUNNER_TEMP/squawk" --exclude prefer-robust-stmts,require-concurrent-index-creation,require-concurrent-index-deletion migrations/*.sql tests/example/db/migrations/*.sql
+
+      # Supply chain (§2.11, D9): absolute cap of 85 packages on the web
+      # image, empty allowBuilds, exact versions in package.json.
+      - name: Package cap and pnpm settings
+        run: |
+          n="$(pnpm ls --prod --depth Infinity --parseable | sort -u | grep -c node_modules)"
+          echo "production packages installed: $n"
+          test "$n" -le 95  # ADR-023: node-pg-migrate is a runtime dependency
+          grep -q '^allowBuilds: {}$' pnpm-workspace.yaml
+          node -e '
+            const p = require("./package.json");
+            for (const [n, v] of Object.entries({ ...p.dependencies, ...p.devDependencies }))
+              if (!/^\d+\.\d+\.\d+$/.test(v)) { console.error(`${n}@${v}: exact version expected`); process.exit(1); }'
+
+      - name: Size bound (≤ 3,000 lines outside tests)
+        run: |
+          n="$(cat src/*.js bin/*.js web/*.js migrations/*.sql sql/*.sql | wc -l)"
+          echo "lines outside tests: $n"
+          test "$n" -le 3000
+
+  kit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+        working-directory: core
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.22.1
+
+      - name: Pinned pnpm
+        run: |
+          npm install -g corepack@0.36.0
+          corepack enable
+          pnpm --version
+
+      - run: pnpm install --frozen-lockfile
+
+      # Test Compose stack (images by digest, Caddy on port 3000: addresses
+      # of the test realm), then kit green, mutations killed, two users
+      # (Chromium), Schemathesis and k6 in containers.
+      - name: SEC-* kit on the example tool (test Compose)
+        run: |
+          pnpm exec playwright install --with-deps chromium
+          pnpm test:kit

@@ -1,0 +1,25 @@
+# Removes a platform repository from a team that does not have "all
+# repositories" (gitea_org_pair = [service account, platform repository]).
+# Does nothing if the repository is already not linked to the team.
+- name: "Link of the platform repository with the team: {{ gitea_org_pair[1].name }}"
+  ansible.builtin.uri:
+    url: "{{ gitea_org_link_url }}"
+    url_username: "{{ gitea_admin_user }}"
+    url_password: "{{ vault_gitea_admin_password }}"
+    force_basic_auth: true
+    status_code: [200, 404]
+  vars:
+    gitea_org_team_id: "{{ (gitea_org_teams.json | selectattr('name', 'equalto', gitea_org_pair[0].team) | first).id }}"
+    gitea_org_link_url: "{{ gitea_api }}/teams/{{ gitea_org_team_id }}/repos/{{ gitea_org }}/{{ gitea_org_pair[1].name }}"
+  register: gitea_org_link
+
+- name: "Remove the repository from the team: {{ gitea_org_pair[1].name }}"
+  ansible.builtin.uri:
+    url: "{{ gitea_org_link.url }}"
+    method: DELETE
+    url_username: "{{ gitea_admin_user }}"
+    url_password: "{{ vault_gitea_admin_password }}"
+    force_basic_auth: true
+    status_code: 204
+  when: gitea_org_link.status == 200
+  changed_when: true

@@ -1,0 +1,47 @@
+# Contract of the tool: the core derives routes, roles (x-roles), validation and rate limits from it, and refuses
+# to start on a contract its linter refuses. One handler per operationId in api/. Written at Scoping by the contract
+# role; this placeholder (one operation) only lets a fresh tool start. Reference: examples/requests/openapi.yaml.
+openapi: 3.1.0
+info:
+  title: Tool
+  version: 0.1.0
+paths:
+  /api/me:
+    get:
+      operationId: getMe
+      description: The caller's roles, so the screens show only what the caller may do.
+      x-roles: [user]
+      responses:
+        '200':
+          description: The caller
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Me' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '429': { $ref: '#/components/responses/Problem' }
+components:
+  schemas:
+    Me:
+      type: object
+      additionalProperties: false
+      required: [roles]
+      properties:
+        roles: { type: array, maxItems: 10, items: { type: string, maxLength: 100 } }
+    Problem:
+      type: object
+      additionalProperties: false
+      properties:
+        type: { type: string }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        instance: { type: string }
+        code: { type: string }
+        error_id: { type: string }
+  responses:
+    Problem:
+      description: Error (RFC 9457)
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }

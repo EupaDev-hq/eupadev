@@ -1,0 +1,9 @@
+# Smokescreen (Stripe, MIT): HTTP CONNECT egress proxy of the agents.
+# Listens on all its interfaces: each internal task network the launcher
+# connects it to, and its egress network where it is alone (compose.yml).
+port: 4750
+acl_file: /etc/smokescreen/acl.yaml
+# Without client TLS, Smokescreen does not know the client's role and REFUSES
+# everything by default; this setting (absent from the command line) then
+# applies the "default" rule of the ACL.
+allow_missing_role: true
