@@ -1,4 +1,4 @@
-# Real test of step E2 ("engine for real" note §2) — can be rerun.
+# Real test of step E2 — can be rerun.
 #   ansible-playbook verify-engine-forge.yml
 # The ENGINE'S CODE (orchestrator/src/external/gitea-forge.ts, run by
 # orchestrator/scripts/trial-forge.ts) creates a tool on the real forge, from

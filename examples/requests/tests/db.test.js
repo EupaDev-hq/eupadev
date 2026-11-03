@@ -91,7 +91,7 @@ describe('catalogue (ADR-003) and privileges', () => {
   });
 });
 
-describe('transitions (§4)', () => {
+describe('transitions', () => {
   test('legal path: every status reached adds a history row with its actor', async () => {
     const id = await draft();
     await move('alice', id, 'submitted');

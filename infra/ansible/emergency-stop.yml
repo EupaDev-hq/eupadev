@@ -1,4 +1,4 @@
-# Emergency stop of the engine ("engine for real" note §3.7), from the softest
+# Emergency stop of the engine, from the softest
 # to the strongest. Always with -e confirm=yes (otherwise nothing is done).
 #   ansible-playbook emergency-stop.yml -e level=1 -e confirm=yes
 #     → agents paused: PAUSE_AGENTS=1, engine restarted; it takes no agent
@@ -16,7 +16,7 @@
 #     → resume after a level 1 or 2 (pause lifted, engine restarted). After a
 #       level 3: site.yml first (new tokens), then level=0.
 # Nothing is deleted in the database: everything resumes on restart (DBOS).
-# Two processes (docs/reflexions/2026-10-15-note-lanceur-service.md): the pilot
+# Two processes: the pilot
 # (orchestrator VM, service engine) and the executor (agents VM, service
 # executor, which takes the agent tasks); each level applies to both.
 - name: Emergency stop of the engine

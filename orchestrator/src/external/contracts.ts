@@ -1,7 +1,7 @@
 /**
- * Contracts of the outside world. A single implementation for now, fake and scriptable by
- * the tests (`fakes.ts`); the real implementations (Claude Code, Gitea, W4, mail) will come
- * behind the same signatures. Nothing more than what the fake and the future real one require.
+ * Contracts of the outside world: a fake implementation scriptable by the tests (`fakes.ts`) and the real ones behind
+ * the same signatures (`claude-engine.ts`, `gitea-forge.ts`, `ssh-deployer.ts`, `smtp-notifications.ts`), chosen by
+ * `world.ts`. Nothing more than what they require.
  */
 
 export type Role =
@@ -31,7 +31,7 @@ export function ownerRole(file: string): RoleCode | undefined {
 const CODE_COMMONS = /^(README\.md|\.env\.example|docs\/DECISIONS\.md|package\.json|pnpm-lock\.yaml)$/;
 /**
  * Write scope of a role ("Roles and folders" table of AGENTS.md), checked by the launcher before any push
- * (instructions analysis §3.3) and by the merge: builder `api/`, `db/`, `web/`, `tests/unit/` and the commons;
+ * and by the merge: builder `api/`, `db/`, `web/`, `tests/unit/` and the commons;
  * tests `tests/acceptance/`; contract `openapi.yaml` (root, E13), `tests/acceptance/features/`; scoping: everything (except the
  * forbidden paths, checked separately); read-only roles: nothing.
  */

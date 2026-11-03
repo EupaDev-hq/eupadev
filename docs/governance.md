@@ -5,11 +5,12 @@ starting point: every organisation that installs EupaDev adapts the roles,
 the thresholds and the timings to its own rules (last section). What the code
 enforces regardless is in `docs/architecture.md`.
 
-Status: the gates, guardrails and tables below are designed (`ROADMAP.md`
-§8.3 to §8.8, §8.15). The orchestrator that carries them exists as code and
-tests (gates, guardrails, budget) but does not run as a service yet; the
-dashboard is not built yet. The access rights of the robot accounts are built
-and tested.
+Status: the orchestrator that carries the gates, guardrails and budgets below
+runs on the lab VMs (code, tests and lab checks: `docs/architecture.md`);
+until the dashboard and gate pages are built, gates are decided through its
+local API. The checks at Gate 1, the budget framing and the decommissioning
+below are designed, not built (`ROADMAP.md` §8.3 to §8.8, §8.15). The access
+rights of the robot accounts are built and tested.
 
 ## Human roles
 
@@ -50,10 +51,10 @@ come through a new ADR, not through a free-text column.
 
 | Gate | When | What is approved | Shown to the approver |
 |---|---|---|---|
-| Gate 1 | After the first merge into `main`, before anything is reachable from outside the sandbox. **Once per tool.** | The tool's name and its domain name, and the checks below. | Name, requester, owning service, spec summary. |
+| Gate 1 | After the first merge into `main`, before the first Preview. **Once per tool.** | The tool's name and its domain name, and the checks below. | Name, requester, owning service, spec summary. |
 | Gate 2 | After the Preview checks have run and the requester has accepted the Preview. **Once per release.** | **One specific image digest**, never "the tool". | The digest, the check results recorded against it, the requester's acceptance. |
 
-Checks at Gate 1:
+Checks at Gate 1 (asked by the approver; the engine does not enforce them yet):
 
 - **Sensitive tool?** (HR, payroll, personal data): a sensitive tool gets its
   own VM.
@@ -106,16 +107,16 @@ the designated human and the emergency admin may) with one dated line in
 `.gitea/exceptions.txt` (or `.trivyignore.yaml`, 30 days at most), open a PR and
 merge it themselves: only they can merge a change to a protected file into
 `main`. The line expires on its own (one year at most); the forge audit log
-records the merge. Design note: `docs/reflexions/2026-10-13-note-exceptions.md`.
+records the merge.
 
 ## Budget and guardrails
 
 | Guardrail | Rule | Note |
 |---|---|---|
-| Iteration cap | A maximum number of code / review rounds per tool (order of 10 to 15 in Hardening, lower in Scoping). | Reached: the tool stops, the administrator is alerted. |
+| Iteration cap | A maximum number of code / review rounds per cycle (by default 25 rounds in Hardening, 5 attempts in Scoping; provisional values). | Reached: the tool stops, the administrator is alerted. |
 | Stagnation | The same gap reported on several consecutive rounds. | Treated like the cap. |
-| Timeout | A global time limit per tool (order of 1 to 2 hours of agent work). | Waiting for a human does not count. |
-| Budget per tool | A cost ceiling, compared with the **sum of the real costs** recorded per task in the `tasks` table, never a separate counter. | Overrun: human escalation, never a silent stop. |
+| Timeout | A limit of agent working time per phase (by default 4 hours; provisional). | Waiting for a human does not count. |
+| Budget per cycle | A cost ceiling per phase of each cycle (by default $10 for Scoping, $40 for Hardening, contract included; provisional), compared with the **sum of the real costs** recorded per task in the `tasks` table, never a separate counter. | Overrun: human escalation (approve with a top-up, clarify or refuse), never a silent stop. |
 | Concurrency | At most N agents at once on the platform, and 3 for one tool. | N is configuration, measured on the real machine. |
 | Budget per task | The engine itself receives a cost cap for the task. | Native option of the engine. |
 
@@ -123,8 +124,9 @@ records the merge. Design note: `docs/reflexions/2026-10-13-note-exceptions.md`.
 experience was that the ceiling per tool is reached not because of one costly
 step, but because the requester adds one story after another, each more
 expensive than the last, and the administrator is alerted late, on a tool that
-is already far along. The problem is scope growth, not money. Options being
-weighed, to settle while building the orchestrator:
+is already far along. The problem is scope growth, not money. Today the engine
+applies fixed envelopes per cycle and an escalation gate with a top-up; the
+options being weighed:
 
 1. A price announced before each story (small / medium / large, calibrated on
    recorded real costs), with the running total shown in the chat.
@@ -141,7 +143,8 @@ weighed, to settle while building the orchestrator:
   changes, otherwise contract, hardening, review, merge, Preview, Gate 2.
 - **Rollback** is a decision of the administrator: redeploy the previous
   release's digest, no rebuild, no agent involved.
-- **Decommissioning.** The registry records the last real access of each tool
+- **Decommissioning** (designed, not built: paused until the second real
+  tool). The registry records the last real access of each tool
   (from the reverse proxy logs, not the creation date). Without access for
   several weeks: graded reminders to the owning service, then an official
   notice, then a soft quarantine. Any real access resets the counter. Delays
@@ -180,7 +183,8 @@ checked mechanically becomes a check, the rest stays short.
   through Amazon Bedrock (EU inference profiles) or Google Vertex AI (EU
   region), both supported by Claude Code; the cloud provider is then the data
   processor (platform.claude.com, data residency and data retention pages,
-  read 2026-10-16).
+  read 2026-10-16). The platform's AI proxy calls the Anthropic API today:
+  the other providers are not wired yet.
 - The platform embeds no component under a licence that forbids redistribution
   in a product (AGPL, SSPL, BSL); a tool run from the command line in CI is
   acceptable, embedding it is not.
@@ -192,14 +196,14 @@ checked mechanically becomes a check, the rest stays short.
 | Item | Default | Where |
 |---|---|---|
 | Who holds Gate 1 and Gate 2 | the `admin` hat (group of the Keycloak client `eupadev-api`); four eyes at Gate 2 | Keycloak groups; `FOUR_EYES_EXEMPTION_SUBJECT` (lab only) |
-| Budget per tool, iteration cap, timeout | see above | orchestrator configuration |
+| Budget per cycle, iteration cap, timeout | see above | orchestrator configuration |
 | Concurrency N | 1 | environment variable |
-| Decommissioning delays | several weeks, graded | orchestrator configuration |
+| Decommissioning delays (not built yet) | several weeks, graded | orchestrator configuration |
 | Identity provider | Keycloak (users from its own accounts, LDAP/AD or any OIDC/SAML provider) | configuration, no code change |
 | Agent engine | Claude Code | launcher configuration; a second engine is wired on request |
-| Preview and Production domains | `<tool>.<domain>` | organisation variables of the forge |
+| Mock-up, Preview and Production domains | `<tool>.scoping.<domain>`, `<tool>.preview.<domain>`, `<tool>.<domain>` | engine (`TOOL_DOMAIN`) and deployer configuration |
 | Reminder delay for a pending gate | 24 hours | orchestrator configuration |
 
 The Scoping agent may record, per tool, an exception to a platform default
 (for example local accounts instead of OIDC) in `docs/DECISIONS.md` of that
-tool; the exception is visible to the approver at Gate 1.
+tool, which the approver reads in the tool's repository at Gate 1.

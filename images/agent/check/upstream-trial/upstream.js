@@ -1,4 +1,4 @@
-// Fake upstream server of the Anthropic API (instructions analysis §4-B): logs every request and answers, for
+// Fake upstream server of the Anthropic API: logs every request and answers, for
 // POST /v1/messages, a `tool_use` scripted by turn number, then `end_turn`. No paid call, no key.
 // Two listeners: 8080 = the upstream named by the launcher (ANTHROPIC_BASE_URL); 8081 = "attacker", the address that the
 // clone's trapped `.claude/settings.json` and the user settings try to impose (must stay at 0 requests).

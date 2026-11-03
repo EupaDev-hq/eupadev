@@ -1,5 +1,5 @@
 // One test per robustness fix (cold reviews, ROADMAP §8.13 D21 and rules A/B): each one failed on the previous
-// code (evidence in the fix report) and passes now. Real DBOS engine, throwaway PostgreSQL, fresh database
+// code and passes now. Real DBOS engine, throwaway PostgreSQL, fresh database
 // per test, scripted fakes; no state forced in the database except where that is precisely the simulated fault.
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';

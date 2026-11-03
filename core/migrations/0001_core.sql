@@ -1,5 +1,5 @@
 -- Up Migration
--- Tables and functions of the core (§2.5, §2.6 of the "common core" research; ADR-003, ADR-004, ADR-017), app schema,
+-- Tables and functions of the core (ADR-003, ADR-004, ADR-017, ADR-019), app schema,
 -- expansion only: no later version of the core drops or renames what a tool may reference.
 -- Applied by <tool>_owner (bin/migrate.js, table core_migrations); the grants target the group roles core_app and
 -- core_purge of sql/roles.sql. The triggers are not SECURITY DEFINER: they write with the rights of the role that
@@ -33,7 +33,7 @@ CREATE TABLE actor_identities (
 );
 CREATE INDEX actor_identities_actor ON actor_identities (actor_id);
 
--- ── Sessions (§2.3): `id.secret` token, only SHA-256(secret) stored ────────────
+-- ── Sessions: `id.secret` token, only SHA-256(secret) stored ────────────
 CREATE TABLE sessions (
   id                  text PRIMARY KEY CHECK (id ~ '^[A-Za-z0-9_-]{16,64}$'),
   secret_hash         bytea NOT NULL CHECK (octet_length(secret_hash) = 32),
@@ -50,7 +50,7 @@ CREATE INDEX sessions_actor ON sessions (actor_id);
 CREATE INDEX sessions_sid ON sessions (sid) WHERE sid IS NOT NULL;
 CREATE INDEX sessions_expiration ON sessions (absolute_expires_at);
 
--- ── Audit (§2.6, ADR-003): names of the changed columns, never a value nor jsonb ──
+-- ── Audit (ADR-003): names of the changed columns, never a value nor jsonb ──
 CREATE TABLE audit_log (
   id              bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   at              timestamptz NOT NULL DEFAULT now(),
@@ -66,7 +66,7 @@ CREATE TABLE audit_log (
 CREATE INDEX audit_log_row ON audit_log (table_name, row_id, id);
 CREATE INDEX audit_log_at ON audit_log (at);
 
--- ── Rate limiting (§2.7): one INSERT … ON CONFLICT statement per request ──
+-- ── Rate limiting: one INSERT … ON CONFLICT statement per request ──
 CREATE TABLE rate_limits (
   key          text NOT NULL,
   window_start timestamptz NOT NULL,

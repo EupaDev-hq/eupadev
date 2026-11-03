@@ -8,7 +8,7 @@ change and every Monday, to take in the security fixes.
 |---|---|---|
 | build | `base-node:build-24` | build stage of a tool (pnpm ready) |
 | run | `base-node:run-24` | final image of a tool (non-root, no npm/corepack/yarn) |
-| ci | `base-node:ci-24` | CI golden image: image of the `secrets`, `tests`, `analysis` jobs (runner `ci-standard`, no Docker) |
+| ci | `base-node:ci-24` | CI golden image: image of the `secrets`, `tests`, `analysis`, `guard-rails` jobs (runner `ci-standard`, no Docker) |
 
 Each build also gets a dated tag (`build-24-YYYYMMDD`,
 `run-24-YYYYMMDD`, `ci-24-YYYYMMDD`). The tools' pipelines read the address of the two
@@ -35,8 +35,8 @@ pinned versions, instead of being run by `docker run`.
 
 | Tool | Version | Licence | Origin |
 |---|---|---|---|
-| Node.js + pnpm | 22 / 12.16.1 | MIT | build variant |
-| gitleaks | 8.30.1 | MIT | recompiled from the Go module (checked by sum.golang.org) with Go 1.27.2 and `golang.org/x/crypto`, `x/text` raised: the published binary ships an old Go that Trivy refuses |
+| Node.js + pnpm | 24 / 12.16.1 | MIT | build variant |
+| gitleaks | 8.30.1 | MIT | recompiled from the Go module (checked by sum.golang.org) with Go 1.27.3 and `golang.org/x/crypto`, `x/text` raised: the published binary ships an old Go that Trivy refuses |
 | hadolint | 2.15.1 | GPL-3.0 | official binary, sha256 digest checked |
 | Opengrep | 1.30.0 | LGPL-2.1 | official binary, sha256 digest checked |
 | git | Debian | GPL | up-to-date Debian package |

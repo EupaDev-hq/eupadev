@@ -15,8 +15,7 @@ Docker). EupaDev must be installed and operated there over time,
 remotely, by a single person (the operator, a service provider), without
 the IT department learning a platform or losing control. Three ways: plug
 into the existing setup (A), bring one's own virtualisation (B), ask for
-standard Linux VMs and install everything inside them (C). Source:
-`docs/reflexions/2026-10-10-strategie-deploiement-et-exploitation.md`.
+standard Linux VMs and install everything inside them (C).
 
 ## Decision
 Install EupaDev as an appliance on standard Linux VMs provided by the IT
@@ -59,7 +58,7 @@ department, without ever accessing the hypervisor.
   restore a VM. Rebuilding from code reduces this risk without removing it.
 - **Confidentiality**: a client who refuses the sending to the AI cannot
   use EupaDev as is (except with a model hosted on its premises,
-  ADR-006); the chat notice makes users accountable, it filters nothing.
+  ADR-013); the chat notice makes users accountable, it filters nothing.
 - **Operator's workstation**: if compromised, it opens every client;
   separate keys limit the repair to removing the keys, not the attack. Its
   requirements are contractual commitments.

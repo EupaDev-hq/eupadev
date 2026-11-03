@@ -1,5 +1,4 @@
-# Agents VM: the two proxies next to the AI agent containers (ROADMAP §8.16
-# L3-L4, docs/reflexions/2026-10-13-note-proxy-ia.md).
+# Agents VM: the two proxies next to the AI agent containers (ROADMAP §8.16 L3-L4).
 #
 # Internal network PER TASK, created by the launcher (never here):
 #   docker network create --internal \

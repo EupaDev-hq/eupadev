@@ -1,5 +1,4 @@
-# Real-conditions check of the engine in service (E0, "engine for real"
-# note §2) — can be rerun.
+# Real-conditions check of the engine in service (E0) — can be rerun.
 #   ansible-playbook verify-engine.yml
 #   ansible-playbook verify-engine.yml -e restart_vm=true
 #     → also restarts the orchestrator VM and checks that the engine comes
@@ -351,8 +350,8 @@
             success_msg: "OK — cycle {{ engine_cycle }}: end_success"
             fail_msg: "FAILED — state {{ cycle_end.json.state }}, decisions/gate_1/gate_2 = {{ final.stdout }}"
 
-        # docs/reflexions/2026-10-15-note-lanceur-service.md: W1 at the pilot (orchestrator
-        # VM), each agent task (W2) at the executor of the agents VM.
+        # W1 at the pilot (orchestrator VM), each agent task (W2) at the executor
+        # of the agents VM.
         - name: Read who ran the cycle and its tasks (DBOS)
           ansible.builtin.command:
             argv: "{{ psql + [sql] }}"

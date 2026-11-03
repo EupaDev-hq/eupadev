@@ -1,11 +1,11 @@
-# Test Compose of the kit (§2.10, step 7): the tool as two instances behind Caddy, PostgreSQL (roles and
+# Test Compose of the kit (step 7): the tool as two instances behind Caddy, PostgreSQL (roles and
 # migrations of the core then of the tool), real Keycloak (test realm imported), Mailpit. Production posture for
 # the tool: read-only root, tmpfs /tmp, no capability, no-new-privileges, NODE_ENV=production.
 #
 # A single origin, http://localhost:3000, seen the same from the machine (browser, kit) and from the containers:
 # Caddy serves Keycloak there (/realms/, /resources/) and the tool; the two instances share Caddy's network
 # namespace (ports 3001 and 3002), so `localhost:3000` there is Caddy too (OIDC discovery, code exchange). These are
-# the addresses of the test realm (redirect_uri, post_logout_redirect_uri), unchanged. Note: docs/reflexions/2026-10-19-note-socle-kit.md (K6).
+# the addresses of the test realm (redirect_uri, post_logout_redirect_uri), unchanged.
 #
 # Example tool (or another tool, below) mounted from the repository (no built image yet: A-R0, step 9, K7); CORE_SRC
 # replaces src/ in the two instances (deliberate mutations of tests/kit.test.js). OIDC_CLIENT_SECRET: the test

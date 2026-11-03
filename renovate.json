@@ -1,6 +1,6 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "description": "Version tracking of the EupaDev repository (GitHub). Choices and limits: the version-tracking note of 2026-10-13 (private notes).",
+  "description": "Version tracking of the EupaDev repository (GitHub), run by .github/workflows/renovate.yml.",
   "extends": [
     "config:recommended",
     "docker:pinDigests",

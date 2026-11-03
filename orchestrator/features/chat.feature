@@ -1,4 +1,4 @@
-# Requester's chat, step 4 (docs/reflexions/2026-10-25-note-chat.md §6, ADR-024): the web page served by the engine,
+# Requester's chat, step 4 (ADR-024): the web page served by the engine,
 # played in a real Chromium (tag @web: features/support/web.ts). What the requester does in the page must
 # produce in the engine exactly what the CLI produces (scenario 11 of features/scoping.feature, replayed through the page).
 # Tag @t:<from>--<trigger>--><to> = transition of src/machine/states.ts covered (tests/feature-coverage.test.ts).

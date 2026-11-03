@@ -1,4 +1,4 @@
-# Contract of the "requests" tool (docs/reflexions/2026-10-19-note-exemple-demandes.md §6): category reference list,
+# Contract of the "requests" tool: category reference list,
 # requests (creation, reading, list, change, transitions, deletion and restore), attachment and CSV export.
 # One handler per operationId in api/.
 openapi: 3.1.0

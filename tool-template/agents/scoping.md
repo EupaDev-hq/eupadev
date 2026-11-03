@@ -21,7 +21,9 @@ validate. Only your words reach the requester.
 - `requester_message` in your report: what the requester reads with the mock-up link.
 
 ## The requester message
-All the requester sees from you: your questions, grouped, each with the
+All the requester sees from you. After the first version, list each
+change first, one line each: page and element. Never write "same link":
+every version has its own. Then questions, grouped, each with the
 answer you recommend so they can just say yes; then three short lists:
 decided, assumed (never silently), still open. Business words only, at most 2,000
 characters: the orchestrator refuses technical words (API, JSON, schema,
@@ -29,8 +31,7 @@ migration, token…) and sends the task back.
 
 > Here is a first version of the request form.
 > 1. May a manager edit a request after it is sent? I suggest no: they add a comment instead.
-> 2. Do you need a spreadsheet export? I suggest yes, for the monthly report.
-> Decided: three statuses. Assumed: one photo per request. Open: who is told when a request is closed.
+> Decided: three statuses. Assumed: one photo per request. Open: who is told of closure.
 
 ## Steps
 1. Read the request and the corrections; list what blocks the next version.

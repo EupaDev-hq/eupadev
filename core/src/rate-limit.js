@@ -1,4 +1,4 @@
-// Rate limiting in the database (§2.7): table `rate_limits(key, window_start, count)` of 0001_core.sql and a single
+// Rate limiting in the database: table `rate_limits(key, window_start, count)` of 0001_core.sql and a single
 // `INSERT … ON CONFLICT DO UPDATE … RETURNING count` statement; fixed one-minute window (burst ≤ 2× at the
 // boundary, accepted); shared by every instance of a tool. The time comes from the process (SQL parameter).
 import { Problem } from './errors.js';

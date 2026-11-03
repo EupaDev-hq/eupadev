@@ -19,6 +19,9 @@ one file per section below, same numbers in the titles):
 | "[orchestrator test]" checks of §8.12 (E1 to E15) not covered below | `known-errors-v1.feature` |
 | Technical incident (D21) | `technical-incident.feature` |
 
+Two later files have no section below: `chat.feature` (the requester web page,
+C1 to C3) and `launcher.feature` (measurement of the agent tasks, L0-1 to L0-6).
+
 The scenarios added while writing the Gherkin (11 bis, 21 bis, 23 ter, 36 quinquies,
 41 bis to 41 quater, E1 bis, E10 bis) and then during the robustness fixes (4 bis,
 41 ter bis, E15 bis, D21, D21 bis) cover transitions of the machine that the initial
@@ -51,7 +54,7 @@ transition never traced.
 12. A silent requester receives reminders at 24, 48 and 72 h; no agent is restarted.
 13. At 96 h (24 h after the 3rd reminder without an answer), the tool is paused, its mock-up container is stopped and the admin is notified.
 14. An answer from the requester resumes a paused tool where it stopped: mock-up restarted, then their message treated as a correction request.
-14 bis. After 30 days of pause without an answer, the tool is archived: mock-up and subdomain removed, repository read-only, history and costs kept, no new cycle possible.
+14 bis. After 30 days of pause without an answer, the tool is archived: mock-up and subdomain removed, archiving of the repository asked of the admin, history and costs kept, no new cycle possible.
 15. The requester can abandon their request from the chat before the merge; an abandoned creation is archived, never deleted.
 15 bis. After the merge, the requester can no longer abandon it themselves: they go through the admin, who cancels.
 16. A technical failure of the scoping is restarted with the error in the context.
@@ -106,7 +109,7 @@ D20 M5. An Opengrep finding keeps its identity (matchBasedId) when the line move
 40. A refusal at Gate 2 ends the cycle, notifies the requester and cleans up the resources; a refused creation is archived, a refused evolution leaves the tool in prod intact.
 40 bis. A cancellation by the admin of an evolution leaves the tool in prod intact; that of a creation archives the tool.
 40 ter. An archived tool can no longer receive a cycle; a tool has at most one cycle in progress.
-41. An admin gate without an answer after 3 reminders appears "waiting > 72 h" on the dashboard, without a 4th reminder (the weekly summary is checked by scenario 46).
+41. An admin gate without an answer after 3 reminders appears "waiting > 72 h" on the dashboard, without a 4th reminder, then one reminder a week until the decision (the weekly summary is checked by scenario 46).
 41 bis. A requester silent at the Preview is reminded 3 times and then shown "waiting > 72 h": neither pause nor abandonment after the merge.
 41 ter. A correction from the admin at a blocking gate becomes the instruction of the restarted step.
 41 ter bis. A correction without a top-up at the budget gate reopens the gate at once; the instruction goes with the first scoping started (D12).

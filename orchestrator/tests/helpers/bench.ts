@@ -141,7 +141,7 @@ const DETOURS: Partial<Record<StateId, Detour[]>> = {
   gate_overlap: [{ in: 'overlap_search', engine: (id) => ({ type: 'report', report: overlapReport(id, 'plausible', 'The tool "car-fleet" already covers the need') }) }],
   gate_scoping_blocked: [
     { in: 'repo_creation', forge: 'error' },
-    { in: 'scoping', engine: () => ({ type: 'failed', reason: 'npm install : ECONNRESET' }) },
+    { in: 'scoping', engine: () => ({ type: 'failed', reason: 'npm install: ECONNRESET' }) },
   ],
   gate_scoping_budget: [
     { in: 'overlap_search', engine: (id) => ({ type: 'report', report: overlapReport(id, 'not_plausible'), cost_usd: 10 }) },

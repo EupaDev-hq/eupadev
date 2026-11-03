@@ -1,4 +1,4 @@
-# pnpm settings of the core (§2.11 of the "common core" research): no install
+# pnpm settings of the core (ADR-019): no install
 # script run (empty allowBuilds), versions published at least one day ago, no
 # exotic dependency among the transitive ones.
 packages: []

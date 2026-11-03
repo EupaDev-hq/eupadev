@@ -1,4 +1,4 @@
-# Real test of the Preview pipeline (E5f, note 2026-10-21-note-e5-refresh.md)
+# Real test of the Preview pipeline (E5f)
 # — rerunnable, leaves nothing behind. Free: no AI call.
 #   ansible-playbook verify-engine-preview.yml </dev/null
 #   -e orchestrator_image=<digest>: a candidate engine image (pulled with a
@@ -18,7 +18,7 @@
 # 4. Injected fault (the scenario expects a wrong status) committed on main:
 #    new image, new Preview, acceptance red (the others green), so the
 #    engine reads a red pipeline (back to hardening) with the failing test
-#    taken from the job log (details.failures, note acceptance-on-preview 3.7).
+#    taken from the job log (details.failures).
 # 5. Features without tests/acceptance/playwright.config.js pushed on an
 #    agent branch: guard-rails red at push, naming the missing config.
 # 6. served gives the deployed digest (the results hold for that digest).

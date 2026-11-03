@@ -40,14 +40,23 @@ Feature: Hardening and review
     And task "builder" of iteration 1 has status "blocked"
     And the admin dashboard shows for task "builder" of iteration 1 reason "The contract requires a site_id column missing from the schema"
 
-  Scenario: A-R2a. A failed or blocked tests task stops the round: the builder is not started, only tests is restarted
+  Scenario: A-R2a. A failed or blocked tests task stops the round: the builder is not started; the next round restarts tests, then the builder that has never delivered, and the reviewers only come after it
     Given a creation cycle in state "hardening_execution"
     When the fake engine returns state "blocked" for "tests" with reason "The contract does not say who can read /tools"
     Then the cycle moves from "hardening_execution" to "hardening_evaluation" by "task:failed"
     And table "tasks" contains no "builder" task for iteration 1
     And the cycle moves from "hardening_evaluation" to "hardening_execution" by "guard:non_compliant"
-    And table "tasks" contains exactly one "tests" task for iteration 2
-    And table "tasks" contains no "builder" task for iteration 2
+    # Cycle 5 of the lab: a tests-only round followed by two reviews of a repository the builder had never touched.
+    When the fake engine returns a compliant report for roles "tests, builder"
+    Then table "tasks" contains exactly one "tests" task for iteration 2
+    And table "tasks" contains exactly one "builder" task for iteration 2
+    And task "tests" of iteration 2 was created before task "builder"
+    And the cycle moves from "hardening_execution" to "hardening_integration" by "task:done"
+    When the integration of the role branches succeeds
+    And the fake engine returns a compliant report for roles "security-reviewer, quality-reviewer"
+    Then the cycle moves from "hardening_integration" to "hardening_review" by "task:done"
+    And table "tasks" contains no "security-reviewer" task for iteration 1
+    And the engine received for task "security-reviewer" of iteration 2 this model, this effort and branch "integration/<cycle>/2"
 
   Scenario: A-R2a bis. A defect of the suite raised by the builder becomes a deviation of the tests role, even if it cites the contract; its other findings are not deviations
     Given a creation cycle in state "hardening_execution"

@@ -1,4 +1,4 @@
-// Chat step 4 (note 2026-10-25 §6, ADR-024): the requester's page in a real Chromium for the @web scenarios. The engine's
+// Chat step 4 (ADR-024): the requester's page in a real Chromium for the @web scenarios. The engine's
 // API of the scenario's bench is served on a local port, the fake IdP is played in-process (the same trick as
 // tests/web.test.ts: Playwright does not route the hops of a redirect chain, so `/auth/login` is fetched here and answered
 // with the callback URL Keycloak would send the requester back to), one browser for the session, one context per scenario.

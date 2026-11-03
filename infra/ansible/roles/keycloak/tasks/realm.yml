@@ -186,7 +186,7 @@
         label: "{{ item.username }}"
       no_log: true
 
-    # Ilan's `sub` (four-eyes exemption on the lab, engine contract) kept in a
+    # The `sub` of the `ilan` account (four-eyes exemption on the lab, engine contract) kept in a
     # local fact: read at the start of every pass, before the role
     # orchestrator (orchestrator_four_eyes_exemption_subject).
     - name: OIDC subject of ilan

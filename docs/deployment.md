@@ -14,7 +14,7 @@ means the decision is settled in `ROADMAP.md` §8.15 and nothing runs yet.
 5 VMs (forge, CI, orchestrator, AI agents, tools), not the 4-VM layout below.
 The lab's tools VM hosts the production of the generated tools behind a
 generic Caddy (`*.<domain>`), reached by the engine only through a restricted
-`deployment` account (ADR-014); previews stay on the CI VM.
+`deployment` account (ADR-022); previews stay on the CI VM.
 
 ## The appliance model
 
@@ -72,9 +72,9 @@ orchestrator VM, an AI agents VM and a tools VM).
 
 | Measure | Status |
 |---|---|
-| One container per tool, with its own network, RAM/CPU limits, a non-root user and a read-only file system | Decided, not built |
-| One PostgreSQL per VM, **one database and one account per tool**, with a connection cap and a maximum query duration; never a shared table (decision 5) | Decided, not built |
-| Previews run on the CI VM with a throw-away database, **never next to Production** (decision 6) | Decided, not built (no Preview exists yet) |
+| One container per tool, with its own network, RAM/CPU limits, a non-root user and a read-only file system | In place in the lab (`infra/compose/deployer/tool.compose.yml`; `verify-deployer.yml`, `verify-prod-switch.yml`) |
+| One PostgreSQL per VM, **one database and one account per tool**, with a connection cap and a maximum query duration; never a shared table (decision 5) | In place in the lab for core tools (one database and three roles per tool, `register-tools.yml`, `verify-deployer-core.yml`); connection cap and query duration: decided, not built |
+| Previews run on the CI VM with a throw-away database, **never next to Production** (decision 6) | In place in the lab (`verify-deployer.yml`, `verify-engine-preview.yml`): the Preview database is emptied on a new digest |
 | A sensitive tool (HR, payroll, personal data) gets **its own VM**, decided at Gate 1 (decision 6) | Decided, not built |
 | **Quarantine**: a new tool moves to the Mature tools VM after **4 weeks without incident**; the promotion is approved by the operator (decision 4) | Decided, not built |
 
@@ -89,8 +89,9 @@ the other tool's database (decision 7):
 - no load balancer and no API gateway for now: one instance per tool is
   enough for internal tools. Tools stay stateless to keep that door open.
 
-Status: decided, not built (Keycloak is not installed yet). Whether there is
-one central Caddy or one per tool VM is **open**.
+Status: decided, not built (Keycloak is in place, `verify-keycloak.yml`; calls
+between tools are not). Whether there is one central Caddy or one per tool VM
+is **open**.
 
 ## Monitoring and operations dashboard
 
@@ -100,7 +101,7 @@ one central Caddy or one per tool VM is **open**.
 | An **external probe** at the operator's site (decision 8); its direction (it polls the client, or the client notifies it) | Decided, not built; direction **open** |
 | Each tool registers itself in Gatus when deployed (decision 14) | Decided, not built |
 | Each tool exposes `/health`; the template's CI checks that the built image answers 200 on it | In place (`verify-template.yml`) |
-| `/health` also checks the tool's database | Decided, not built |
+| `/health` also checks the tool's database | In place (the core's `/health`, `core/src/http.js`) |
 | **Operations dashboard**: "does it work?" is the Gatus status page; "what needs doing?" is the Maintenance tab of the EupaDev dashboard (pending reboot, golden image, CVEs, missed backup, unused tool), which links to Gatus rather than redoing it (decision 14) | Decided, not built |
 
 ## Remote administration and diagnostics
@@ -124,8 +125,8 @@ and maintenance"). **In place** in the lab.
 - `needrestart` in list mode: no service (Docker included) is restarted on
   its own after an update.
 - **Night maintenance window**: when Ubuntu asks for a reboot, each VM
-  reboots at its own time (lab: 03:15, 03:30, 03:45 UTC), after the backup and
-  never two VMs at the same time.
+  reboots at its own time (lab: from 03:15 to 04:15 UTC, a quarter of an hour
+  apart), after the backup and never two VMs at the same time.
 - **Alert** if a reboot has been pending for more than 7 days (the check
   fails).
 - Immediate reboot by hand: `maintenance.yml` reboots only the VMs that need
@@ -139,10 +140,10 @@ backs up its own data.
 
 | Item | Status |
 |---|---|
-| Nightly application backup at 02:30 UTC with each service's native method (`gitea dump` for the forge, `pg_dump` for the orchestrator), 7 kept | In place |
+| Nightly application backup at 02:30 UTC with each service's native method (`gitea dump` for the forge, `pg_dump` for the orchestrator and Keycloak databases), 7 kept (4 on the forge) | In place |
 | Real restore tested automatically in throw-away containers | In place (`verify-backup.yml`) |
 | Encrypted copy outside the VMs (restic, to a target the client provides) | Decided, not built: today backups stay **on the VM** |
-| Backup of each tool's database | Decided, not built |
+| Backup of each tool's database | In place on the tools VM: one `pg_dump` per Production database (`verify-deployer-core.yml`) |
 
 Rebuilding = blank VMs + the Ansible recipes + the latest backup (procedure in
 `infra/README.md`). Details for the IT department: `docs/client-prerequisites.md`
@@ -156,13 +157,13 @@ From `ROADMAP.md` §8.15 (blockers found while writing the prerequisites):
 - **Data disk**: found by its LXD name (`docker_disk_device`), which does not
   exist on a VM supplied by the IT department.
 - **Certificates**: Caddy cannot yet use a certificate supplied by the client
-  (today `internal` or Let's Encrypt, the latter contrary to "nothing is
-  exposed").
+  (today `internal` or Let's Encrypt by DNS-01, which exposes nothing but needs
+  API access to the DNS host, OVH only today).
 - **Reversibility**: handing over the secrets vault to the client at the end
   of the contract is to be designed.
 - **Open questions**: one central Caddy or one per tool VM; direction of the
   external probe.
 
-Also planned for the client step: **OpenTofu + Incus** in place of Terraform +
-LXD ("free lab" work, `ROADMAP.md` §8.15, order of work step 5), and a Hyper-V
-test in the lab (decision 13).
+Also planned for the client step: a Hyper-V test in the lab (decision 13). The
+move of the lab to **OpenTofu + Incus** (ADR-010, rejected) does not concern a
+client installation, where the IT department provides the VMs.

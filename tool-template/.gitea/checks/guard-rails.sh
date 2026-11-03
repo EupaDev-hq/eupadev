@@ -280,7 +280,7 @@ if [ -f package.json ]; then
   node .gitea/checks/package.mjs package.json || red=1
 fi
 
-# --- 5. Acceptance suite against the Preview (note acceptance-on-preview) ----
+# --- 5. Acceptance suite against the Preview -----------------------------
 # Features without the Playwright config would turn the Preview job red: caught
 # here, on the agent branch. The Playwright image of acceptance.sh must be the
 # version of @playwright/test in package.json (Renovate bumps both).

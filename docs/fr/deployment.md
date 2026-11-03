@@ -17,7 +17,7 @@ encore. **Ouvert** : pas décidé. Aucune installation client n'existe encore :
 le labo compte 5 VM (forge, CI, orchestrateur, agents IA, outils), pas la
 disposition à 4 VM ci-dessous. La VM outils du labo porte la Prod des outils
 générés derrière un Caddy générique (`*.<domaine>`), que le moteur n'atteint
-que par un compte restreint `deployment` (ADR-014) ; les Previews restent sur
+que par un compte restreint `deployment` (ADR-022) ; les Previews restent sur
 la VM CI.
 
 ## Le modèle « appliance »
@@ -76,9 +76,9 @@ forge, une VM CI, une VM orchestrateur, une VM agents IA et une VM outils).
 
 | Mesure | Statut |
 |---|---|
-| Un conteneur par outil, avec son réseau, ses plafonds RAM/CPU, un utilisateur non-root et un système de fichiers en lecture seule | Décidé, pas construit |
-| Un PostgreSQL par VM, **une base et un compte par outil**, avec plafond de connexions et durée de requête maximale ; jamais de table partagée (décision 5) | Décidé, pas construit |
-| Les Previews tournent sur la VM CI avec une base jetable, **jamais à côté de la Production** (décision 6) | Décidé, pas construit (aucune Preview n'existe encore) |
+| Un conteneur par outil, avec son réseau, ses plafonds RAM/CPU, un utilisateur non-root et un système de fichiers en lecture seule | En place au labo (`infra/compose/deployer/tool.compose.yml` ; `verify-deployer.yml`, `verify-prod-switch.yml`) |
+| Un PostgreSQL par VM, **une base et un compte par outil**, avec plafond de connexions et durée de requête maximale ; jamais de table partagée (décision 5) | En place au labo pour les outils du socle (une base et trois rôles par outil, `register-tools.yml`, `verify-deployer-core.yml`) ; plafond de connexions et durée de requête : décidé, pas construit |
+| Les Previews tournent sur la VM CI avec une base jetable, **jamais à côté de la Production** (décision 6) | En place au labo (`verify-deployer.yml`, `verify-engine-preview.yml`) : la base de la Preview est vidée à chaque nouvelle empreinte |
 | Un outil sensible (RH, paie, données personnelles) a **sa propre VM**, décidé à la Gate 1 (décision 6) | Décidé, pas construit |
 | **Quarantaine** : un nouvel outil passe sur la VM Outils matures après **4 semaines sans incident** ; la promotion est validée par l'exploitant (décision 4) | Décidé, pas construit |
 
@@ -94,8 +94,9 @@ base de l'autre (décision 7) :
   par outil suffit pour des outils internes. Les outils restent sans état pour
   garder cette porte ouverte.
 
-Statut : décidé, pas construit (Keycloak n'est pas encore installé). Un Caddy
-central ou un par VM outils : **ouvert**.
+Statut : décidé, pas construit (Keycloak est en place, `verify-keycloak.yml` ;
+les appels entre outils, non). Un Caddy central ou un par VM outils :
+**ouvert**.
 
 ## Surveillance et tableau de bord d'exploitation
 
@@ -105,7 +106,7 @@ central ou un par VM outils : **ouvert**.
 | Une **sonde externe** chez l'exploitant (décision 8) ; son sens (elle interroge le client, ou le client la prévient) | Décidé, pas construit ; sens **ouvert** |
 | Chaque outil s'inscrit dans Gatus à son déploiement (décision 14) | Décidé, pas construit |
 | Chaque outil expose `/health` ; la CI du template vérifie que l'image construite y répond 200 | En place (`verify-template.yml`) |
-| `/health` vérifie aussi la base de l'outil | Décidé, pas construit |
+| `/health` vérifie aussi la base de l'outil | En place (le `/health` du socle, `core/src/http.js`) |
 | **Tableau de bord d'exploitation** : « est-ce que ça marche ? » = page d'état Gatus ; « que faut-il faire ? » = onglet Maintenance du tableau de bord EupaDev (redémarrage en attente, golden image, CVE, sauvegarde manquée, outil inutilisé), qui renvoie vers Gatus sans le refaire (décision 14) | Décidé, pas construit |
 
 ## Administration à distance et diagnostic
@@ -130,8 +131,8 @@ and maintenance »). **En place** au labo.
 - `needrestart` en mode liste : aucun service (Docker compris) n'est
   redémarré tout seul après une mise à jour.
 - **Créneau de maintenance de nuit** : quand Ubuntu demande un redémarrage,
-  chaque VM redémarre à son heure (labo : 03:15, 03:30, 03:45 UTC), après la
-  sauvegarde et jamais deux VM en même temps.
+  chaque VM redémarre à son heure (labo : de 03:15 à 04:15 UTC, à un quart
+  d'heure d'écart), après la sauvegarde et jamais deux VM en même temps.
 - **Alerte** si un redémarrage attend depuis plus de 7 jours (le contrôle
   échoue).
 - Redémarrage immédiat à la main : `maintenance.yml` ne redémarre que les VM
@@ -145,10 +146,10 @@ sauvegarde ses propres données.
 
 | Élément | Statut |
 |---|---|
-| Sauvegarde applicative chaque nuit à 02:30 UTC par la méthode native de chaque service (`gitea dump` pour la forge, `pg_dump` pour l'orchestrateur), 7 gardées | En place |
+| Sauvegarde applicative chaque nuit à 02:30 UTC par la méthode native de chaque service (`gitea dump` pour la forge, `pg_dump` pour les bases de l'orchestrateur et de Keycloak), 7 gardées (4 sur la forge) | En place |
 | Restauration réelle testée automatiquement dans des conteneurs jetables | En place (`verify-backup.yml`) |
 | Copie chiffrée hors des VM (restic, vers une cible fournie par le client) | Décidé, pas construit : aujourd'hui les sauvegardes restent **sur la VM** |
-| Sauvegarde de la base de chaque outil | Décidé, pas construit |
+| Sauvegarde de la base de chaque outil | En place sur la VM outils : un `pg_dump` par base de Production (`verify-deployer-core.yml`) |
 
 Reconstruire = VM vierges + recettes Ansible + dernière sauvegarde (procédure
 dans `infra/README.md`). Détails pour la DSI : `docs/fr/client-prerequisites.md`
@@ -162,13 +163,13 @@ D'après `ROADMAP.md` §8.15 (bloquants relevés en écrivant les prérequis) :
 - **Disque de données** : repéré par son nom LXD (`docker_disk_device`), qui
   n'existe pas sur une VM fournie par la DSI.
 - **Certificats** : Caddy ne sait pas encore utiliser un certificat fourni par
-  le client (aujourd'hui `internal` ou Let's Encrypt, ce dernier contraire à
-  « rien n'est exposé »).
+  le client (aujourd'hui `internal` ou Let's Encrypt par DNS-01, qui n'expose
+  rien mais demande un accès API à l'hébergeur DNS, OVH seulement aujourd'hui).
 - **Réversibilité** : la remise du coffre de secrets au client en fin de
   contrat reste à prévoir.
 - **Questions ouvertes** : un Caddy central ou un par VM outils ; sens de la
   sonde externe.
 
-Prévu aussi pour l'étape client : **OpenTofu + Incus** à la place de Terraform
-+ LXD (chantier « labo libre », `ROADMAP.md` §8.15, ordre de travail étape 5),
-et un test Hyper-V au labo (décision 13).
+Prévu aussi pour l'étape client : un test Hyper-V au labo (décision 13). Le
+passage du labo à **OpenTofu + Incus** (ADR-010, rejeté) ne concerne pas une
+installation client, où la DSI fournit les VM.

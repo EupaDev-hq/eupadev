@@ -45,6 +45,7 @@ case "$scenario" in
   no_report) commit "ping"; result success false "" ;;
   max_turns) commit "unfinished"; result error_max_turns true ""; exit 1 ;;
   budget) commit "unfinished"; result error_max_budget_usd true ""; exit 1 ;;
+  budget_out_of_scope) commit "unfinished"; write_file tests/acceptance/attacker.js 'alert(1)'; result error_max_budget_usd true ""; exit 1 ;;
   unreadable) echo "Error: this is not JSON"; echo "error: reason of the refusal at startup" >&2; exit 1 ;;
   sleep) sleep 300 ;;
   rewritten) git checkout -q --orphan other && git commit -q --allow-empty -m "rewritten history"; result success false ",\"structured_output\":$report" ;;

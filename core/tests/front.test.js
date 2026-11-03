@@ -220,7 +220,7 @@ describe('demonstration page under CSP + Trusted Types', () => {
 
   test('summary: zero securitypolicyviolation, zero page error, zero console error', async () => {
     await collect(page);
-    // Only exception, documented in the note: Chromium reports `script-src-attr` when DOMPurify parses (inert
+    // Only exception: Chromium reports `script-src-attr` when DOMPurify parses (inert
     // document, `DOMParser`) a payload carrying an inline handler, before removing it; nothing runs (`window.__xss`
     // stays undefined). Once per rendering of the trapped note ("rich" view: 2 passes, axe included).
     const purify = violations.filter((v) => /^script-src-attr inline http:\/\/[^ ]+\/core\/vendor\/purify\.js:\d+ $/.test(v));

@@ -7,11 +7,13 @@ point de départ : chaque organisation qui installe EupaDev adapte les rôles,
 les seuils et les délais à ses propres règles (dernière section). Ce que le
 code impose dans tous les cas est dans `docs/fr/architecture.md`.
 
-Statut : les gates, garde-fous et tables ci-dessous sont conçus (`ROADMAP.md`
-§8.3 à §8.8, §8.15). L'orchestrateur qui les porte existe en code et en tests
-(gates, garde-fous, budget) mais ne tourne pas encore en service ; le tableau
-de bord n'est pas encore construit. Les droits des comptes robots sont
-construits et testés.
+Statut : l'orchestrateur qui porte les gates, garde-fous et budgets
+ci-dessous tourne sur les VM du labo (code, tests et contrôles au labo :
+`docs/fr/architecture.md`) ; tant que le tableau de bord et les pages de gate
+ne sont pas construits, les gates se décident par son API locale. Les
+contrôles à la Gate 1, le cadrage du budget et le décommissionnement
+ci-dessous sont conçus, pas construits (`ROADMAP.md` §8.3 à §8.8, §8.15). Les
+droits des comptes robots sont construits et testés.
 
 ## Rôles humains
 
@@ -54,10 +56,10 @@ une colonne libre.
 
 | Gate | Quand | Ce qui est approuvé | Montré à l'approbateur |
 |---|---|---|---|
-| Gate 1 | Après la première fusion dans `main`, avant que quoi que ce soit soit joignable hors du bac à sable. **Une fois par outil.** | Le nom de l'outil et son nom de domaine, et les contrôles ci-dessous. | Nom, demandeur, service propriétaire, résumé de la spécification. |
+| Gate 1 | Après la première fusion dans `main`, avant la première Preview. **Une fois par outil.** | Le nom de l'outil et son nom de domaine, et les contrôles ci-dessous. | Nom, demandeur, service propriétaire, résumé de la spécification. |
 | Gate 2 | Après le passage des contrôles de Preview et l'acceptation de la Preview par le demandeur. **Une fois par release.** | **Une empreinte d'image précise**, jamais « l'outil ». | L'empreinte, les résultats des contrôles enregistrés contre elle, l'acceptation du demandeur. |
 
-Contrôles à la Gate 1 :
+Contrôles à la Gate 1 (posés par l'approbateur ; le moteur ne les impose pas encore) :
 
 - **Outil sensible ?** (RH, paie, données personnelles) : un outil sensible a
   sa propre VM.
@@ -114,17 +116,16 @@ remonte à la gate. Si l'humain l'accepte, il pousse une branche `exception/**`
 dans `.gitea/exceptions.txt` (ou `.trivyignore.yaml`, 30 jours au plus), ouvre
 la PR et la fusionne lui-même : lui seul peut faire entrer dans `main` une
 modification d'un fichier protégé. La ligne expire d'elle-même (un an au plus) ;
-le journal d'audit de la forge trace la fusion. Note de conception :
-`docs/reflexions/2026-10-13-note-exceptions.md`.
+le journal d'audit de la forge trace la fusion.
 
 ## Budget et garde-fous
 
 | Garde-fou | Règle | Note |
 |---|---|---|
-| Plafond d'itérations | Un nombre maximal de tours code / review par outil (de l'ordre de 10 à 15 en Durcissement, moins en Cadrage). | Atteint : l'outil s'arrête, l'administrateur est alerté. |
+| Plafond d'itérations | Un nombre maximal de tours code / review par cycle (par défaut 25 tours en Durcissement, 5 essais en Cadrage ; valeurs provisoires). | Atteint : l'outil s'arrête, l'administrateur est alerté. |
 | Stagnation | Le même écart signalé sur plusieurs tours consécutifs. | Traité comme le plafond. |
-| Timeout | Une durée maximale par outil (de l'ordre de 1 à 2 heures de travail d'agent). | L'attente d'un humain ne compte pas. |
-| Budget par outil | Un plafond de coût, comparé à la **somme des coûts réels** enregistrés par tâche dans la table `tasks`, jamais à un compteur à part. | Dépassement : escalade humaine, jamais un arrêt silencieux. |
+| Timeout | Une limite de temps de travail des agents par phase (par défaut 4 heures ; provisoire). | L'attente d'un humain ne compte pas. |
+| Budget par cycle | Un plafond de coût par phase de chaque cycle (par défaut 10 $ pour le Cadrage, 40 $ pour le Durcissement, contrat compris ; provisoire), comparé à la **somme des coûts réels** enregistrés par tâche dans la table `tasks`, jamais à un compteur à part. | Dépassement : escalade humaine (approuver avec une rallonge, préciser ou refuser), jamais un arrêt silencieux. |
 | Concurrence | Au plus N agents en même temps sur la plateforme, et 3 pour un même outil. | N est une configuration, mesurée sur la vraie machine. |
 | Budget par tâche | Le moteur reçoit lui-même un plafond de coût pour la tâche. | Option native du moteur. |
 
@@ -133,7 +134,8 @@ L'expérience v1 a montré que le plafond par outil est atteint non pas à cause
 d'une étape coûteuse, mais parce que le demandeur ajoute une story après
 l'autre, chacune plus chère que la précédente, et que l'administrateur est
 alerté tard, sur un outil déjà avancé. Le problème est le périmètre qui gonfle,
-pas l'argent. Pistes à l'étude, à trancher en construisant l'orchestrateur :
+pas l'argent. Aujourd'hui le moteur applique des enveloppes fixes par cycle et
+une gate d'escalade avec rallonge ; les pistes à l'étude :
 
 1. Un prix annoncé avant chaque story (petite / moyenne / grande, calibré sur
    les coûts réels enregistrés), avec le total en cours affiché dans le chat.
@@ -150,8 +152,8 @@ pas l'argent. Pistes à l'étude, à trancher en construisant l'orchestrateur :
   besoin change, sinon contrat, durcissement, review, fusion, Preview, Gate 2.
 - **Retour arrière** : une décision de l'administrateur ; redéployer
   l'empreinte de la release précédente, sans reconstruction, sans agent.
-- **Décommissionnement.** Le registre enregistre le dernier accès réel de
-  chaque outil (d'après les logs du reverse proxy, pas la date de création).
+- **Décommissionnement** (conçu, pas construit : en pause jusqu'au deuxième
+  outil réel). Le registre enregistre le dernier accès réel de chaque outil (d'après les logs du reverse proxy, pas la date de création).
   Sans accès pendant plusieurs semaines : relances graduées au service
   propriétaire, puis notification officielle, puis mise en quarantaine douce.
   Tout accès réel remet le compteur à zéro. Les délais sont des paramètres de
@@ -195,7 +197,9 @@ reste court.
   Claude via Amazon Bedrock (profils d'inférence UE) ou Google Vertex AI
   (région UE), tous deux pris en charge par Claude Code ; le fournisseur cloud
   est alors le sous-traitant des données (platform.claude.com, pages
-  « data residency » et « data retention », lues le 2026-10-16).
+  « data residency » et « data retention », lues le 2026-10-16). Le proxy IA
+  de la plateforme appelle aujourd'hui l'API d'Anthropic : les autres
+  fournisseurs ne sont pas encore branchés.
 - La plateforme n'embarque aucun composant sous une licence qui interdit la
   redistribution dans un produit (AGPL, SSPL, BSL) ; un outil lancé en ligne de
   commande dans la CI est acceptable, l'embarquer ne l'est pas.
@@ -207,15 +211,15 @@ reste court.
 | Élément | Défaut | Où |
 |---|---|---|
 | Qui tient la Gate 1 et la Gate 2 | la casquette `admin` (groupe du client Keycloak `eupadev-api`) ; quatre yeux à la Gate 2 | groupes Keycloak ; `FOUR_EYES_EXEMPTION_SUBJECT` (labo seulement) |
-| Budget par outil, plafond d'itérations, timeout | voir ci-dessus | configuration de l'orchestrateur |
+| Budget par cycle, plafond d'itérations, timeout | voir ci-dessus | configuration de l'orchestrateur |
 | Concurrence N | 1 | variable d'environnement |
-| Délais de décommissionnement | plusieurs semaines, gradués | configuration de l'orchestrateur |
+| Délais de décommissionnement (pas encore construit) | plusieurs semaines, gradués | configuration de l'orchestrateur |
 | Fournisseur d'identité | Keycloak (utilisateurs en comptes propres, LDAP/AD ou tout fournisseur OIDC/SAML) | configuration, sans changement de code |
 | Moteur d'agent | Claude Code | configuration du lanceur ; un second moteur est branché à la demande |
-| Domaines de Preview et de Production | `<outil>.<domaine>` | variables d'organisation de la forge |
+| Domaines de la maquette, de la Preview et de la Production | `<outil>.scoping.<domaine>`, `<outil>.preview.<domaine>`, `<outil>.<domaine>` | configuration du moteur (`TOOL_DOMAIN`) et du déployeur |
 | Délai de relance d'une gate en attente | 24 heures | configuration de l'orchestrateur |
 
 L'agent de cadrage peut enregistrer, par outil, une exception à un défaut de la
 plateforme (par exemple des comptes locaux à la place d'OIDC) dans le
-`docs/DECISIONS.md` de cet outil ; l'exception est visible de l'approbateur à
-la Gate 1.
+`docs/DECISIONS.md` de cet outil, que l'approbateur lit dans le dépôt de
+l'outil à la Gate 1.

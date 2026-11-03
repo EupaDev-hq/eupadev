@@ -81,13 +81,11 @@ jobs:
         run: |
           refs=(tests/mutations/reference.json)
           git fetch --quiet --depth=1 origin main
-          # main keeps the French path (orchestrateur/) until the English switch is merged: read it there,
-          # and fail if neither exists, so that the ratchet is never silently off.
-          if git show FETCH_HEAD:orchestrator/tests/mutations/reference.json > "$RUNNER_TEMP/reference-main.json" \
-            || git show FETCH_HEAD:orchestrateur/tests/mutations/reference.json > "$RUNNER_TEMP/reference-main.json"; then
+          # Fail if main has no reference, so that the ratchet is never silently off.
+          if git show FETCH_HEAD:orchestrator/tests/mutations/reference.json > "$RUNNER_TEMP/reference-main.json"; then
             refs+=("$RUNNER_TEMP/reference-main.json")
           else
-            echo "::error::reference.json not found on main (orchestrator/ nor orchestrateur/): the ratchet cannot compare"
+            echo "::error::reference.json not found on main: the ratchet cannot compare"
             exit 1
           fi
           node tests/mutations/ratchet.ts "${refs[@]}"
@@ -148,13 +146,11 @@ jobs:
         run: |
           refs=(tests/mutations/reference.json)
           git fetch --quiet --depth=1 origin main
-          # main keeps the French path (orchestrateur/) until the English switch is merged: read it there,
-          # and fail if neither exists, so that the ratchet is never silently off.
-          if git show FETCH_HEAD:orchestrator/tests/mutations/reference.json > "$RUNNER_TEMP/reference-main.json" \
-            || git show FETCH_HEAD:orchestrateur/tests/mutations/reference.json > "$RUNNER_TEMP/reference-main.json"; then
+          # Fail if main has no reference, so that the ratchet is never silently off.
+          if git show FETCH_HEAD:orchestrator/tests/mutations/reference.json > "$RUNNER_TEMP/reference-main.json"; then
             refs+=("$RUNNER_TEMP/reference-main.json")
           else
-            echo "::error::reference.json not found on main (orchestrator/ nor orchestrateur/): the ratchet cannot compare"
+            echo "::error::reference.json not found on main: the ratchet cannot compare"
             exit 1
           fi
           killed="$(sed -n 's#^\([0-9]*\)/[0-9]* mutations killed.*#\1#p' "$RUNNER_TEMP/mutations.log")"

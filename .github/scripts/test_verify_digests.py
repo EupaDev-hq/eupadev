@@ -46,7 +46,7 @@ def ts(text):
     return [img for _, img in v.images('x.ts', text)]
 
 
-# Trap of the English switch (note §4.2): a constant renamed from IMAGE escaped the check.
+# Trap met during the English switch: a constant renamed from IMAGE escaped the check.
 for const in ('IMAGE', 'REGISTRY_IMAGE', 'IMAGE_MAILPIT'):
     assert ts(f"export const {const} = 'postgres:18';") == ['postgres:18'], f'{const} not read'
 assert ts('const IMAGE = (reason: string) => `x`;') == [], 'function taken for an image'

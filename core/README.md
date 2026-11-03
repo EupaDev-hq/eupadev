@@ -1,13 +1,8 @@
 # @eupadev/core
 
 Common core of the generated tools (ADR-019): what the agents use without
-rewriting it. Design and scope:
-`docs/reflexions/2026-10-17-note-socle-coeur-http-base.md` (steps 2 and 3),
-`docs/reflexions/2026-10-18-note-socle-oidc-sessions.md` (step 4),
-`docs/reflexions/2026-10-18-note-socle-protections.md` (step 5),
-`docs/reflexions/2026-10-18-note-socle-front.md` (step 6),
-`docs/reflexions/2026-10-19-note-socle-kit.md` (step 7);
-specification: `docs/reflexions/2026-10-17-recherche-socle-commun.md`.
+rewriting it. Distributed through the forge's npm registry (ADR-023,
+proposed).
 
 **Status: steps 2 (HTTP core), 3 (database), 4 (OIDC, sessions, sign-outs), 5
 (web protections), 6 (front modules) and 7 (security test kit) in 0.1.0;
@@ -16,8 +11,8 @@ audit of a generated tool (sign-out reaches the IdP, IdP name capped at 200,
 strict uuid, finite query numbers, invisible characters stripped from free
 text, 120 reads a minute); 0.2.0: every name in English (breaking API).**
 Plugged into the tool template (step 9, exact version from the forge's npm
-registry); download route `/files/` built (D3, 19/10), `/core/contract.json`
-behind a session (D6.1), uploads added in step 8; kit shipped by the package
+registry); download route `/files/` built, `/core/contract.json`
+behind a session, uploads added in step 8; kit shipped by the package
 (`@eupadev/core/kit`, `@eupadev/core/kit/*`, K1).
 
 | Path | Role |
@@ -25,7 +20,7 @@ behind a session (D6.1), uploads added in step 8; kit shipped by the package
 | `bin/start.js` | Entry point of the tool (`--verify`: contract and handlers only) |
 | `bin/migrate.js` | Migrations of the core (`core_migrations`) then of the tool (`db/migrations`), owner account |
 | `bin/purge.js` | Scheduled purge, purge account, one transaction: expired sessions, rate-limit windows older than one hour, `audit_log` beyond `RETENTION_AUDIT`, then the tool's `db/purge.sql`, which reads its periods through `current_setting('purge.retention_<x>')` from `RETENTION_<X>`. Without a period, nothing runs (no default value). Its deletions are not logged; its trace is the JSON line it writes |
-| `src/contract.js` | Reads `openapi.yaml` 3.1, local `$ref`s, contract linter: refuses to start; `/files/…` (downloads: `GET` only, 200 as `text/csv`, `application/pdf` or `application/zip`) |
+| `src/contract.js` | Reads `openapi.yaml` 3.1, local `$ref`s, contract linter: refuses to start; `/files/…` (downloads: `GET` only, 200 as `text/csv`, `application/pdf`, `application/zip`, `image/png` or `image/jpeg`) |
 | `src/http.js` | Frozen Fastify 5, routing by `operationId`, `(ctx) → {status, body}`, Ajv 2020-12 on requests and responses, RFC 9457, 405, 415, headers, `/health`; downloads `{ status: 200, file: { name, type, body } }` (`Content-Disposition: attachment; filename*`, 50 MiB streamed, cut beyond); `/core/contract.json` behind a session |
 | `src/db.js` | `pg` pool, `tx()` with `set_config` per transaction |
 | `src/auth.js` | OIDC through `openid-client` (code + PKCE, GET callback, transaction cookie `__Host-oidc`), `(iss, sub)` → actor, `/auth/login`, `/auth/callback`, `/auth/logout` (RP-initiated), `/auth/backchannel-logout` (`jose`) |
@@ -40,7 +35,7 @@ behind a session (D6.1), uploads added in step 8; kit shipped by the package
 | `web/form.js` | `bindForm(form, operationId)`: HTML constraints from the contract's schema, typed values, button disabled while sending, `aria-live` state, 400 error sent back to the field |
 | `web/svg-chart.js` | `barChart()`: accessible SVG bar chart (`role="img"`, `<title>`, equivalent table), colours `--series-N` |
 | `web/escape-html.js` | `escapeHtml()` (the template's, moved here) |
-| `web/lang/en.json`, `web/lang/fr.json` | The screen texts of the front modules (status messages, errors, chart description); the language is the page's `lang`, English otherwise |
+| `web/i18n.js`, `web/lang/en.json`, `web/lang/fr.json` | The screen texts of the front modules (status messages, errors, chart description); the language is the page's `lang`, English otherwise |
 | `kit/mailpit.js` | Kit: `mailpit(base)` reads what the tool sent in the test Compose's Mailpit (`list`, `waitFor`, `clear`); its API is published on 127.0.0.1. SMTP_URL and MAIL_FROM point at it; a tool's own variables go in the file named by `TOOL_VARS` |
 | `kit/sec.js` | Kit: the twelve SEC-* (AUTH, ROLE, VALID, MASS, CSRF, HEAD, COOKIE, RATE, ERR, STATIC, BYPASS, UPLOAD) generated from the contract, `generateCases(options)` → `{ sec, name, verify }`, independent of the runner |
 | `kit/index.js`, `kit/headers.js`, `kit/http-browser.js` | Kit: reading the contract, static `REQUEST_HEADERS` (for k6 too), valid value and invalid variants of a schema (judged by Ajv), sign-in through the Keycloak form |
@@ -69,14 +64,13 @@ never followed, 10 s, environment proxy); `throw new Problem(404, 'NOT_FOUND',
 'detail')` for a business error; `safeEqual(a, b)` (exported by the package)
 to compare a secret.
 
-Download (CSV, PDF, ZIP export): a `GET /files/…` operation of the contract,
-answer `200` as `text/csv`, `application/pdf` or `application/zip` (closed
-list, no schema), `x-roles` as elsewhere; the handler returns
+Download (CSV, PDF, ZIP export, image): a `GET /files/…` operation of the
+contract, answer `200` as `text/csv`, `application/pdf`, `application/zip`,
+`image/png` or `image/jpeg` (closed list, no schema), `x-roles` as elsewhere; the handler returns
 `{ status: 200, file: { name, type, body } }` with `type` among the declared
 ones; the core sets `Content-Disposition: attachment; filename*=UTF-8''…`
 (sanitised name), `nosniff`, `no-store`, and cuts beyond 50 MiB. The file is
 downloaded through a same-origin link (`api.link`), never through `fetch`.
-`image/png` and `image/jpeg` are in that list too.
 
 Upload (one file): an operation `PUT` or `POST` whose `requestBody` declares
 only types from `application/pdf`, `image/png`, `image/jpeg` (no schema), with
@@ -143,8 +137,8 @@ on port 3000: one after the other), Playwright's Chromium for `test:front` and
 
 ```sh
 pnpm install --frozen-lockfile
-pnpm typecheck      # tsc --checkJs --strict on src, bin, tests, then web (lib dom, Trusted Types)
-pnpm test           # contract linter, HTTP core, auth without network (logout token, cookies), advisory replay, protections (CSRF, Go/Rails cases, rate limit, safeEqual, ctx.fetch), pure front functions
+pnpm typecheck      # tsc --checkJs --strict on src, bin, kit, tests, then web (lib dom, Trusted Types)
+pnpm test           # contract linter, HTTP core, auth without network (logout token, cookies), advisory replay, protections (CSRF, Go/Rails cases, rate limit, safeEqual, ctx.fetch), pure front and kit functions
 pnpm test:front     # real Chromium: demonstration page under CSP + Trusted Types, SEC-XSS, form, router, chart, axe-core
 pnpm test:db        # throwaway PostgreSQL 18.6: migrations, catalogue, rights, audit, purge, sessions, rate limit across two instances
 pnpm test:keycloak  # throwaway Keycloak 26.8.1: test realm import, sign-in of each person, roles in the ID token

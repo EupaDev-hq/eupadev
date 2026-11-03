@@ -1,6 +1,6 @@
-# Keycloak on the orchestrator VM (docs/reflexions/2026-10-15-note-keycloak-labo.md,
-# decisions D1-D15 of docs/reflexions/2026-10-15-analyse-keycloak.md). Played
-# after the role orchestrator: same Compose, same PostgreSQL, same
+# Keycloak on the orchestrator VM (decisions D1-D15, see
+# group_vars/orchestrator/keycloak.yml). Played after the role orchestrator:
+# same Compose, same PostgreSQL, same
 # systemd-creds secrets (orchestrator_secrets), already decrypted in memory.
 - name: Keycloak
   when: keycloak_image | default('') | length > 0
@@ -103,7 +103,7 @@
     - name: Realm eupadev as code
       ansible.builtin.include_tasks: realm.yml
 
-    # Realm of the generated tools (R8, docs/reflexions/2026-10-18-note-realm-outils.md):
+    # Realm of the generated tools (R8):
     # its own configuration client, bootstrapped like the one of eupadev.
     - name: Does the configuration client of the realm tools answer?
       ansible.builtin.uri:

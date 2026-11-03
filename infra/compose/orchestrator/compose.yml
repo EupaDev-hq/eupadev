@@ -1,4 +1,4 @@
-# The orchestrator ("engine for real" note §3.2):
+# The orchestrator:
 #   db     — dedicated PostgreSQL: state machine, tasks, decisions, and the
 #            memory of the DBOS workflows. TLS 1.3 required; port published
 #            on the VM's IP for the executor of the agents VM only (client
@@ -12,7 +12,7 @@
 #            the database refuses a second engine; fixed port); never set
 #            DBOS__VMID (an executor that changes identity leaves its
 #            workflows to nobody).
-#   keycloak — identity (note docs/reflexions/2026-10-15-note-keycloak-labo.md):
+#   keycloak — identity:
 #            database `keycloak` of this same PostgreSQL (verified TLS); the
 #            engine reads the JWKS through http://keycloak:8080; admin through
 #            127.0.0.1:8180 of the VM only (SSH tunnel); 9000 (health,

@@ -1,4 +1,4 @@
-// Reading and linting of the openapi.yaml contract (OpenAPI 3.1), R11 of the "common core" research: the contract
+// Reading and linting of the openapi.yaml contract (OpenAPI 3.1, R11): the contract
 // drives the core, a contract that is not closed by default stops the process from starting. Local `$ref`s are
 // dereferenced once here: Fastify sees no schema, Ajv 2020-12 compiles these.
 import { readFileSync } from 'node:fs';
@@ -32,9 +32,9 @@ export class ContractError extends Error {
 
 const METHODS = ['get', 'post', 'put', 'patch', 'delete'];
 const NO_BODY = new Set(['get', 'delete']);
-/** Paths served by the core itself, never by the contract (§2.4 rule 1). */
+/** Paths served by the core itself, never by the contract. */
 export const RESERVED_PATHS = /^\/(health|auth\/|core\/)/;
-/** Downloads (§2.7 rule 7, D3): `GET` only under `/files/`, 200 response in this closed list. */
+/** Downloads (D3): `GET` only under `/files/`, 200 response in this closed list. */
 export const DOWNLOAD_TYPES = new Set(['text/csv', 'application/pdf', 'application/zip', 'image/png', 'image/jpeg']);
 /** Uploads (decision E5): one file as the raw request body, in this closed list, checked by its signature bytes. */
 export const TYPES_UPLOAD = new Set(['application/pdf', 'image/png', 'image/jpeg']);
@@ -187,7 +187,7 @@ export function parseContract(doc) {
       }
       if (responses.size === 0) refuse(`${where}: at least one 2xx response`);
 
-      // Error responses the core or the request itself can produce must be declared (decision K9/E6): Schemathesis
+      // Error responses the core or the request itself can produce must be declared (K9): Schemathesis
       // and ZAP read this file as is, so a response missing here is a response outside the contract.
       const required = ['401', '403', '429'];
       if ((op.parameters ?? []).length > 0 || op.requestBody !== undefined) required.push('400');
@@ -229,7 +229,7 @@ export function parseContract(doc) {
 }
 
 /**
- * Closed schema (§2.1.4): every object carries `additionalProperties: false`; in a request, every string has a
+ * Closed schema: every object carries `additionalProperties: false`; in a request, every string has a
  * `maxLength` (except enum, const or bounded format), every array a `maxItems`; `pattern`s are safe.
  * @param {Schema} s
  * @param {string} where

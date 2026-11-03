@@ -1,5 +1,5 @@
 // Change of a request at the version read (decision E11): the fields of a draft by its author, and/or a status change
-// (note §4), and/or the restore of a deleted request (admin). The row is locked for the time of the transaction: two
+// and/or the restore of a deleted request (admin). The row is locked for the time of the transaction: two
 // simultaneous changes do not overwrite each other, the second gets 409. The database judges the (from, to) pair and
 // writes the history. A status change is mailed after the commit (api/lib/mail.js).
 import { Problem } from '@eupadev/core';

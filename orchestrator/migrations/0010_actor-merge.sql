@@ -1,5 +1,5 @@
 -- Up Migration
--- Actor merge (docs/reflexions/2026-10-16-note-fusion-acteurs.md; completes ADR-017): a person whose `sub`
+-- Actor merge (completes ADR-017): a person whose `sub`
 -- changed and who signed in BEFORE being attached became a second actor B; `actor_identities` (primary
 -- key on (issuer, subject), append-only) can no longer say that B = A. The merge is an APPEND-ONLY row
 -- "B is absorbed by A", decided by an admin (never by B or A themselves), with its reason. The history is not

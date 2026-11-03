@@ -1,4 +1,4 @@
-# Agent launcher, step 0 (docs/reflexions/2026-10-13-note-lanceur.md, implementation steps): contract and database,
+# Agent launcher, step 0: contract and database,
 # with the fake engine, no AI. What the task records to compare the cost per successful task (ROADMAP no. 25 (c)).
 Feature: Measurement of the agent tasks
   Each task records the model, the effort and the digest of the instructions it ran with; the engine receives

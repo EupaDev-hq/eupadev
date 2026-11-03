@@ -1,8 +1,8 @@
-# Agents VM: the DBOS executor (agent-tasks queue, EUPADEV_ROLE=executor)
-# — note docs/reflexions/2026-10-15-note-lanceur-service.md. It launches the agent containers
-# through the VM's Docker socket (= root on the VM: risk accepted in L1,
-# dedicated VM), talks to the orchestrator database over TLS with a client
-# certificate, and pushes the agent branches with svc-agent's token.
+# Agents VM: the DBOS executor (agent-tasks queue, EUPADEV_ROLE=executor).
+# It launches the agent containers through the VM's Docker socket (= root on
+# the VM: risk accepted in L1, dedicated VM), talks to the orchestrator
+# database over TLS with a client certificate, and pushes the agent branches
+# with svc-agent's token.
 # Played BEFORE agent_proxies: it holds the secrets of the whole VM (a single
 # eupadev-secrets.service unit), the AI proxy's key among them.
 - name: Executor folder (root access only)

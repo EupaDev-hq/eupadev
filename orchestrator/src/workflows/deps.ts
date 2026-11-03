@@ -18,8 +18,8 @@ export interface Deps {
 export const TASK_QUEUE = 'agent-tasks';
 /**
  * Queue of ALL the pilot's workflows (W1, operations, API, monitoring, watcher), listened to by the pilot alone. Without it,
- * DBOS puts a resumed workflow back in its internal queue, which any process serves, the executor included (note
- * `docs/reflexions/2026-10-15-note-lanceur-service.md`, correction 1). No concurrency limit: a W1 never waits for a slot.
+ * DBOS puts a resumed workflow back in its internal queue, which any process serves, the executor included. No
+ * concurrency limit: a W1 never waits for a slot.
  */
 export const CONTROL_QUEUE = 'control';
 

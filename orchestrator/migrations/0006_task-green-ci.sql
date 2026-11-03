@@ -1,6 +1,6 @@
 -- Up Migration
--- Launcher: result of the agents' CI (docs/reflexions/2026-10-13-note-lanceur.md: only the tasks with a green ci
--- count as successful). 0005 recorded that the CI had answered (verdict_source = 'ci'), not what it said.
+-- Launcher: result of the agents' CI (only the tasks with a green ci count as
+-- successful). 0005 recorded that the CI had answered (verdict_source = 'ci'), not what it said.
 -- - ci_green: NULL while the CI has not answered; true/false written with verdict_source = 'ci', in the same UPDATE
 --   (Database.ciVerdict), then fixed.
 -- - tasks_ci_green_if_ci: ci_green not NULL if and only if verdict_source = 'ci'. No row has 'ci' before this

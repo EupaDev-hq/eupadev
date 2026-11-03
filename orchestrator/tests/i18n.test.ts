@@ -1,4 +1,4 @@
-// End-user texts of the engine (L10): both dictionaries hold the same keys with the same placeholders, every key the
+// End-user texts of the engine (ADR-025): both dictionaries hold the same keys with the same placeholders, every key the
 // code names exists, and the deployment language falls back to English. No database.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -36,4 +36,9 @@ test('i18n: EUPADEV_LANGUAGE chooses the language, English by default, anything 
   assert.equal(readConfig(env).language, 'en');
   for (const l of LANGUAGES) assert.equal(readConfig({ ...env, EUPADEV_LANGUAGE: l }).language, l);
   assert.throws(() => readConfig({ ...env, EUPADEV_LANGUAGE: 'de' }), /EUPADEV_LANGUAGE invalid: "de"/);
+});
+
+test('i18n: the page’s dictionaries (web/lang) have the same keys in fr and en', () => {
+  const web = (l: string) => Object.keys(JSON.parse(readFileSync(new URL(`../web/lang/${l}.json`, import.meta.url), 'utf8')) as Record<string, string>).sort();
+  assert.deepEqual(web('fr'), web('en'));
 });

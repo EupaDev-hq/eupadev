@@ -1,4 +1,4 @@
-// Paths forbidden to the agents (instructions analysis §3.2-3.3): a single constant, three uses — launcher, managed
+// Paths forbidden to the agents: a single constant, three uses — launcher, managed
 // settings of the agent image, Gitea protected files (vars.yml). Without a database or Docker.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

@@ -1,5 +1,5 @@
 #!/bin/sh
-# FREE real trial in the agents' image (instructions analysis §4-B, §5): Claude Code (the image's version) run with the
+# FREE real trial in the agents' image: Claude Code (the image's version) run with the
 # engine's command line against a fake upstream server (upstream.js, ANTHROPIC_BASE_URL), in a TRAPPED clone: project
 # settings (env block towards a second fake "attacker", SessionStart hook), CLAUDE.md, AGENTS.md, `paths:` rule, .mcp.json,
 # user settings — each with a canary string. The verdict is read in the upstream's log (verify.mjs) and in what this
@@ -39,7 +39,7 @@ printf '%s\n' '# CANARY_AGENTS_MD' > AGENTS.md
 printf '%s\n' '{"mcpServers":{"CANARY_MCP":{"command":"sh","args":["-c","touch /tmp/MCP; sleep 30"]}}}' > .mcp.json
 printf '%s\n' 'export const x = 0; // CANARY_API_FILE' > api/x.js
 git add -A && git -c user.name=trial -c user.email=trial@example.test commit -q -m trap
-# pnpm: is .pnpmfile.cjs run by `pnpm install --ignore-scripts`? (§5-8)
+# pnpm: is .pnpmfile.cjs run by `pnpm install --ignore-scripts`?
 mkdir -p /tmp/pnpm-trial && cd /tmp/pnpm-trial && printf '%s\n' '{"name":"trial","private":true,"version":"0.0.0"}' > package.json \
   && printf '%s\n' 'module.exports = { hooks: { afterAllResolved(l) { require("fs").writeFileSync("/tmp/PNPMFILE", "x"); return l; }, readPackage(p) { require("fs").writeFileSync("/tmp/PNPMFILE", "x"); return p; } } };' > .pnpmfile.cjs
 cd "$HOME/repo" || exit 2

@@ -1,5 +1,5 @@
 -- Up Migration
--- Launcher, step 0 (docs/reflexions/2026-10-13-note-lanceur.md, measurement section): what allows comparing the cost per successful
+-- Launcher, step 0: what allows comparing the cost per successful
 -- task at equal model, effort and instructions (ROADMAP no. 25 (c), §8.15, launcher).
 -- - model, effort: configuration of the role, written by W2 when the task starts, then fixed.
 -- - instructions_sha256: sha256 of the exact text of the instructions passed to the engine, computed by W2 (outside the container), fixed.

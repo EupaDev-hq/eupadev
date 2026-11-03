@@ -1,12 +1,12 @@
-# Tests, then publishes @eupadev/core to the forge's npm registry
-# under its own owner <org>-core, where only svc-core writes packages (ADR-023;
-# docs/reflexions/2026-10-22-note-socle-registry.md). Runs on each change of
-# the `core` platform repository (synced by Ansible from EupaDev, core/
-# at its original path) or by hand. Tools depend on an exact version (G4,
-# checked by the tool template's package check); Renovate proposes updates.
-# A published version is never overwritten (Gitea answers 409): a version
-# already in the registry is skipped, so a sync without a new "version" in
-# core/package.json publishes nothing and the pipeline stays green.
+# Tests, then publishes @eupadev/core to the forge's npm registry under its
+# own owner <org>-core, where only svc-core writes packages (ADR-023). Runs on
+# each change of the `core` platform repository (synced by Ansible from
+# EupaDev, core/ at its original path) or by hand. Tools depend on an exact
+# version (G4, checked by the tool template's package check); Renovate
+# proposes updates. A published version is never overwritten (Gitea answers
+# 409): a version already in the registry is skipped, so a sync without a new
+# "version" in core/package.json publishes nothing and the pipeline stays
+# green.
 name: Core
 
 on:

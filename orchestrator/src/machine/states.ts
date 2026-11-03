@@ -103,13 +103,13 @@ export const INITIAL_STATE: StateId = 'request_received';
 /** Caps of ONE agent task: duration (launcher timer), turns (`--max-turns`), budget (`--max-budget-usd`, cost of a failure without a known cost). */
 export interface TaskCap { duration_min: number; turns: number; budget_usd: number }
 /**
- * A-R5 (agents research §6.3): PROVISIONAL values of the measurement pass, to be measured — wide safety nets, the same for
+ * A-R5: PROVISIONAL values of the measurement pass, to be measured — wide safety nets, the same for
  * every role. After the pass: record duration, turns, tokens and cost per role, then set ≈ 1.5 × the observed value.
  */
 const MEASUREMENT_NET: TaskCap = { duration_min: 60, turns: 150, budget_usd: 10 };
 /**
  * Scoping roles (overlap, scoping): budget below the scoping envelope ($10), otherwise a single lost task (unknown
- * cost = cap) would exhaust it (Ilan's decision of 2026-10-18, option a); duration and turns stay wide.
+ * cost = cap) would exhaust it (Ilan's decision of 2026-10-18); duration and turns stay wide.
  */
 const SCOPING: TaskCap = { ...MEASUREMENT_NET, budget_usd: 4 };
 
@@ -295,7 +295,7 @@ const EXPLICIT_TRANSITIONS: readonly Transition[] = [
     '"Correction" button (contract unchanged): instruction passed to hardening, never to scoping (decision 2)'),
   { from: 'gate_1', to: 'contract', trigger: gate('scope_change'), note: '"Scope change" button: the contract is reviewed with the admin\'s text (decision 2)' },
 
-  // S5 (note 2026-10-26 acceptance-on-preview §3.5): the controls run on the fresh Preview before the requester is told.
+  // S5: the controls run on the fresh Preview before the requester is told.
   { from: 'preview_deployment', to: 'preview_pipeline', trigger: task('done'), note: 'Preview deployed by digest, health OK: pipeline 2 against that digest before the requester is told (decision 11)' },
   { from: 'preview_deployment', to: 'gate_delivery_blocked', trigger: task('failed'), note: 'Failed Preview deployment: the admin decides (decision 5)' },
 

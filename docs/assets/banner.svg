@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 340" role="img" aria-labelledby="t d">
+  <title id="t">EupaDev</title>
+  <desc id="d">EupaDev written as a neon sign. Below it, a request travels from the agents through two human gates to production.</desc>
+  <style>
+    .tube { fill: none; stroke-linecap: round; stroke-linejoin: round; }
+    .core { stroke: #f4fffd; stroke-width: 3; }
+    .glow { stroke: #2ff3d6; stroke-width: 9; filter: url(#bloom); }
+    .gate .glow { stroke: #ff4fa3; }
+    .label { font: 600 15px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: 3px; fill: #7fa9b3; }
+    .tagline { font: 500 22px ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; letter-spacing: 1px; fill: #d9f7f2; }
+    .flicker { animation: flicker 7s infinite steps(1); }
+    .gate { animation: gate 6s infinite; }
+    .gate2 { animation-delay: 1.8s; }
+    @keyframes flicker {
+      0%, 41%, 44%, 46%, 100% { opacity: 1; }
+      42%, 45% { opacity: .25; }
+    }
+    @keyframes gate {
+      0%, 25% { opacity: .35; }
+      32%, 90% { opacity: 1; }
+      100% { opacity: .35; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .flicker, .gate { animation: none; }
+      .pulse { display: none; }
+    }
+  </style>
+  <defs>
+    <filter id="bloom" filterUnits="userSpaceOnUse" x="-200" y="-200" width="1600" height="740">
+      <feGaussianBlur stdDeviation="6" result="b1"/>
+      <feGaussianBlur stdDeviation="14" result="b2"/>
+      <feMerge><feMergeNode in="b2"/><feMergeNode in="b1"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <radialGradient id="room" cx="50%" cy="40%" r="70%">
+      <stop offset="0" stop-color="#0d2a33"/>
+      <stop offset="1" stop-color="#05090d"/>
+    </radialGradient>
+    <!-- Neon tube lettering, one 52×80 cell per letter: no font needed. -->
+    <g id="E"><path d="M50 0H0V80H50M0 40H40"/></g>
+    <g id="U"><path d="M0 0V55Q0 80 25 80Q50 80 50 55V0"/></g>
+    <g id="P"><path d="M0 80V0H30Q52 0 52 22Q52 44 30 44H0"/></g>
+    <g id="A"><path d="M0 80L25 0L50 80M10 52H40"/></g>
+    <g id="D"><path d="M0 0V80H22Q52 80 52 40Q52 0 22 0Z"/></g>
+    <g id="V"><path d="M0 0L25 80L50 0"/></g>
+    <g id="word">
+      <use href="#E"/><use href="#U" x="74"/><use href="#P" x="148"/>
+      <use href="#A" x="222" class="flicker"/><use href="#D" x="296"/>
+      <use href="#E" x="370"/><use href="#V" x="444"/>
+    </g>
+    <path id="line" d="M190 268H1010"/>
+    <g id="lock"><rect x="-11" y="-4" width="22" height="18" rx="3"/><path d="M-6 -4V-10Q-6 -17 0 -17Q6 -17 6 -10V-4"/></g>
+  </defs>
+
+  <rect width="1200" height="340" rx="22" fill="url(#room)"/>
+
+  <g transform="translate(253 46) scale(1.4)">
+    <use href="#word" class="tube glow"/>
+    <use href="#word" class="tube core"/>
+  </g>
+
+  <text class="tagline" x="600" y="215" text-anchor="middle">Your experts describe. AI agents build. Your IT approves.</text>
+
+  <use href="#line" class="tube" stroke="#1d4a52" stroke-width="3" stroke-dasharray="2 10"/>
+  <g class="gate"><g transform="translate(470 266)"><use href="#lock" class="tube glow" style="stroke:#ff4fa3"/><use href="#lock" class="tube core"/></g></g>
+  <g class="gate gate2"><g transform="translate(760 266)"><use href="#lock" class="tube glow" style="stroke:#ff4fa3"/><use href="#lock" class="tube core"/></g></g>
+  <circle class="pulse" r="6" fill="#f4fffd" filter="url(#bloom)">
+    <animateMotion dur="6s" repeatCount="indefinite" calcMode="linear"><mpath href="#line"/></animateMotion>
+  </circle>
+  <text class="label" x="190" y="306" text-anchor="middle">AGENTS</text>
+  <text class="label" x="470" y="306" text-anchor="middle">GATE 1</text>
+  <circle cx="615" cy="268" r="5" fill="#7fa9b3"/>
+  <text class="label" x="615" y="306" text-anchor="middle">PREVIEW</text>
+  <text class="label" x="760" y="306" text-anchor="middle">GATE 2</text>
+  <text class="label" x="1010" y="306" text-anchor="middle">PRODUCTION</text>
+</svg>

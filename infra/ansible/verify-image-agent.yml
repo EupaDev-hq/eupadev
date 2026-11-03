@@ -1,4 +1,4 @@
-# Real-conditions check of the agent image (launcher note, step 2;
+# Real-conditions check of the agent image (launcher step 2;
 # ROADMAP §8.11 no. 21, ADR-013) — can be rerun, leaves nothing behind
 # (except the image if it was already on the agents VM).
 #   ansible-playbook verify-image-agent.yml

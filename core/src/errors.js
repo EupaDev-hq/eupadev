@@ -1,4 +1,4 @@
-// HTTP errors in the RFC 9457 format (application/problem+json), §2.9 of the research.
+// HTTP errors in the RFC 9457 format (application/problem+json).
 // A handler throws `new Problem(status, code, detail)`; anything else becomes a generic 500.
 import { randomUUID } from 'node:crypto';
 

@@ -6,7 +6,7 @@
 // visible. Protected file (.gitea/**). Reads the file given as argument
 // (default: package.json), writes one "GUARD-RAIL …" line per finding, exits
 // with 1 if there is any.
-// Core reference (G4, agents review 3, M1): every dependency comes from the
+// Core reference (G4): every dependency comes from the
 // registry (no file:, link:, git, http(s):, workspace:, npm: alias, path or
 // tarball), @eupadev/core at an exact version, and pnpm-lock.yaml (next
 // to package.json) resolves @eupadev/core from the registry only.

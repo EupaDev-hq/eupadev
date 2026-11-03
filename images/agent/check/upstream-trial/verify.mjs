@@ -1,5 +1,5 @@
-// Verdict of the upstream trial (instructions analysis §4-B): reads log-<role>.jsonl (requests received by the upstream
-// and by the attacker) and agent-<role>.log (what trial.sh printed), prints what settles the uncertainties of §5, fails
+// Verdict of the upstream trial: reads log-<role>.jsonl (requests received by the upstream and by the attacker) and
+// agent-<role>.log (what trial.sh printed), prints what settles the open questions of the trial, fails
 // (exit code 1) if a deterministic assertion falls. Usage: node verify.mjs <output directory>
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -70,11 +70,11 @@ for (const role of VARIANTS) {
   if (role.startsWith('code')) {
     // Turns scripted by upstream.js: 1 Read task.md; 2 Write .claude/settings.json; 3 Bash > api/y.js; 4 Bash > .claude/a;
     // 5 Bash ~/.claude/settings.json; 6 Edit .claude/settings.json; 7 node -e .claude/c; 8 Read api/x.js; 9 pnpm; 10 state; 11 Edit api/x.js.
-    verify(results[0] !== undefined && !results[0].is_error && results[0].text.includes('TRIAL-TASK-DATA'), 'code: Read /tmp/task/task.md succeeds (data read) — §5-7');
+    verify(results[0] !== undefined && !results[0].is_error && results[0].text.includes('TRIAL-TASK-DATA'), 'code: Read /tmp/task/task.md succeeds (data read)');
     verify(results[1]?.is_error === true, 'code: Write .claude/settings.json in error (tool absent under --bare)');
     verify(results[2] !== undefined && !results[2].is_error && results[2].text.includes('API_WRITTEN'), 'code: Bash creates api/y.js (new file in scope) — normal work goes through');
     verify(results[3]?.is_error === true || output.includes('.claude/a=absent'), 'code: Bash "echo x > .claude/a" refused or without effect');
-    verify(results[5]?.is_error === true && /denied|refused|refusal/i.test(results[5].text), 'code: Edit .claude/settings.json refused (deny of the managed settings / protected path in dontAsk) — §5-5');
+    verify(results[5]?.is_error === true && /denied|refused|refusal/i.test(results[5].text), 'code: Edit .claude/settings.json refused (deny of the managed settings / protected path in dontAsk)');
     verify(results[10] !== undefined && !results[10].is_error, 'code: Edit api/x.js accepted (Edit serves normal work)');
     verify(output.includes('HOOK=absent'), 'code: SessionStart hook of the project settings never run');
     verify(output.includes('HOOK_USER=absent'), 'code: SessionStart hook of the user settings never run');
@@ -82,9 +82,9 @@ for (const role of VARIANTS) {
     verify(output.includes('.claude/a=absent') && output.includes('ATTACKER'), 'code: .claude/a absent, project settings intact');
     verify(results[7] !== undefined && !results[7].is_error, 'code: Read api/x.js (paths: api/** rule) succeeds…');
     const afterRule = messages.slice(9).map((m) => JSON.stringify(m.body)).join('');
-    verify(!afterRule.includes('CANARY_PATHS_RULE'), '…and the on-demand rule is not injected afterwards — §5-2');
+    verify(!afterRule.includes('CANARY_PATHS_RULE'), '…and the on-demand rule is not injected afterwards');
     console.log(`info: .claude/c (node -e, allowed Bash): ${/\.claude\/c=(\w+)/.exec(output)?.[1] ?? '?'} — the launcher refuses this case (contentRefused)`);
-    console.log(`info: .pnpmfile.cjs under pnpm install --ignore-scripts: PNPMFILE=${/PNPMFILE=(\w+)/.exec(output)?.[1] ?? '?'} — §5-8`);
+    console.log(`info: .pnpmfile.cjs under pnpm install --ignore-scripts: PNPMFILE=${/PNPMFILE=(\w+)/.exec(output)?.[1] ?? '?'}`);
     verify(results[11] !== undefined && !results[11].is_error && results[11].text.includes('READ_OUTSIDE'), 'code: the allowed Bash reads outside the working directories (no blockReadsOutsideWorkingDirectories, which would refuse it to the code roles) — A-R4');
   } else if (role.startsWith('reviewer')) {
     // Turns scripted by upstream.js: 1 Read task.md; 2 grep api; 3 cat /tmp/task/task.md; 4 echo > api/z.js; 5 node -e;
@@ -100,7 +100,7 @@ for (const role of VARIANTS) {
     verify(refused(results[7]) && !results[7].text.includes('root:'), 'reviewer: Read /etc/passwd refused (outside the working directories)');
     verify(refused(results[8]) && !results[8].text.includes('ATTACKER'), 'reviewer: grep in ~/.claude refused (outside the working directories) — A-R4');
   } else {
-    verify(results[0] !== undefined && !results[0].is_error && results[0].text.includes('TRIAL-TASK-DATA'), 'read: Read /tmp/task/task.md succeeds without Bash or permission — §5-7');
+    verify(results[0] !== undefined && !results[0].is_error && results[0].text.includes('TRIAL-TASK-DATA'), 'read: Read /tmp/task/task.md succeeds without Bash or permission');
     verify(results[1]?.is_error === true, 'read: Bash unavailable (error returned to the model)');
     verify(results[2]?.is_error === true, 'read: Write unavailable');
     verify(output.includes('=== work:') && !output.includes('=== work: x.txt'), 'read: nothing written in the working directory');

@@ -1,5 +1,4 @@
-# First real Claude Code on the agents VM (docs/reflexions/2026-10-15-note-e4-claude-reel.md)
-# — can be rerun, leaves nothing behind.
+# First real Claude Code on the agents VM — can be rerun, leaves nothing behind.
 #   ansible-playbook verify-engine-claude.yml -e ai_call=true   (PAID CALL, cap 1 $)
 # Without -e ai_call=true, it stops before anything (guard, as verify-agents.yml).
 # The ENGINE'S CODE (ClaudeCodeEngine.execute, orchestrator/scripts/trial-claude.ts),

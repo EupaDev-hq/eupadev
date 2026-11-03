@@ -154,7 +154,7 @@
       register: orch_from_forge
       failed_when: orch_from_forge is succeeded
 
-# Database over verified TLS (docs/reflexions/2026-10-15-note-lanceur-service.md, correction 4):
+# Database over verified TLS:
 # from the agents VM, only a TLS 1.3 client with the certificate signed by the
 # database authority, in the name of the requested role, and the password, gets in.
 - name: Verify the TLS access to the database from the agents VM

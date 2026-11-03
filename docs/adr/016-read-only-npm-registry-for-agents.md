@@ -37,8 +37,6 @@ credential-stealing Verdaccio plugin circulated in August 2026. Smokescreen
 without a client certificate applies the same rule to all its clients.
 Nexus CE offers npm only under the Sonatype EULA, capped; Artifactory OSS
 has no npm.
-Detail and sources:
-`docs/reflexions/2026-10-15-recherche-registre-npm-lecture-seule.md`.
 
 ## Decision
 Route every npm install of the agents through a read-only Verdaccio mirror

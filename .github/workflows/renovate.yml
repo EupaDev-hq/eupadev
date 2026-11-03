@@ -1,10 +1,11 @@
 # Self-hosted Renovate (Ilan's decision, 2026-10-13): run here, by a GitHub
-# App dedicated to this repository alone, so that no third party reads the
-# private code. Configuration: renovate.json (root). PRs are never merged
-# automatically. Note: docs/reflexions/2026-10-13-note-suivi-versions.md.
+# App dedicated to this repository alone, so that no third-party service holds
+# access to the repository. Configuration: renovate.json (root). PRs are never
+# merged automatically.
 #
-# Prerequisites (once, by Ilan): the GitHub App, its variable RENOVATE_APP_ID
-# and its secret RENOVATE_APP_PRIVATE_KEY — procedure in the note above.
+# Prerequisites (once, by a repository admin): a GitHub App installed on this
+# repository only, its ID in the variable RENOVATE_APP_ID and its private key
+# in the secret RENOVATE_APP_PRIVATE_KEY.
 name: Renovate
 
 on:

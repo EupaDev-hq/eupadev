@@ -1,5 +1,5 @@
 // Mail of the tool (decision E9: nodemailer here, the ADR-019 exception declared in docs/DECISIONS.md). Who is told
-// what (note §9): the requester, of each status change made by someone else; the managers' shared mailbox
+// what: the requester, of each status change made by someone else; the managers' shared mailbox
 // (MAIL_MANAGERS), of each submission. Sent after the transaction commits; a failure is logged with an
 // error_id and never undoes or fails the change (no outbox: add one if a client needs guaranteed delivery).
 import { randomUUID } from 'node:crypto';

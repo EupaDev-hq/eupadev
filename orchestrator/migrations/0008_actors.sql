@@ -1,5 +1,5 @@
 -- Up Migration
--- I0, identity of people (docs/reflexions/2026-10-15-note-identite-I0.md, ADR-017): a person is designated by
+-- I0, identity of people (ADR-017): a person is designated by
 -- an internal id (`actors.id`), never by their mail nor by free text; their OIDC key `(issuer, subject)` lives
 -- in an APPEND-ONLY link table (D1: a `sub` that changes is attached by a traced INSERT, never an UPDATE).
 -- The audit tables get `actor_id`; their text column (`actor`, `author`) becomes a snapshot of the name at the

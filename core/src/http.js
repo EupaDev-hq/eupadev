@@ -1,4 +1,4 @@
-// HTTP heart of the core: Fastify 5 with a closed configuration (§2.1.4 "if B wins"), routing by operationId, glue
+// HTTP heart of the core: Fastify 5 with a closed configuration (ADR-019), routing by operationId, glue
 // `(ctx) → {status, body}`. The handlers see neither Fastify, nor the raw request, nor the reply.
 import { randomUUID } from 'node:crypto';
 import { Readable, Transform, pipeline } from 'node:stream';
@@ -33,7 +33,7 @@ import { ajvBody, ajvRequest, compile } from './validation.js';
 /** @typedef {{ name: string, type: string, body: Buffer | Readable }} FileDownload */
 /** @typedef {(ctx: Ctx) => Promise<{ status: number, body?: unknown, headers?: Record<string, string>, file?: FileDownload }>} Handler */
 
-/** Eight fixed headers of §2.7 (no Helmet); without OIDC (tests), `form-action` only has `'self'`. */
+/** Eight fixed security headers (no Helmet); without OIDC (tests), `form-action` only has `'self'`. */
 export const SECURITY_HEADERS = Object.freeze({
   'content-security-policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; require-trusted-types-for 'script'; trusted-types eupadev dompurify",
   'strict-transport-security': 'max-age=31536000; includeSubDomains',
@@ -61,7 +61,7 @@ const JSON_UTF8 = /^application\/json(?:\s*;\s*charset="?utf-8"?\s*)?$/i;
 export const FILE_CAP = 50 * 1024 * 1024;
 /** Only the core's routes marked `config.form` (sign-outs) accept a form, never the contract. */
 const FORM = /^application\/x-www-form-urlencoded(?:\s*;\s*charset="?utf-8"?\s*)?$/i;
-/** First bytes of each upload type (§2.7 rule 7): the content must be what its Content-Type says. */
+/** First bytes of each upload type: the content must be what its Content-Type says. */
 const SIGNATURES = /** @type {Record<string, number[]>} */ ({
   'image/png': [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a],
   'image/jpeg': [0xff, 0xd8, 0xff],

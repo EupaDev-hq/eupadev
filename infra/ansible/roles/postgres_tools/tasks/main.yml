@@ -1,6 +1,6 @@
-# PostgreSQL of the core tools on a deployment target VM (S4, ADR-022,
-# note 2026-10-21-note-e5-refresh.md "d5"). Databases, roles and secrets of
-# each tool: register-tools.yml (Gate 1 entry, D-E5).
+# PostgreSQL of the core tools on a deployment target VM (S4, ADR-022).
+# Databases, roles and secrets of each tool: register-tools.yml (Gate 1
+# entry, D-E5).
 - name: Tools database folder
   ansible.builtin.file:
     path: /opt/eupadev/tools-db

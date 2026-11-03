@@ -1,5 +1,4 @@
-# Issues a certificate signed by the database authority (note
-# docs/reflexions/2026-10-15-note-lanceur-service.md, correction 4): the key is generated ON
+# Issues a certificate signed by the database authority: the key is generated ON
 # the VM and never leaves it; only the request (CSR) goes to the
 # administration machine, which signs it with the vault's authority (in memory).
 # Issued again when missing, when the key, the name or the authority changed,

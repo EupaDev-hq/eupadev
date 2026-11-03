@@ -1,8 +1,8 @@
-// Core of the tools in the agent's container (ADR-023, decision 1(b)): the launcher fills the task volume's pnpm
+// Core of the tools in the agent's container (ADR-023, "Agents' access"): the launcher fills the task volume's pnpm
 // store in a SEPARATE container that holds the read badge on its stdin only, before the agent's container starts.
 // Fake `docker` and `cosign` on the PATH (log of every call, stdin included), real Git (forge = bare repositories
 // in `file://`): no Docker needed. The real pnpm behaviour (fetch, then frozen install without any route to the
-// forge, badge nowhere in the volume) is proven by the local trial of docs/reflexions/2026-10-22-note-socle-registry.md.
+// forge, badge nowhere in the volume) was proven by a local trial with Docker.
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';

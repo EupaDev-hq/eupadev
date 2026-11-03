@@ -5,7 +5,7 @@
  * Exit codes of the script: 0 = answer, 2 = request refused (never retried: `health: 'failed'` with the reason, or an error),
  * 1 = error on the target. 255 = ssh itself failed (connection refused or cut): bounded retry, safe because the script
  * converges (lock, "already done" check).
- * ponytail: the mock-up (E5e) and the Prod switch (E5g) go through the same calls; the script refuses them until then.
+ * The mock-up (E5e) and the Prod switch (E5g) go through the same calls.
  */
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';

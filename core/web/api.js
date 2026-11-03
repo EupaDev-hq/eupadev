@@ -1,5 +1,5 @@
 // Calls to the tool's API, same origin only: `credentials: 'same-origin'`, static header
-// `X-Requested-With: eupadev` on every request (anti-CSRF, §2.7 rule 2: the server refuses its absence on /api/**),
+// `X-Requested-With: eupadev` on every request (anti-CSRF: the server refuses its absence on /api/**),
 // `AbortSignal.timeout`, `application/problem+json` errors (RFC 9457) → `ApiError`, `ETag` remembered per URL and
 // sent back as `If-Match` on PUT/PATCH/DELETE, 401 → the core's sign-in page with a return to the current page.
 import { t } from './i18n.js';

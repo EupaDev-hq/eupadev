@@ -8,7 +8,7 @@ nor secret appears in it, only findings.
 Modes:
   full      discovery, service accounts, redirects (D15), sign-in by
             code + PKCE of a test user, tokens (D7, D8), replay of a
-            refresh token (D8, §3).
+            refresh token (D8).
   failures  n wrong passwords then the right one (D13): does the sign-in succeed?
   sign_in   the right password: does the sign-in succeed?
   console   sign-in to the admin console of master through the tunnel: where does
@@ -164,7 +164,7 @@ def full(p):
     r["cli"]["response_scope"] = j.get("scope", "")
     r["cli"]["refresh_typ"] = decode(j["refresh_token"])[1].get("typ")
 
-    # Replay of a refresh token (D8; uncertainty §3: effect on the
+    # Replay of a refresh token (D8; open question: effect on the
     # session). A → B, then A replayed, then B, then SSO sign-in.
     a = j["refresh_token"]
     st, j2 = token(p, {"grant_type": "refresh_token", "client_id": "eupadev-cli", "refresh_token": a})

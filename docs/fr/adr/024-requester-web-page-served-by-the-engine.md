@@ -22,7 +22,7 @@ l'en-tête `X-EupaDev: 1` (un navigateur ne peut pas l'envoyer en
 cross-origin : une protection CSRF), et authentifie chaque appel avec un
 jeton d'accès Keycloak vérifié par `jose` (ADR-017 : `(iss, sub)` → acteur,
 casquettes tirées des rôles du client `eupadev-api`). Faits réunis le
-2026-10-25 (note `docs/reflexions/2026-10-25-note-chat.md`) : la RFC 10017
+2026-10-25 : la RFC 10017
 (OAuth 2.0 for Browser-Based Apps) nomme trois architectures et recommande
 le backend-for-frontend pour les applications métier qui traitent des
 données personnelles ; un client public dans le navigateur garde un jeton

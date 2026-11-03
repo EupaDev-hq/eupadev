@@ -89,7 +89,7 @@ test('M4b: oscillation A → B → A → immediate escalation, even if the label
   assert.match(text('en', e.reasons[0]!.key, e.reasons[0]!.values), /oscillation.*builder/);
 });
 
-test('M5: the check whose SARIF details are read is the template\'s Opengrep job (Q5: it was `opengrep`, a name no job has)', () => {
+test('M5: the check whose SARIF details are read is the template\'s Opengrep job (it was once `opengrep`, a name no job has)', () => {
   const ci = readFileSync(new URL('../../tool-template/.gitea/workflows/check.yml', import.meta.url), 'utf8');
   const jobs = ci.slice(ci.indexOf('\njobs:\n')).match(/^ {2}[a-z][a-z0-9-]*(?=:$)/gm)?.map((j) => j.trim()) ?? [];
   assert.ok(jobs.includes(SARIF_CHECK), `${SARIF_CHECK} is not a job of check.yml (${jobs.join(', ')})`);

@@ -1,10 +1,10 @@
 /**
- * C1 (A-R6, decision D2, note `docs/reflexions/2026-10-21-note-a-r6.md` §4): the scoping role's `requester_message` is
+ * A-R6: the scoping role's `requester_message` is
  * the only agent text a requester reads. A technical word in it fails the scoping task with the word as reason, and the
  * task is sent back with that reason (`scopingFailure`). Whole words, any case, accents included; plurals too. The
- * refused words are listed per language (`jargon.words` of `lang/*.json`, L10); a message is checked against all of
+ * refused words are listed per language (`jargon.words` of `lang/*.json`); a message is checked against all of
  * them, whatever the deployment's language.
- * ponytail: fixed lists, tuned by a reviewed change; no judgement of plain language (governance D25).
+ * ponytail: fixed lists, tuned by a reviewed change; no LLM judging plain language (the check stays mechanical).
  */
 import { DICTIONARIES, LANGUAGES } from '../i18n.ts';
 

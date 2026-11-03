@@ -9,17 +9,16 @@ a strict pattern BEFORE any action. Output: one JSON line.
 Codes: 0 = answer (even "nothing to do"), 2 = request refused, 1 = error.
 
 E5d: `deploy preview` runs a signed image in the platform Compose model
-(note 2026-10-21-note-e5-refresh.md, plain-template mode). E5e: `deploy
-mockup` reads the scoping commit's tar.gz archive on stdin and serves its
-`web/` folder as static files (ADR-009, ADR-022). E5g: `deploy prod`
-switches side by side, traffic only once healthy. d5 (core mode, ADR-022):
-an image labelled `eupadev.core` needs its Gate 1 entry
+(plain-template mode). E5e: `deploy mockup` reads the scoping commit's tar.gz
+archive on stdin and serves its `web/` folder as static files (ADR-009,
+ADR-022). E5g: `deploy prod` switches side by side, traffic only once healthy.
+Core mode (ADR-022): an image labelled `eupadev.core` needs its Gate 1 entry
 (register-tools.yml), gets the tools database and the egress proxy on its
 network, its migration run once by the same image before any traffic, and the
-core variables; the Prod purge command runs the purge of the served version (daily
-timer). Python standard library only. A Preview deploy of a NEW digest of a
-core tool empties its database first (note 2026-10-26-note-acceptance-on-
-preview.md §3.4): the acceptance suite starts from what `migrate` builds.
+core variables; the Prod purge command runs the purge of the served version
+(daily timer). Python standard library only. A Preview deploy of a NEW digest
+of a core tool empties its database first: the acceptance suite starts from
+what `migrate` builds.
 """
 import base64
 import hashlib

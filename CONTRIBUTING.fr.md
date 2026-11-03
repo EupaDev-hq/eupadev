@@ -38,8 +38,7 @@ la lettre, y compris par les agents IA qui utilisent ce template :
   les règles non négociables.
 - [`tool-template/.claude/rules/*.md`](tool-template/.claude/rules/) —
   règles détaillées par domaine : `backend.md`, `frontend.md`,
-  `security.md` (18 catégories de sécurité), `quality.md` (7 axes de
-  qualité), `tests.md`.
+  `security.md`, `quality.md`, `tests.md`.
 - [`docs/architecture.md`](docs/architecture.md) —
   comment la plateforme elle-même est câblée (modèle de confiance,
   pipeline, contrat de déploiement).
@@ -47,9 +46,12 @@ la lettre, y compris par les agents IA qui utilisent ce template :
   rôles, gates, cycle de vie d'un outil généré.
 
 Si tu modifies une règle dans `.claude/rules/`, mets aussi à jour la
-section correspondante du sous-agent de revue concerné dans
-`.claude/agents/` si la vérification doit changer — une règle sans
-vérification associée n'est en pratique jamais appliquée.
+consigne du relecteur en lecture seule qui la vérifie
+(`agents/security-reviewer.md` ou `agents/quality-reviewer.md`) si la
+vérification doit changer, et régénère les listes fermées du format de
+rapport (`scripts/generate-report-catalogue.js` ; un test unitaire échoue
+tant qu'elles sont périmées) — une règle sans vérification associée n'est
+en pratique jamais appliquée.
 
 ## Faire un changement
 

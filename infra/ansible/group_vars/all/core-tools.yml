@@ -1,5 +1,5 @@
 # Gate 1 entries of the tools built on the core (S8, D-E5): written here by
-# Ilan after approving Gate 1, never in the tool repository (agent-writable)
+# the admin after approving Gate 1, never in the tool repository (agent-writable)
 # nor passed by the engine. Then, from infra/ansible:
 #   ansible-playbook register-tools.yml </dev/null
 # creates for each tool: two Keycloak clients in realm tools (<slug> for
@@ -16,8 +16,7 @@
 #     retentions:                    # RETENTION_<X> read by bin/purge.js; no default
 #       RETENTION_AUDIT: "400 days"
 #       RETENTION_REQUESTS: "3 years"
-# None on the rebuilt lab: the registration of cycle 41's tool died with the old
-# forge (English switch, note Q4).
+# Empty until a tool is approved at Gate 1.
 core_tools: []
 
 # Durations accepted for a retention: PostgreSQL interval, a positive count
@@ -25,9 +24,9 @@ core_tools: []
 # eupadev-deployer.
 core_tools_duration: '^[1-9][0-9]{0,5} (minutes|hours|days|months|years)$'
 
-# Test personas of each tool (note 2026-10-26-note-acceptance-on-preview.md
-# §3.1), created by the registration playbook: two per role, `<slug>-<role>-<n>`,
-# that single role on the Preview client only. Derived, never edited.
+# Test personas of each tool, created by the registration playbook: two per
+# role, `<slug>-<role>-<n>`, that single role on the Preview client only.
+# Derived, never edited.
 core_tools_personas: >-
   {%- set l = [] -%}
   {%- for o in core_tools -%}{%- for r in o.roles -%}{%- for n in ['1', '2'] -%}

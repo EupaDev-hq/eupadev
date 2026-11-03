@@ -400,7 +400,7 @@
             state: absent
           when: check_dir.path is defined
 
-# DBOS executor in service (docs/reflexions/2026-10-15-note-lanceur-service.md):
+# DBOS executor in service:
 # what the Claude Code engine needs, seen from its container.
 - name: Verify the executor of the agents VM
   hosts: agents

@@ -1,97 +1,117 @@
-<div align="right">
+<div align="center">
 
-🇬🇧 [Read in English](README.md)
+<img src="docs/assets/banner.svg" width="100%" alt="EupaDev en enseigne au néon. En dessous, une demande traverse les agents IA, la Gate 1, une Preview et la Gate 2 jusqu'à la Production.">
+
+**Vos experts métier décrivent l'outil dont ils ont besoin. Des agents IA le construisent dans les règles de l'art. Votre DSI approuve chaque mise en production. Tout tourne sur vos propres serveurs.**
+
+[![Licence : Apache 2.0](https://img.shields.io/badge/licence-Apache%202.0-2ff3d6)](LICENSE)
+[![Statut : pré-publication](https://img.shields.io/badge/statut-pr%C3%A9--publication-ff4fa3)](#statut)
+[![DCO requis](https://img.shields.io/badge/contributions-sign--off%20DCO-7fa9b3)](CONTRIBUTING.fr.md)
+
+[Architecture](docs/fr/architecture.md) · [Gouvernance](docs/fr/governance.md) · [Feuille de route](ROADMAP.md) · [Monter le labo](infra/README.md) · [Read in English](README.md)
 
 </div>
 
-# EupaDev
+<!-- screenshots: requester page, mock-up, Preview -->
 
-**Une usine à outils logiciels en libre-service.** Quelqu'un explique, avec
-ses mots, l'outil dont son équipe a besoin ; des agents IA le cadrent,
-l'écrivent, le testent et le durcissent ; des humains approuvent à deux gates
-avant que quoi que ce soit n'atteigne la production. Open core, Apache 2.0 : le moteur est
-ici, les extensions propres à une organisation n'y sont pas.
+## Pourquoi EupaDev existe
 
-> **Statut : pré-publication.** Sur les VM du labo, un cycle complet tourne
-> de bout en bout avec un agent scripté (sans coût d'IA) : la forge Git et sa
-> vraie CI, le moteur (DBOS) et ses gates, une image signée, une Preview avec
-> ses tests, puis la Prod. Construit et prouvé par des tests réels : la forge
-> avec ses comptes robots et ses protections de branche, le runner CI, la
-> golden image, le moteur, le lanceur qui fait tourner Claude Code dans des
-> conteneurs isolés, l'identité Keycloak avec validation à quatre yeux, le
-> socle durci commun des outils générés, le pipeline du template et le
-> déployeur. Pas encore construit : le tableau de bord et les pages de gate. Détails :
-> [`docs/fr/architecture.md`](docs/fr/architecture.md), plan :
-> [`ROADMAP.md`](ROADMAP.md) §8.
+Imaginez une responsable d'équipe qui a besoin d'un petit outil : suivre les
+prêts de matériel, consigner les incidents, relancer les fournisseurs, gérer
+les demandes de congés. Aucun développeur n'est disponible, alors elle ouvre
+un générateur d'applications par IA et, en un après-midi, obtient un premier
+écran qui fonctionne sur son portable. Ça a l'air terminé. Ça ne l'est pas :
+pas de serveur, pas de vraie base de données, pas de connexion, pas de
+sauvegarde, et personne pour maintenir l'outil. Utilisé tous les jours par une
+équipe, il perdrait des données, les ferait fuiter, ou les deux.
 
-## Pourquoi
+Cela se produit en ce moment, dans toutes les organisations à la fois. L'IA a
+rendu la construction assez facile pour que les gens qui connaissent le métier
+fabriquent leurs propres outils, sans la moindre notion de ce qu'est une base
+de données ou un déploiement. Le résultat est une nouvelle vague de shadow IT :
+des outils que personne n'a audités, hébergés nulle part en particulier, dont
+personne n'est responsable.
 
-Donner de l'autonomie à un agent de codage rate de deux façons opposées :
-verrouillé jusqu'à l'inutile, ou lâché jusqu'à devenir un risque. EupaDev
-répond par un cycle où le travail exploratoire bon marché et le travail
-rigoureux sont des étapes séparées, et par une usine où chaque pièce qu'un
-agent pourrait détourner est mise hors de sa portée par construction, pas par
-consigne.
+EupaDev garde la bonne part de ce mouvement et en retire la part dangereuse.
+La personne qui connaît le besoin le décrit ; l'ingénierie est faite comme une
+équipe professionnelle la ferait ; et la DSI décide de ce qui passe en
+production.
 
-## Pour qui — et pour qui ce n'est pas
+## Ce que c'est
 
-**Pour** les ETI et les organisations industrielles qui doivent garder leurs
-outils sur leurs propres serveurs, ont besoin d'outils à vraie logique métier
-(workflows à plusieurs rôles, règles de validation, appels aux systèmes
-internes), veulent posséder le code et la trace d'audit, et n'ont pas de
-développeur disponible pour les écrire.
+EupaDev est une usine à outils auto-hébergée. Un salarié décrit un outil
+métier avec ses mots. Un agent de cadrage construit avec lui une maquette
+cliquable jusqu'à ce que le besoin soit juste. Puis une chaîne d'agents
+transforme le périmètre validé en contrat figé, écrit les tests d'acceptation,
+écrit le code, le relit et confie le résultat à une vraie CI. Deux humains
+approuvent avant que quoi que ce soit n'atteigne la Production.
 
-**Pas pour** :
-- les formulaires, tableaux de bord ou écrans de saisie simples dans une
-  organisation déjà sous Microsoft 365 : Power Apps, déjà payé, le fait plus vite ;
-- les petites structures sans DSI pour héberger et exploiter la plateforme ;
-- les équipes qui ont déjà des développeurs à l'aise avec les agents de code.
+- **Du prompt à l'application, pour l'expert métier.** Le demandeur ne voit
+  jamais de code : un chat, une maquette, puis une Preview qui fonctionne et
+  qu'il essaie.
+- **L'ingénierie est faite derrière.** Chaque outil est généré sur un socle
+  durci commun (`@eupadev/core`) : connexion OIDC, PostgreSQL avec des rôles
+  séparés, validation de chaque requête, journal d'audit en ajout seul,
+  protections web, tests d'acceptation écrits à partir du contrat par un agent
+  indépendant.
+- **La DSI garde la main.** Un humain approuve une fois le nom et le domaine
+  de l'outil (Gate 1), puis chaque version par l'empreinte exacte de son image
+  (Gate 2), avec une règle des quatre yeux : le demandeur ne peut pas approuver
+  son propre outil.
+- **Les agents n'atteignent pas ce qu'ils pourraient détourner.** Conteneurs
+  jetables sous gVisor, aucun jeton de la forge, sorties réseau limitées à une
+  liste d'adresses, fichiers protégés refusés au moment du push. Par
+  construction, pas par consigne.
+- **Un registre unique des outils.** L'orchestrateur tient son propre registre
+  et l'interroge avant le cadrage : une demande qui recoupe un outil existant
+  remonte au product owner au lieu de produire un doublon.
+- **Vos données restent chez vous.** Les outils générés, leurs bases de
+  données et l'usine elle-même tournent sur vos serveurs. La seule chose qui
+  sort est le travail des agents pendant la construction d'un outil, envoyé au
+  fournisseur du modèle sous votre propre compte.
 
-**Souverain sur l'exécution des outils, pas sur leur fabrication.** Les outils
-générés tournent entièrement sur les serveurs de l'organisation. Leur
-fabrication envoie la demande, la spécification et le code au fournisseur du
-modèle, sous le compte de l'organisation ; un traitement dans l'UE est possible
-via Amazon Bedrock ou Google Vertex AI. Voir
+Open core, Apache 2.0 : le moteur est ici ; les extensions propres à une
+organisation (modèles d'outils prêts à l'emploi, intégrations annuaire,
+connecteurs ITSM) n'y sont pas.
+
+## Statut
+
+**Pré-publication.** Sur les VM du labo, un cycle complet tourne de bout en
+bout avec un agent scripté, sans coût d'IA : la forge Git et sa vraie CI, le
+moteur DBOS et ses gates, une image signée, une Preview avec ses contrôles,
+puis la Production. Claude Code a exécuté de vraies tâches dans les conteneurs
+isolés, mais aucun vrai outil n'a encore été mené par un modèle de la demande
+jusqu'à la Production. Le tableau de bord et les pages de gate ne sont pas
+construits : pour l'instant, les gates se décident par l'API locale du moteur.
+Il n'y a pas d'installation en une commande ; le labo, ce sont cinq VM décrites
+en code dans [`infra/`](infra/README.md). Le statut pièce par pièce, avec les
+tests qui le prouvent : [`docs/fr/architecture.md`](docs/fr/architecture.md).
+
+## Comment un outil se construit
+
+<p align="center"><img src="docs/assets/cycle.fr.svg" width="100%" alt="Le cycle : demande, cadrage avec maquette, contrat figé, tests indépendants, constructeur, relecture en lecture seule, puis fusion avec un seul build, Gate 1, Preview, Gate 2 et Production sur la même empreinte. Les écarts de relecture et les modifications de Preview reviennent au constructeur."></p>
+
+1. **Cadrage.** Un agent construit une maquette fonctionnelle avec le
+   demandeur. Rien n'est encore audité ; le périmètre bouge encore.
+2. **Contrat.** Le périmètre validé devient une description OpenAPI et des
+   scénarios Gherkin, puis est figé pour le cycle.
+3. **Durcissement.** L'agent de tests écrit la suite d'acceptation à partir du
+   contrat. Puis l'agent builder écrit le code contre le contrat et cette
+   suite, qu'il peut lire mais pas modifier. Ils ne partagent aucun angle mort.
+4. **Review.** Deux relecteurs en lecture seule signalent les écarts avec le
+   fichier et la ligne ; seul le rôle propriétaire est relancé.
+5. **Fusion et construction unique.** L'orchestrateur fusionne dans `main` ;
+   la CI construit une seule image et enregistre son empreinte.
+6. **Gate 1, Preview, Gate 2, Production.** L'empreinte est déployée en
+   Preview, où tournent les contrôles de performance, d'accessibilité, de
+   sécurité dynamique et la suite d'acceptation de l'outil ; le demandeur
+   l'essaie ; une seconde personne approuve cette empreinte précise ; la
+   Production reçoit les mêmes octets.
+
+Qui tient chaque gate, les budgets par cycle, le décommissionnement :
 [`docs/fr/governance.md`](docs/fr/governance.md).
 
-## Le cycle
-
-1. **Cadrage** — un agent construit une maquette fonctionnelle avec le
-   demandeur. Rien n'est encore audité ; le périmètre bouge.
-2. **Contrat** — le périmètre validé devient une description OpenAPI et des
-   scénarios Gherkin, puis est figé.
-3. **Durcissement** — l'agent de tests écrit la suite d'acceptation à partir
-   du contrat, puis l'agent builder écrit le code contre le contrat et cette
-   suite, chacun sur sa branche et son dossier. L'agent de tests ne lit jamais
-   le code : il ne partage aucun angle mort avec celui qui l'a écrit.
-4. **Review** — deux relecteurs en lecture seule (sécurité, qualité) signalent
-   les écarts ; seuls les rôles propriétaires sont relancés.
-5. **Fusion, construction unique** — l'orchestrateur fusionne dans `main` ; la
-   CI construit une seule image et enregistre son empreinte.
-6. **Gate 1, Preview, Gate 2, Production** — un humain approuve le nom et le
-   domaine une fois ; l'empreinte est déployée en Preview et contrôlée là ; un
-   humain approuve cette empreinte précise ; la Production reçoit la même
-   empreinte. Rien n'est reconstruit entre la Preview et la Production.
-
-```mermaid
-flowchart TD
-    A[Demande] --> B["Cadrage — maquette avec le demandeur"]
-    B -->|périmètre validé| C["Contrat — OpenAPI + Gherkin, figés"]
-    C --> D1[Backend] & D2[Frontend] & D3["Tests (indépendant)"]
-    D1 & D2 & D3 --> E["Review — lecture seule, écarts routés aux propriétaires"]
-    E -->|écarts| D1
-    E -->|conforme| F["Fusion dans main — une construction, une empreinte"]
-    F --> G["🔒 Gate 1 — nom et domaine, une fois"]
-    G --> H["Preview — même empreinte, contrôles joués dessus"]
-    H -->|correction demandée| D1
-    H -->|acceptée| I["🔒 Gate 2 — cette empreinte"]
-    I --> J["🚀 Production — même empreinte"]
-```
-
-Qui tient chaque gate, budgets, décommissionnement :
-[`docs/fr/governance.md`](docs/fr/governance.md).
-
-### Ce que ce projet ne fait volontairement jamais
+## Ce que ce projet ne fait jamais
 
 - **Déployer en production tout seul.** Deux gates humaines, la seconde sur
   une empreinte d'image précise.
@@ -100,49 +120,78 @@ Qui tient chaque gate, budgets, décommissionnement :
 - **Laisser un agent toucher à ses règles.** Sur les branches d'agent, la forge
   refuse au moment du push toute modification de la charte, des prompts de
   rôle, des règles d'analyse ou de la CI.
-- **Faire confiance à l'agent.** Il tourne dans un conteneur jetable, derrière
-  un proxy Docker restreint, avec des sorties réseau limitées aux adresses
-  autorisées et un jeton qui peut pousser sur sa branche et rien d'autre.
+- **Faire confiance à l'agent.** Il tourne dans un conteneur jetable sous
+  gVisor, sans socket Docker, avec des sorties réseau limitées aux adresses
+  autorisées et sans aucun jeton de la forge : le lanceur pousse son travail
+  sur sa propre branche et nulle part ailleurs.
+- **Lire un e-mail pour prendre une décision.** Les gates se décident par une
+  API authentifiée, avec enregistrement de qui, sous quelle casquette, et pour
+  quelle empreinte.
 
-## Comment ça s'articule
+Modèle de confiance complet, comptes robots et leurs droits :
+[`docs/fr/architecture.md`](docs/fr/architecture.md#modèle-de-confiance).
 
-```mermaid
-flowchart LR
-    R[Demandeur] --> O["Orchestrateur (DBOS, PostgreSQL)"]
-    O -->|file de tâches| L[Lanceur d'agents]
-    L -->|proxy Docker restreint| C["Conteneur jetable — moteur d'agent"]
-    C -->|push sur agent/*| G["Forge Gitea — dépôts, registre, comptes robots"]
-    O -->|fusion dans main| G
-    G -->|CI à chaque push| CI["Runner CI — golden image, contrôles"]
-    CI -->|publie l'empreinte sur main| G
-    O -->|déploie une empreinte| P[Preview] --> Prod[Production]
-    classDef todo stroke-dasharray: 5 5
-    class O,L,C,P,Prod todo
-```
+## Pour qui
 
-En pointillé : conçu, pas encore construit. Le moteur d'agent est
-interchangeable derrière un contrat fixe (en entrée : dépôt, consigne, règles,
-plafond de budget ; en sortie : code, rapport JSON, coût). Claude Code est le
-moteur n°1 ; un moteur factice qui rejoue du code préparé permet de tester
-toute la chaîne sans appel d'IA.
+Les ETI et les organisations industrielles qui doivent garder leurs outils sur
+leurs propres serveurs, ont besoin d'outils à vraie logique métier (workflows à
+plusieurs rôles, règles de validation, appels aux systèmes internes), veulent
+posséder le code et la trace d'audit, et n'ont pas de développeur à y
+consacrer.
+
+Probablement pas pour vous s'il vous faut des formulaires ou des tableaux de
+bord simples et que vous payez déjà Microsoft 365 (Power Apps le fait plus
+vite), si vous n'avez pas de DSI pour héberger et exploiter la plateforme, ou
+si vos développeurs sont déjà à l'aise avec les agents de code.
+
+**Souverain sur l'exécution des outils, pas sur leur fabrication.** Fabriquer
+un outil envoie la demande, la spécification et le code au fournisseur du
+modèle, sous le compte de votre organisation. La plateforme appelle
+aujourd'hui l'API d'Anthropic ; Claude Code permet aussi un traitement dans
+l'UE via Amazon Bedrock ou Google Vertex AI. Détails :
+[`docs/fr/governance.md`](docs/fr/governance.md).
+
+## Démarrer
+
+Il n'y a pas encore d'installation rapide. Ce qui existe, c'est le labo :
+cinq VM (forge, CI, orchestrateur, agents, outils) créées par Terraform,
+configurées par Ansible, lancées avec Docker Compose, et prouvées par de vrais
+tests qui nettoient derrière eux. Rien n'est configuré à la main ; si ce n'est
+pas dans `infra/`, ça n'existe pas.
+
+Reconstruire le labo de zéro, lancer les tests, passer du labo à un
+hébergeur : [`infra/README.md`](infra/README.md). Ce qu'une installation
+demande chez un client : [`docs/client-prerequisites.md`](docs/client-prerequisites.md)
+et [`docs/deployment.md`](docs/deployment.md).
 
 ## Contenu de ce dépôt
 
 | Chemin | Ce que c'est |
 |---|---|
-| [`infra/`](infra/) | Le labo, entièrement décrit en code : VM (Terraform), forge, runner et comptes robots (Ansible), services (Compose), tests réels (`verify-*.yml`). |
+| [`orchestrator/`](orchestrator/) | Le moteur : workflows DBOS du cycle et de ses gates, le lanceur d'agents, les adaptateurs de la forge, du déployeur, du mail et de Claude Code, la page web du demandeur. |
+| [`core/`](core/) | `@eupadev/core`, le socle durci commun sur lequel tourne chaque outil généré : serveur, accès à la base, connexion, protections web, modules front, kit de tests de sécurité. |
+| [`tool-template/`](tool-template/) | Le dépôt copié pour chaque nouvel outil : charte des agents (`AGENTS.md`), prompts de rôle, règles par domaine, règles d'analyse, pipelines CI, design system. |
+| [`examples/requests/`](examples/requests/) | Un outil complet écrit à la main sur le socle : la référence qu'imitent les agents. |
 | [`images/base-node/`](images/base-node/) | La golden image dont part chaque image d'outil : durcie, non-root, reconstruite et scannée chaque semaine par la CI de la forge. |
-| [`tool-template/`](tool-template/) | Le dépôt copié pour chaque nouvel outil : charte des agents (`AGENTS.md`), prompts de rôle, règles par domaine, briques livrées, règles d'analyse, pipelines CI, design system. |
-| [`docs/`](docs/) | Documentation de la plateforme : [`architecture.md`](docs/architecture.md), [`governance.md`](docs/governance.md), traductions françaises sous `docs/fr/`. |
-| [`ROADMAP.md`](ROADMAP.md) | La conception avec ses raisons : §1-7 les leçons de la v1, §8 la référence v2 (décisions, alternatives écartées, ordre de construction). |
+| [`infra/`](infra/) | Le labo en code : VM (Terraform), forge, runners et comptes robots (Ansible), services (Compose), tests réels (`verify-*.yml`). |
+| [`docs/`](docs/) | [`architecture.md`](docs/architecture.md), [`governance.md`](docs/governance.md), [`deployment.md`](docs/deployment.md), les ADR dans [`adr/`](docs/adr/), les traductions françaises dans [`fr/`](docs/fr/). |
+| [`ROADMAP.md`](ROADMAP.md) | La conception avec ses raisons : §1-6 les leçons de la v1, §8 la référence v2 (décisions, alternatives écartées, ordre de construction). |
 
-## Démarrer
+<details>
+<summary><strong>Comment les pièces s'articulent</strong></summary>
 
-Tout ce qui existe sur une machine est décrit dans `infra/` ; rien n'est
-configuré à la main. Reconstruire le labo de zéro, lancer les tests réels,
-passer du labo à un hébergeur : [`infra/README.md`](infra/README.md).
+<p align="center"><img src="docs/assets/architecture.fr.svg" width="100%" alt="Cinq VM : orchestrateur (moteur, Keycloak), agents (lanceur, conteneurs jetables, proxys vers l'API du modèle), CI (runners, Previews), forge (Gitea), outils (Production)."></p>
 
-## Principes
+Le moteur d'agent est derrière un contrat fixe (en entrée : dépôt, consigne,
+règles, plafond de budget ; en sortie : code, rapport JSON, coût). Claude Code
+est le moteur n° 1. Un moteur factice qui rejoue des réponses préparées et un
+faux qui pousse des fichiers préparés permettent de tester toute la chaîne sans
+appel d'IA.
+
+</details>
+
+<details>
+<summary><strong>Principes</strong></summary>
 
 - **Le prompt guide, le code vérifie.** Toute règle vérifiable mécaniquement
   devient un contrôle : étape de CI, règle d'analyse, protection de branche.
@@ -160,9 +209,14 @@ passer du labo à un hébergeur : [`infra/README.md`](infra/README.md).
 - **Chaque installation garde ses données.** Ses décisions, ses leçons et les
   données de ses outils ne la quittent jamais.
 
-## Contribuer
+</details>
 
-Voir [`CONTRIBUTING.fr.md`](CONTRIBUTING.fr.md).
+## Contribuer et sécurité
+
+Les contributions sont bienvenues et demandent un sign-off DCO :
+[`CONTRIBUTING.fr.md`](CONTRIBUTING.fr.md). Signalez une vulnérabilité en
+privé comme décrit dans [`SECURITY.md`](SECURITY.md). Questions :
+[`SUPPORT.md`](SUPPORT.md).
 
 ## Licence
 

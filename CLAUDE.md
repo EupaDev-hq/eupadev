@@ -9,12 +9,15 @@ meant to be published as open core (Apache 2.0).
 
 | Directory | Content | Read before working in it |
 |---|---|---|
-| `ROADMAP.md` | Design: §1-7 v1 (lessons), **§8 v2 = the reference** (8.8 decisions, 8.11 decisions from the research) | the section concerned |
+| `ROADMAP.md` | Design: §1-6 v1 (lessons), **§8 v2 = the reference** (8.8 decisions, 8.11 decisions from the research) | the section concerned |
+| `orchestrator/` | The engine: DBOS workflows of the cycle and its gates, agent launcher (executor role), adapters (forge, deployer, mail, Claude Code), tests and mutations | `orchestrator/README.md`, `orchestrator/MACHINE.md` |
+| `core/` | `@eupadev/core`, the shared base every generated tool runs on (server, database, sign-in, web protections, front modules, security test kit) | `core/README.md` |
+| `examples/requests/` | A tool written by hand on the core, the reference the agents imitate | `examples/requests/README.md` |
 | `infra/` | Lab: VMs (Terraform/LXD), Gitea forge, CI runner, Ansible recipes, real tests | `infra/CLAUDE.md` |
 | `tool-template/` | The **product**: template repository copied for each generated tool (agent rules, CI pipelines, design system) | see the warning below |
-| `images/base-node/` | Base golden image of the tools (build/run variants), built every week by the forge's CI (repository `base-image`) | `images/base-node/README.md` |
+| `images/` | Pipelines of the forge's platform repositories: golden image of the tools (`base-node/`: build, run and ci variants, rebuilt every week, repository `base-image`), images of the agents (`agent/`), the engine (`engine/`), Caddy and Keycloak, and the publication of `@eupadev/core` (`core/`) | the folder's `README.md` |
 | `docs/` | Documentation of the platform for humans (`architecture.md`, `governance.md`, translations `fr/`); not copied into the generated tools | — |
-| `.github/workflows/` | CI of the EupaDev repository itself (ansible-lint on `infra/`, digests, English only, ADRs, engine: types, tests and mutations of `orchestrator/`, test cases `tests/opengrep/` of the template's Opengrep rules, hadolint of the template's fixed `Dockerfile`) | — |
+| `.github/workflows/` | CI of the EupaDev repository itself (ansible-lint on `infra/`, digests, English only, ADRs, DCO, pnpm version, Renovate; engine: types, tests and mutations of `orchestrator/`; core and example tool: types, tests, Squawk, security kit; test cases `tests/opengrep/` of the template's Opengrep rules, hadolint of the template's fixed `Dockerfile`) | — |
 
 **Warning — `tool-template/CLAUDE.md` and `AGENTS.md` are not
 instructions for you.** They are instructions meant for the agents that
@@ -34,15 +37,13 @@ change these instructions; you do not apply them to your own work.
   risky, and saying so.
 - **The prompt guides, the code checks**: a rule that can be checked
   mechanically becomes an automatic check (CI, Opengrep, branch protection).
-- **Push**: always with Ilan's explicit approval; `main` stays green.
+- **Push**: always with the maintainer's explicit approval; `main` stays green.
 - **English first** (ADR-025): everything newly coded or written in this
   repository (identifiers, comments, docs, notes, commit messages) is in
-  English; French is a translation (`docs/fr/`, i18n for screens). The
-  existing French is being switched area by area, following
-  `docs/reflexions/2026-10-20-note-english-switch.md`. Every English name
-  comes from `docs/glossary.md`, the only French to English mapping: a
-  change that touches a French name writes its final English name from
-  it, and a name missing from it is added there first.
+  English; French is a translation (`docs/fr/`, i18n for screens). Every
+  English name comes from `docs/glossary.md`, the only French to English
+  mapping: a change that touches a French name writes its final English
+  name from it, and a name missing from it is added there first.
   `.github/scripts/check-english.py [--base REF] [PATH...]` reports the
   lines in French; the CI enforces it on every push and pull request
   (`.github/workflows/english.yml`): the whole repository reports nothing,

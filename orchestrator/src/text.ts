@@ -1,5 +1,5 @@
 /**
- * Invisible or control characters ("Rules File Backdoor", Pillar 2025; instructions note, correction 6): refused in any
+ * Invisible or control characters ("Rules File Backdoor", Pillar 2025): refused in any
  * text that reaches the trusted channel — role instructions at build time, the comment of a gate decision (hence the
  * catalogue description), names of files pushed by an agent. C0 and C1 except tab and line feed, zero-width
  * (U+200B-200F), separators and bidi controls (U+2028-202E, U+2066-2069), U+2060-2064, BOM (U+FEFF), Unicode tags

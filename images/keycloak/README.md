@@ -19,8 +19,8 @@ signature with `images/engine/cosign.pub`. Its log ends with
 put in `keycloak_image` (`infra/ansible/group_vars/orchestrator/vars.yml`);
 `ansible-playbook engine-digest.yml -e repo=keycloak` reads it.
 
-Upgrading: new digest in both `FROM` (same version, read through the
-registry API), expected version in the pipeline, then
+Upgrading: new digest in the Keycloak `FROM` (and in the `ubi9` one when it
+changes; read through the registry API), expected version in the pipeline, then
 `site.yml --limit eupadev-forge` and the new digest in
 `keycloak_image`. Always a dump of the `keycloak` database first (the schema
-has no rollback: `docs/reflexions/2026-10-15-analyse-keycloak.md`, D10).
+has no rollback).

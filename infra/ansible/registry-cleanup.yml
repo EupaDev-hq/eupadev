@@ -1,5 +1,4 @@
-# Cleanup of the forge's image registry
-# (docs/reflexions/2026-10-18-note-nettoyage-registre.md).
+# Cleanup of the forge's image registry.
 #   ansible-playbook registry-cleanup.yml                # trial mode: lists, erases nothing
 #   ansible-playbook registry-cleanup.yml -e apply=true  # erases
 # Always kept: the images in service (orchestrator_image, agents_image,

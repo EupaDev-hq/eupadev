@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Cleanup of the forge's image registry (tasks/registry-cleanup.yml).
 
-Design note: docs/reflexions/2026-10-18-note-nettoyage-registre.md.
 Standard library only. Parameters as JSON on standard input (password
 included: never as an argument; without `password`, it is read from the
 systemd credential `password`, LoadCredential= of the unit

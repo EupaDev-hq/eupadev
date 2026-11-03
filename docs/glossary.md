@@ -1,9 +1,9 @@
 # Glossary — French → English
 
-Step 0 of the English switch (plan: `docs/reflexions/2026-10-20-note-english-switch.md`), 2026-10-28, built on
-commit `77e6d10`. This file is **the** French → English mapping: every later step follows it. A name that is not
-here is added here, with its English form, in the commit that renames it; changing an English choice changes this
-file first. The French column is the name as it is today; the English column is its final name.
+Step 0 of the English switch, 2026-10-28, built on commit `77e6d10`. This file is **the** French → English mapping:
+every later step follows it. A name that is not here is added here, with its English form, in the commit that renames
+it; changing an English choice changes this file first. The French column is the name before the switch, and the
+Where column the files as they were then (commit `77e6d10`); the English column is the final name.
 
 - One row per French term: French | English | Where (representative files) | Notes.
 - **Words** is the word dictionary: any name not listed is translated word by word with it, then put in English
@@ -17,7 +17,7 @@ file first. The French column is the name as it is today; the English column is 
 
 How the term list was built, so that completeness can be checked:
 
-1. **Scan** of the 573 tracked files outside `docs/reflexions/` (lockfiles excluded): JS/TS parsed with the
+1. **Scan** of the 573 tracked files outside the private notes (lockfiles excluded): JS/TS parsed with the
    TypeScript compiler API (declarations, exports, parameters, object keys, property accesses, string literals,
    `process.env`); Python with `ast`; YAML with PyYAML (keys, scalars, Jinja expressions, paths, SQL and options inside
    commands); SQL by statement (tables, columns, functions, triggers, constraints, indexes, roles, CHECK values,
@@ -77,22 +77,24 @@ directory:
 - **Casing and separators** are kept (camelCase, snake_case, kebab-case, UPPER_SNAKE); abbreviations stay short
   (`dir`, `repo`, `db`, `env`).
 - **Spelling**: British English, as the existing English documents (`organisation`, `licence`, `catalogue`).
-- **Decisions of 2026-10-28** (note §2): L1 `socle` → `core` (`@eupadev/core`, `core/`, `/core/…`); L5
+- **Decisions of 2026-10-28**: L1 `socle` → `core` (`@eupadev/core`, `core/`, `/core/…`); L2 and L3 the
+  migrations of the core and of the example tool rewritten in place (every database carrying them is rebuilt); L5
   `demandeur` → `requester`, `lecteur` → `reader`, `gestionnaire` → `manager`, `admin` stays; L8 `orchestrateur/` →
   `orchestrator/`, `template-outil-ia/` → `tool-template/`, `exemples/` → `examples/`, Gitea repos `moteur` → `engine`,
   `image-base` → `base-image`; L9 live names renamed directly (the lab is rebuilt); L10 human-facing texts in
-  `lang/en.json` + `lang/fr.json` next to the code that shows them, English keys.
+  `lang/en.json` + `lang/fr.json` next to the code that shows them, English keys; L6 the ADRs' vocabulary and file
+  names translated once (ADR-026); L7 the private notes keep their French names and are not published (ADR-025).
 - **Final names only**: a step that touches a name writes its final English name, never a half-translated one.
-- **Product name**: renamed by the product rename pass (note step 9) in its three casings, see Product name below.
+- **Product name**: renamed by the product rename pass (step 9) in its three casings, see Product name below.
 - **Not renamed**: third-party names (Gitea and Keycloak API fields, DBOS API, npm packages of others, HTTP
-  headers); `docs/reflexions/` (L7).
+  headers); the private notes (L7).
 - **French copies**: root files `X.fr.md`; everywhere else `docs/fr/` mirroring the English path and file name.
 - **Prose** (comments, messages, documents, test titles) is translated, not listed; its domain words follow Domain
   terms below.
 
 ## Product name
 
-Step 9 (product rename pass) replaced the former product name by `EupaDev` everywhere outside `docs/reflexions/`:
+Step 9 (product rename pass) replaced the former product name by `EupaDev` everywhere outside the private notes:
 prose, npm scope, Docker labels, paths, systemd units, environment variables, Gitea organisation, Keycloak realm and
 clients, HTTP header, VM names. Only its three casings existed; each keeps its casing. These rows, the ADR checker
 (`--new-product-name`, ADR-026) and its test are the only places where the former name remains.
@@ -698,7 +700,7 @@ The word dictionary. Every identifier is translated word by word with it, then p
 | `envoyees` | `sent` | `orchestrateur/migrations/0007_notifications-envoyees.sql`, `orchestrateur/README.md` | `notifications_envoyees` → `sent_notifications` |
 | `envoyer` | `send` | `orchestrateur/tests/robustesse.test.ts`, `orchestrateur/features/steps/actions.ts` |  |
 | `envoyes` | `sent` | `orchestrateur/src/exterieur/factices.ts` |  |
-| `epi` | `ppe` | `infra/ansible/group_vars/all/outils-socle.yml` | `gestion-epi` (personal protective equipment, a real tool name) → `ppe-management` |
+| `epi` | `ppe` | `infra/ansible/group_vars/all/outils-socle.yml` | personal protective equipment |
 | `epreuve` | `test` | `infra/ansible/verify-moteur.yml` |  |
 | `epuisees` | `exhausted` | `orchestrateur/tests/machine.test.ts`, `orchestrateur/migrations/0012_machine-etats.sql` |  |
 | `equipe` | `team` | `orchestrateur/tests/forge-gitea.test.ts`, `orchestrateur/src/exterieur/forge-gitea.ts` |  |
@@ -1734,8 +1736,7 @@ Scope: `socle/` (src, kit, web, bin, sql, migrations, tests incl. `tests/exemple
 
 ### Exports
 
-`src/index.js` exports 25 names; 23 are French (only `safeReturnTo` and `safeEqual` are English). The note's
-"19 of 21" is stale.
+`src/index.js` exports 25 names; 23 are French (only `safeReturnTo` and `safeEqual` are English).
 
 | French | English | Where | Notes |
 |---|---|---|---|
@@ -4795,7 +4796,7 @@ package and kit names; template files) follow that area's rows: the verify playb
 | `docs/fr/prerequis-client.md` | `docs/fr/client-prerequisites.md` | `docs/fr/installation.md:9,51,154` | idem |
 | `docs/reflexions/` | `docs/reflexions/` (unchanged, private) | 121 references in 74 tracked files | L7: stays French in the private repository; every link to it is removed before publication |
 
-### ADR file names (one-time exception L6; note Q1)
+### ADR file names (one-time exception L6, ADR-026)
 
 | French | English | Where | Notes |
 |---|---|---|---|
@@ -4925,11 +4926,10 @@ translated (step 6), so that later steps cite them the same way.
 | `evenement-<id>-<abonné>` | `event-<id>-<subscriber>` | `ROADMAP.md` §8.11 no. 5 | planned workflow id |
 | `<outil>-<itération>-<rôle>` | `<tool>-<iteration>-<role>` | `ROADMAP.md` §8.12 E4 | task id pattern |
 
-## Open questions
+## Open questions (settled)
 
-Genuinely ambiguous points, with a recommendation; until Ilan decides, the recommendation is what the rows above use.
-The plan-level questions (ADR file names, links to private notes, which documents get a French copy, `gestion-epi`,
-the `analyse`/`opengrep` check name, rename and rebuild order) are in the note, §7.
+Points that were genuinely ambiguous when the glossary was built, with the recommendation the rows above use; each
+was settled as recommended.
 
 | # | Question | Rows above use | Alternative |
 |---|---|---|---|

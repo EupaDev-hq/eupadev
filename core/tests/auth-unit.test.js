@@ -1,7 +1,7 @@
 // Authentication, without a network or a database: OIDC client built on static metadata, local JWKS (jose), fake
 // database. Covers the sign-in redirect, the transaction cookie, the callback refusals that come before any code
 // exchange (cookie missing, forged state, issuer error), the session provider (malformed token → no query), sign-out
-// without a session, and each rule of the logout token (§2.2).
+// without a session, and each rule of the logout token.
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync, writeFileSync } from 'node:fs';

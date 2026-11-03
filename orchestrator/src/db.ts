@@ -499,7 +499,7 @@ export class Database {
   }
 
   /**
-   * Chat page (note 2026-10-25): the cycle's messages with an id above `since` (0 = the whole history), in order; the page
+   * Chat page (ADR-024): the cycle's messages with an id above `since` (0 = the whole history), in order; the page
    * polling every ~10 s passes back the last `id` it got.
    * ponytail: cursor = identity id; two concurrent inserts can commit out of order (a smaller id visible after a larger
    * one) — switch to a commit-ordered cursor if a message is ever seen missing.
@@ -602,7 +602,7 @@ export class Database {
   }
 
   /**
-   * Catalogue of the tools for the overlap search (instructions note, decision 2): all the tools except the one of the
+   * Catalogue of the tools for the overlap search: all the tools except the one of the
    * request, archived ones included (marked), with a short description = comment of the last Gate 1 approval
    * (a human's text, filtered of invisible characters on receipt, truncated to 300 characters), null without approval.
    * Passed to the agent as DATA (task context), never in its instructions.

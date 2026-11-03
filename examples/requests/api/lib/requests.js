@@ -1,4 +1,4 @@
-// Reading one request and the scope of each person (note §3), shared by the request handlers.
+// Reading one request and the scope of each person, shared by the request handlers.
 // Dates as ISO 8601 text from the database (microseconds included: the cursor of listRequests compares them as is).
 
 export const SELECTION = `SELECT r.id, d.title, d.description, d.location, d.closing_note, r.category_code AS category, r.urgency, r.status,

@@ -1,327 +1,519 @@
-/* ============================================================
-   design-system.css — EupaDev's shared design system
-   ============================================================
-   Extracted and consolidated from real production applications on the
-   same infrastructure — not a from-scratch creation. Vanilla CSS, zero
-   dependency, zero build step — sticks to what's actually already
-   running, see `.claude/rules/frontend.md`.
+/* EupaDev design system for internal business tools.
+   Copy this file unchanged to web/styles/design-system.css; put a tool's own classes in another stylesheet.
+   Plain CSS: no build step, no external resource, no inline style needed (the tools' CSP is style-src 'self').
+   Element defaults sit inside :where() so that any class of the tool overrides them without a fight.
+   Colours are OKLCH, light and dark (prefers-color-scheme); both themes meet WCAG 2.2 AA:
+   text 4.5:1, control borders, focus ring and chart series 3:1. */
 
-   This file is duplicated as-is into every generated tool (same
-   mechanism as backend.md/quality.md), copied at the Design step of the
-   cycle (AGENTS.md §2) to the tool's actual frontend location
-   (`web/styles/design-system.css` or equivalent). Extend by ADDING
-   classes, never by changing the value of the tokens below — otherwise
-   two generated tools drift apart visually for no reason (the
-   "Christmas tree" effect).
-   ============================================================ */
-
-/* The `hidden` attribute always hides, even on a class that sets `display`
-   (`.nav-item` is `display: flex`). */
-[hidden] { display: none !important; }
+/* ---------------------------------------------------------------- Tokens */
 
 :root {
-  /* Brand color — neutral action, links, focus, active nav items.
-     Is NOT "the only allowed color": see the status palette below, each
-     one has a precise meaning and must be used for THAT precise meaning,
-     not just for visual variety. */
-  --blue: #0b3d63;
-  --blue-light: #e8f1f8;
-  --blue-dark: #0a3455;
+  color-scheme: light dark;
+  accent-color: var(--blue);
 
-  --border: #dde3ea;
-  --text: #182430;
-  --text-soft: #5c6b78;
-  --text-faint: #8b98a3;
-  --background: #f2f5f8;
-  --surface: #ffffff;
+  /* Neutrals, tinted toward the accent hue (245). */
+  --page-bg: oklch(0.983 0.004 245);      /* behind everything */
+  --side-bg: oklch(0.962 0.006 245);      /* navigation */
+  --panel-bg: oklch(1 0 0);               /* panels, fields, tables */
+  --hover-bg: oklch(0.935 0.008 245);     /* pointer over a control or a row */
+  --pressed-bg: oklch(0.905 0.01 245);    /* pressed control, current navigation entry */
+  --line: oklch(0.88 0.01 245);           /* hairlines: panel edges, table rules */
+  --control-border: oklch(0.6 0.014 245); /* edge of fields and buttons: 3:1 on page, navigation and panels */
+  --text-soft: oklch(0.47 0.016 245);     /* hints, column headers, secondary text */
+  --text-main: oklch(0.25 0.018 245);
 
-  /* Status palette — each color has a fixed meaning, reused identically
-     everywhere. Never repurpose a color for "looking nice" (e.g. red for
-     anything other than an error/rejection/failure). */
-  --green: #1e7a4c;        /* success / approved / confirmed */
-  --green-light: #e9f6ee;
-  --orange: #a15c00;       /* warning / pending / partial */
-  --orange-light: #fbf0e0;
-  --red: #c23b32;          /* error / rejected / failure */
-  --red-light: #fdf0ee;
+  /* Status colours, one meaning each: green success, orange pending, red error, blue neutral action.
+     The plain token is safe as text on the page and on panels; -bg and -border dress a badge. */
+  --blue: oklch(0.48 0.12 245);           /* also the accent: primary action, links, focus, selection */
+  --blue-strong: oklch(0.4 0.1 245);      /* hover and press of the accent */
+  --on-blue: oklch(1 0 0);                /* text on a --blue fill */
+  --blue-bg: oklch(0.955 0.022 245);
+  --blue-border: oklch(0.83 0.05 245);
+  --green: oklch(0.48 0.1 150);
+  --green-bg: oklch(0.955 0.03 150);
+  --green-border: oklch(0.83 0.07 150);
+  --orange: oklch(0.5 0.115 55);
+  --orange-bg: oklch(0.955 0.03 70);
+  --orange-border: oklch(0.84 0.075 65);
+  --red: oklch(0.5 0.165 27);
+  --red-bg: oklch(0.955 0.022 20);
+  --red-border: oklch(0.84 0.065 22);
 
-  --shadow-card: 0 1px 2px rgba(15, 35, 58, 0.05), 0 1px 1px rgba(15, 35, 58, 0.04);
-  --shadow-hover: 0 6px 16px rgba(15, 35, 58, 0.1);
+  /* Chart series, used in this order (core/web/svg-chart.js); --series-other from the seventh on.
+     Hues and lightness chosen to stay apart for the common colour-vision deficiencies. */
+  --series-1: oklch(0.57 0.12 245);
+  --series-2: oklch(0.6 0.14 55);
+  --series-3: oklch(0.43 0.1 350);
+  --series-4: oklch(0.55 0.08 185);
+  --series-5: oklch(0.65 0.085 85);
+  --series-6: oklch(0.47 0.14 320);
+  --series-other: oklch(0.62 0.01 245);
 
-  /* Categorical palette (6 series max, fixed order — never recycled onto
-     a 7th series) for any chart/dataviz: validated colorblind-safe by
-     the dataviz skill's scripts/validate_palette.js (delta E adjacent
-     >= 8 CVD / >= 15 normal vision). A 7th+ series falls back to
-     --series-other, never a newly invented hue. */
-  --series-1: #2a78d6;
-  --series-2: #eb6834;
-  --series-3: #1baf7a;
-  --series-4: #eda100;
-  --series-5: #e87ba4;
-  --series-6: #008300;
-  --series-other: #8b98a3;
+  /* Type: the platform's own interface font, a monospace for codes and identifiers. */
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", "Noto Sans", "Liberation Sans", Arial, sans-serif;
+  --font-mono: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+  /* Space on a 4px grid; tighter inside a group than between groups. */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+
+  --radius: 4px;          /* fields, buttons, badges, panels */
+  --radius-large: 8px;    /* dialogs */
+  --control-height: 2.25rem;
 }
 
-* { box-sizing: border-box; }
+@media (prefers-color-scheme: dark) {
+  :root {
+    --page-bg: oklch(0.2 0.008 245);
+    --side-bg: oklch(0.18 0.008 245);
+    --panel-bg: oklch(0.235 0.01 245);
+    --hover-bg: oklch(0.28 0.012 245);
+    --pressed-bg: oklch(0.32 0.014 245);
+    --line: oklch(0.34 0.014 245);
+    --control-border: oklch(0.56 0.016 245);
+    --text-soft: oklch(0.76 0.014 245);
+    --text-main: oklch(0.94 0.006 245);
+
+    --blue: oklch(0.74 0.11 245);
+    --blue-strong: oklch(0.82 0.08 245);
+    --on-blue: oklch(0.2 0.02 245);
+    --blue-bg: oklch(0.3 0.05 245);
+    --blue-border: oklch(0.45 0.08 245);
+    --green: oklch(0.77 0.12 150);
+    --green-bg: oklch(0.3 0.045 150);
+    --green-border: oklch(0.45 0.08 150);
+    --orange: oklch(0.79 0.12 65);
+    --orange-bg: oklch(0.31 0.045 60);
+    --orange-border: oklch(0.47 0.08 60);
+    --red: oklch(0.75 0.13 25);
+    --red-bg: oklch(0.31 0.06 25);
+    --red-border: oklch(0.47 0.11 25);
+
+    --series-1: oklch(0.72 0.12 245);
+    --series-2: oklch(0.82 0.11 55);
+    --series-3: oklch(0.74 0.08 350);
+    --series-4: oklch(0.82 0.09 185);
+    --series-5: oklch(0.66 0.11 80);
+    --series-6: oklch(0.62 0.13 320);
+    --series-other: oklch(0.58 0.01 245);
+  }
+}
+
+/* ------------------------------------------------------- Base elements */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+/* The hidden attribute always wins, even over a class that sets display. */
+[hidden] {
+  display: none !important;
+}
 
 body {
   margin: 0;
-  font-family: -apple-system, "Segoe UI", system-ui, Roboto, sans-serif;
-  color: var(--text);
-  background: var(--background);
-  -webkit-font-smoothing: antialiased;
+  font-family: var(--font-sans);
+  font-size: 1rem; /* 16px on small screens: readable, and phones do not zoom into fields */
+  line-height: 1.45;
+  color: var(--text-main);
+  background: var(--page-bg);
+  overflow-wrap: break-word;
 }
 
-/* ---------------------------------------------------------------------
-   Default layout — sidebar + content (default). Reserved for the
-   "workstation" application layout. A distinct mobile/field sub-flow
-   (BYOD, standing/quick use, not office use) can keep a lighter chrome —
-   see `.topbar` below, to document explicitly in the generated tool's
-   docs/DECISIONS.md if used.
-   --------------------------------------------------------------------- */
+:where(h1, h2, h3) {
+  margin: 0;
+  font-weight: 600;
+  line-height: 1.2;
+}
+:where(h1) {
+  margin-block-end: var(--space-4);
+  font-size: 1.5rem;
+}
+:where(h2) {
+  margin-block: var(--space-6) var(--space-3);
+  font-size: 1rem;
+}
+:where(h3) {
+  margin-block: var(--space-5) var(--space-2);
+  font-size: 0.875rem;
+}
+
+:where(p, ul, ol, dl) {
+  margin-block: var(--space-3);
+}
+
+:where(a) {
+  color: var(--blue);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.2em;
+}
+:where(a:hover) {
+  color: var(--blue-strong);
+  text-decoration-thickness: 2px;
+}
+
+:where(code, kbd, samp, pre) {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+
+:where(img) {
+  max-width: 100%;
+  height: auto;
+}
+
+::selection {
+  color: var(--text-main);
+  background: var(--blue-bg);
+}
+
+/* One focus ring for everything reachable by keyboard: thin, offset, accent colour. */
+:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+}
+
+/* Tables: hairline rules, figures in tabular digits, headers quieter than the data. */
+:where(table) {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+:where(caption) {
+  padding-block-end: var(--space-2);
+  font-weight: 600;
+  text-align: start;
+}
+:where(th, td) {
+  padding: var(--space-2) var(--space-3);
+  text-align: start;
+  vertical-align: top;
+  border-block-end: 1px solid var(--line);
+}
+:where(th) {
+  font-weight: 600;
+}
+:where(thead th) {
+  font-size: 0.8125rem;
+  color: var(--text-soft);
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+:where(tbody tr:hover) {
+  background: var(--hover-bg);
+}
+
+/* Forms: the label sits above its field; fields share one height with buttons. */
+:where(label) {
+  display: block;
+  margin-block: var(--space-4) var(--space-1);
+  font-weight: 500;
+}
+:where(label:first-child) {
+  margin-block-start: 0;
+}
+:where(input:not([type="checkbox"], [type="radio"], [type="file"], [type="range"], [type="color"], [type="hidden"], [type="submit"], [type="reset"], [type="button"], [type="image"]), select, textarea) {
+  display: block;
+  width: 100%;
+  max-width: 40rem;
+  min-height: var(--control-height);
+  padding: var(--space-1) var(--space-3);
+  font: inherit;
+  color: var(--text-main);
+  background: var(--panel-bg);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius);
+}
+:where(textarea) {
+  padding-block: var(--space-2);
+  resize: vertical;
+}
+:where(input:not(:disabled):hover, select:not(:disabled):hover, textarea:not(:disabled):hover) {
+  border-color: var(--text-soft);
+}
+/* Shown once the user has touched the field, or when the server sends a field back (core/web/form.js). */
+:where(input:user-invalid, select:user-invalid, textarea:user-invalid) {
+  border-color: var(--red);
+}
+:where(input[type="file"]) {
+  display: block;
+  max-width: 100%;
+  font: inherit;
+}
+::placeholder {
+  color: var(--text-soft);
+  opacity: 1;
+}
+
+/* Buttons: neutral by default; .btn-primary for the one main action of a form or a page. */
+:where(button),
+::file-selector-button,
+.btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  min-height: var(--control-height);
+  padding: var(--space-1) var(--space-3);
+  font: inherit;
+  font-weight: 500;
+  color: var(--text-main);
+  text-decoration: none;
+  background: var(--panel-bg);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: background-color 150ms ease-out, border-color 150ms ease-out;
+}
+::file-selector-button {
+  margin-inline-end: var(--space-3);
+}
+:where(form > button) {
+  margin-block-start: var(--space-4);
+}
+:where(button:not(:disabled):hover) {
+  background: var(--hover-bg);
+}
+:where(button:not(:disabled):active) {
+  background: var(--pressed-bg);
+}
+/* Kept apart: a browser that rejects one of these selectors drops only this rule. */
+::file-selector-button:hover {
+  background: var(--hover-bg);
+}
+.btn-primary {
+  color: var(--on-blue);
+  background: var(--blue);
+  border-color: var(--blue);
+}
+.btn-primary:not(:disabled):hover,
+.btn-primary:not(:disabled):active {
+  background: var(--blue-strong);
+  border-color: var(--blue-strong);
+}
+:where(button:disabled, button[aria-disabled="true"], input:disabled, select:disabled, textarea:disabled) {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* Dialogs float: the only layer with a shadow. */
+:where(dialog) {
+  max-width: min(32rem, calc(100vw - 2rem));
+  padding: var(--space-5);
+  color: var(--text-main);
+  background: var(--panel-bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-large);
+  box-shadow: 0 8px 24px oklch(0.2 0.02 245 / 0.2);
+}
+:where(dialog)::backdrop {
+  background: oklch(0.2 0.02 245 / 0.45);
+}
+
+/* ---------------------------------------------------------------- Layout */
+
+/* .app-shell holds a .sidebar (navigation) and an .app-main (the page). Narrow screens: the navigation is a strip
+   above the page; from 48rem it becomes a column on the left. */
 .app-shell {
-  display: flex;
-  align-items: stretch;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
   min-height: 100vh;
 }
 
 .sidebar {
-  flex: 0 0 232px;
-  position: sticky;
-  top: 0;
-  align-self: flex-start;
-  height: 100vh;
-  background: linear-gradient(185deg, rgba(11, 61, 99, 0.93) 0%, rgba(8, 42, 70, 0.96) 100%);
-  color: rgba(255, 255, 255, 0.78);
   display: flex;
   flex-direction: column;
-  padding: 1.5rem 1.1rem;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-2);
+  background: var(--side-bg);
+  border-block-end: 1px solid var(--line);
 }
-
 .sidebar-brand {
   display: flex;
   align-items: center;
-  gap: 0.65rem;
-  padding: 0.3rem 0.5rem 1.75rem;
-  color: white;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
 }
-
-.sidebar-brand-logo {
-  width: 34px;
-  height: 34px;
-  border-radius: 9px;
-  background: #fff;
-  object-fit: contain;
-  padding: 3px;
-  flex-shrink: 0;
+.sidebar-brand-text {
+  display: grid;
 }
-
-.sidebar-brand-text { display: flex; flex-direction: column; line-height: 1.2; }
-.sidebar-brand-name { font-weight: 700; font-size: 0.98rem; }
-.sidebar-brand-sub { font-size: 0.72rem; color: rgba(255, 255, 255, 0.55); }
-
+.sidebar-brand-name {
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1.2;
+}
+.sidebar-brand-sub {
+  font-size: 0.75rem;
+  color: var(--text-soft);
+}
 .sidebar-nav {
   display: flex;
-  flex-direction: column;
-  gap: 0.15rem;
+  flex-wrap: wrap;
+  gap: var(--space-1);
 }
 
-.sidebar-nav .nav-item {
+/* A navigation entry, link or button (sign-out); .active marks the current page. */
+.nav-item {
   display: flex;
   align-items: center;
-  gap: 0.7rem;
-  padding: 0.6rem 0.7rem;
-  border-radius: 8px;
-  border: none;
-  background: none;
-  width: 100%;
-  color: rgba(255, 255, 255, 0.72);
-  text-decoration: none;
+  justify-content: flex-start;
+  min-height: 2rem;
+  padding: 0 var(--space-3);
   font: inherit;
-  font-size: 0.88rem;
-  font-weight: 500;
-  text-align: left;
+  color: var(--text-main);
+  text-align: start;
+  text-decoration: none;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius);
   cursor: pointer;
-  transition: background 0.12s ease, color 0.12s ease;
+  transition: background-color 150ms ease-out;
 }
-
-.sidebar-nav .nav-item svg { width: 18px; height: 18px; flex-shrink: 0; opacity: 0.9; }
-
-/* Solid colors rather than a semi-transparent white overlay: an
-   automated contrast-checking tool can't resolve the composition of a
-   rgba(255,255,255,X) over its ancestor background — with a solid color,
-   contrast is directly verifiable. */
-.sidebar-nav .nav-item:hover { background: #153a5c; color: white; }
-.sidebar-nav .nav-item.active {
-  background: #1d4a72;
-  color: white;
+.nav-item:hover {
+  background: var(--hover-bg);
+}
+.nav-item.active {
   font-weight: 600;
-}
-
-.sidebar-footer {
-  margin-top: auto;
-  padding: 0.5rem;
-  font-size: 0.72rem;
-  color: rgba(255, 255, 255, 0.4);
-  letter-spacing: 0.02em;
+  background: var(--pressed-bg);
+  box-shadow: inset 0 -2px 0 var(--blue);
 }
 
 .app-main {
-  flex: 1;
   min-width: 0;
-  padding: 2rem 2.75rem 4rem;
+  max-width: 80rem;
+  padding: var(--space-4);
 }
 
-@media (max-width: 760px) {
-  .app-shell { flex-direction: column; }
-  .sidebar {
-    position: static;
-    height: auto;
-    width: auto;
-    flex-direction: row;
-    align-items: center;
-    gap: 1.5rem;
-    padding: 0.85rem 1.1rem;
+@media (min-width: 48rem) {
+  body {
+    font-size: 0.875rem; /* 14px: the dense desktop size */
   }
-  .sidebar-brand { padding: 0; }
-  .sidebar-nav { flex-direction: row; flex-wrap: wrap; gap: 0.3rem; }
-  .sidebar-footer { display: none; }
-  .app-main { padding: 1.5rem 1.25rem 3rem; }
+  .app-shell {
+    grid-template-columns: 14rem minmax(0, 1fr);
+  }
+  .sidebar {
+    gap: var(--space-4);
+    padding-block: var(--space-4);
+    border-block-end: 0;
+    border-inline-end: 1px solid var(--line);
+  }
+  /* The column runs the full height of the page; the entries stay in view while the page scrolls. */
+  .sidebar-nav {
+    position: sticky;
+    top: var(--space-4);
+    flex-direction: column;
+    flex-wrap: nowrap;
+  }
+  .nav-item.active {
+    box-shadow: inset 2px 0 0 var(--blue);
+  }
+  .app-main {
+    padding: var(--space-5) var(--space-6);
+  }
 }
 
-/* "Field" variant — compact top bar, for a mobile/BYOD sub-flow distinct
-   from the office layout above (e.g. a quick scan/entry flow). Use
-   instead of .app-shell, not in addition to it. */
-.topbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 1rem 1.5rem;
-  padding-top: calc(1rem + env(safe-area-inset-top));
-  background: var(--blue);
-  color: white;
-}
-.topbar h1 { font-size: 1.2rem; margin: 0; }
+/* ------------------------------------------------------------ Components */
 
-/* ---- Cards / panels ---- */
+/* A panel groups one block of the page: a form, a table, a list of fields. Wide tables scroll inside it;
+   position: relative keeps absolutely placed content (visually hidden labels) inside that scroll too. */
 .panel {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 1.5rem 1.75rem;
-  box-shadow: var(--shadow-card);
+  position: relative;
+  margin-block: var(--space-5);
+  padding: var(--space-4);
+  overflow-x: auto;
+  background: var(--panel-bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
 }
-.panel h2 { margin-top: 0; font-size: 1.1rem; letter-spacing: -0.005em; }
-.panel h3 { font-size: 0.95rem; }
-
-.clickable-card {
-  width: 100%;
-  text-align: left;
-  cursor: pointer;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.1s ease;
+.panel > :first-child {
+  margin-block-start: 0;
 }
-.clickable-card:hover:not(:disabled) {
-  border-color: var(--blue);
-  box-shadow: var(--shadow-hover);
-  transform: translateY(-1px);
-}
-.clickable-card:active:not(:disabled) { transform: scale(0.97); }
-.clickable-card:disabled { cursor: not-allowed; opacity: 0.6; }
-
-/* ---- Forms ---- */
-label, .label-group {
-  display: block;
-  font-size: 0.85rem;
-  font-weight: 600;
-  margin: 0.75rem 0 0.25rem;
+.panel > :last-child {
+  margin-block-end: 0;
 }
 
-input[type="text"],
-input[type="number"],
-input[type="password"],
-input[type="email"],
-textarea,
-select {
-  width: 100%;
-  padding: 0.6rem 0.7rem;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  font-size: 1rem;
-  font: inherit;
-  background: var(--surface);
-  color: var(--text);
+/* Help text under a field, or a quiet remark. */
+.hint {
+  font-size: 0.8125rem;
+  color: var(--text-soft);
+}
+:where(input, select, textarea) + .hint {
+  margin-block-start: var(--space-1);
 }
 
-input:focus, textarea:focus, select:focus {
-  outline: 2px solid var(--blue);
-  outline-offset: 1px;
-}
-
-.hint { color: var(--text-soft); font-size: 0.85rem; }
-.hint.error { color: var(--red); margin-top: 0.5rem; }
-
-/* ---- Buttons ---- */
-button {
-  cursor: pointer;
-  border: 1px solid var(--border);
-  background: var(--surface);
-  color: var(--text);
-  border-radius: 7px;
-  padding: 0.45rem 0.8rem;
-  font-size: 0.9rem;
-  font: inherit;
-}
-button:hover { background: var(--blue-light); }
-button:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
-
-.btn-primary {
-  display: block;
-  width: 100%;
-  margin-top: 0.75rem;
-  padding: 0.9rem;
-  background: var(--blue);
-  color: white;
-  border: none;
-  font-size: 1rem;
-  font-weight: 600;
-  border-radius: 8px;
-}
-.btn-primary:hover { background: var(--blue-dark); }
-.btn-primary:disabled { background: var(--text-faint); cursor: not-allowed; }
-
-.link {
-  border: none;
-  background: none;
-  color: var(--blue);
-  text-decoration: underline;
-  padding: 0;
-  font-size: inherit;
-}
-
-/* ---- Status badges — stick to the fixed color meaning above ---- */
+/* Status badge: always a word, the colour only repeats it. Without a variant it is neutral. */
 .status-badge {
-  display: inline-block;
-  padding: 0.15rem 0.6rem;
-  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.25rem;
+  padding: 0 var(--space-2);
   font-size: 0.75rem;
-  font-weight: 600;
-}
-.badge-success { background: var(--green-light); color: var(--green); }
-.badge-warning { background: var(--orange-light); color: var(--orange); }
-.badge-error { background: var(--red-light); color: var(--red); }
-.badge-info { background: var(--blue-light); color: var(--blue); }
-
-/* ---- Key figure / stat tile (dashboards, indicators) ---- */
-.key-figure {
-  font-size: 2.75rem;
-  font-weight: 750;
-  color: var(--blue);
-  margin: 0.3rem 0;
-  letter-spacing: -0.02em;
+  font-weight: 500;
+  line-height: 1.2;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  vertical-align: middle;
+  color: var(--text-soft);
+  background: var(--hover-bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.badge-success {
+  color: var(--green);
+  background: var(--green-bg);
+  border-color: var(--green-border);
+}
+.badge-warning {
+  color: var(--orange);
+  background: var(--orange-bg);
+  border-color: var(--orange-border);
+}
+.badge-error {
+  color: var(--red);
+  background: var(--red-bg);
+  border-color: var(--red-border);
+}
+.badge-info {
+  color: var(--blue);
+  background: var(--blue-bg);
+  border-color: var(--blue-border);
 }
 
-/* ---- Tables ---- */
-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
-th, td { text-align: left; padding: 0.5rem 0.6rem; border-bottom: 1px solid var(--border); }
-th { color: var(--text-soft); font-weight: 600; }
+/* Table cell holding a quantity or an amount: right-aligned so digits line up. */
+.numeric {
+  text-align: end;
+}
+
+/* Bar chart of core/web/svg-chart.js: axes and labels use the soft text colour, the data table sits below. */
+.chart {
+  display: block;
+  width: 100%;
+  max-width: 40rem;
+  height: auto;
+  color: var(--text-soft);
+}
+.chart + .chart-data {
+  margin-block-start: var(--space-4);
+}
+.chart-bullet {
+  vertical-align: -0.125em;
+}
+
+/* ---------------------------------------------------------------- Motion */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+  }
+}

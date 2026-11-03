@@ -1,0 +1,98 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 560" role="img" aria-labelledby="t d">
+  <title id="t">How the pieces fit</title>
+  <desc id="d">Five virtual machines. Orchestrator VM: the engine (DBOS workflows, PostgreSQL) and Keycloak. Agents VM: the launcher, one disposable container per task under gVisor, and the egress and AI proxies, the only way out to the model API. CI VM: the Previews and the runners that check, build and sign. Forge VM: Gitea with the repositories, the image registry and the robot accounts. Tools VM: Production. The launcher pushes agent work to the forge; the engine merges into main; every push runs the CI, which publishes a signed image by digest; the engine deploys that digest over SSH to a Preview, then to Production.</desc>
+  <style>
+    .vm { fill: none; stroke: #1f4750; stroke-width: 1; }
+    .vmk { font: 600 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: 2px; fill: #4f7f89; }
+    .t { font: 600 15px ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; fill: #e8fbf8; }
+    .s { font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #7fa9b3; }
+    .e { font: 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #9fc9d2; }
+    .line { fill: none; stroke-linecap: round; stroke-linejoin: round; }
+    .flow { stroke-dasharray: 2 10; animation: flow 1.2s linear infinite; }
+    .agent { stroke: #2ff3d6; }
+    .human { stroke: #ff4fa3; }
+    .factory { stroke: #f4fffd; }
+    .node { fill: #05090d; stroke-width: 2.5; }
+    @keyframes flow { to { stroke-dashoffset: -12; } }
+    @media (prefers-reduced-motion: reduce) { .flow { animation: none; } }
+  </style>
+  <defs>
+    <filter id="bloom" filterUnits="userSpaceOnUse" x="-100" y="-100" width="1400" height="760">
+      <feGaussianBlur stdDeviation="4" result="a"/>
+      <feGaussianBlur stdDeviation="10" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="a"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <radialGradient id="room" cx="50%" cy="45%" r="75%">
+      <stop offset="0" stop-color="#0d2a33"/>
+      <stop offset="1" stop-color="#05090d"/>
+    </radialGradient>
+    <marker id="ah" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke" stroke-width="1.5"/></marker>
+  </defs>
+
+  <rect width="1200" height="560" rx="22" fill="url(#room)"/>
+
+  <!-- outside world -->
+  <text class="vmk" x="330" y="34" text-anchor="middle">PEOPLE</text>
+  <text class="vmk" x="1030" y="34" text-anchor="middle">MODEL API</text>
+
+  <!-- the five VMs -->
+  <rect class="vm" x="40" y="80" width="400" height="170" rx="10"/><text class="vmk" x="56" y="102">ORCHESTRATOR VM</text>
+  <rect class="vm" x="470" y="80" width="690" height="170" rx="10"/><text class="vmk" x="486" y="102">AGENTS VM</text>
+  <rect class="vm" x="40" y="340" width="420" height="180" rx="10"/><text class="vmk" x="56" y="362">CI VM</text>
+  <rect class="vm" x="490" y="340" width="330" height="180" rx="10"/><text class="vmk" x="506" y="362">FORGE VM</text>
+  <rect class="vm" x="850" y="340" width="310" height="180" rx="10"/><text class="vmk" x="866" y="362">TOOLS VM</text>
+
+  <!-- edges -->
+  <g stroke-width="1.6">
+    <path d="M330 44V144" class="line human flow" marker-end="url(#ah)"/>
+    <path d="M152 160H316" class="line human" stroke-dasharray="3 5"/>
+    <path d="M342 160H546" class="line agent flow" marker-end="url(#ah)"/>
+    <path d="M572 160H786" class="line agent flow" marker-end="url(#ah)"/>
+    <path d="M812 160H1016" class="line agent flow" marker-end="url(#ah)"/>
+    <path d="M1030 146V46" class="line agent flow" marker-end="url(#ah)"/>
+    <path d="M330 252V296" class="line factory flow"/>
+    <path d="M130 296H1000" class="line factory flow"/>
+    <path d="M130 296V402" class="line factory flow" marker-end="url(#ah)"/>
+    <path d="M1000 296V398" class="line factory flow" marker-end="url(#ah)"/>
+    <path d="M370 252C370 330 640 320 646 402" class="line factory flow" marker-end="url(#ah)"/>
+    <path d="M560 252C560 330 662 320 664 402" class="line agent flow" marker-end="url(#ah)"/>
+    <path d="M643 411H373" class="line factory flow" marker-end="url(#ah)"/>
+    <path d="M373 425H643" class="line factory flow" marker-end="url(#ah)"/>
+  </g>
+  <g text-anchor="middle">
+    <text class="e" x="234" y="150">sign-in</text>
+    <text class="e" x="445" y="150">task queue</text>
+    <text class="e" x="680" y="150">docker run</text>
+    <text class="e" x="915" y="150">only way out</text>
+    <text class="e" x="860" y="287">deploy a digest over SSH</text>
+    <text class="e" x="390" y="334">merge main</text>
+    <text class="e" x="730" y="330">push agent/*</text>
+    <text class="e" x="508" y="402">every push</text>
+    <text class="e" x="508" y="444">signed image, by digest</text>
+  </g>
+
+  <!-- nodes -->
+  <g filter="url(#bloom)">
+    <circle cx="140" cy="160" r="11" class="node human"/>
+    <circle cx="330" cy="160" r="11" class="node factory"/>
+    <circle cx="560" cy="160" r="11" class="node agent"/>
+    <circle cx="800" cy="160" r="11" class="node agent"/>
+    <circle cx="1030" cy="160" r="11" class="node agent"/>
+    <circle cx="130" cy="418" r="11" class="node factory"/>
+    <circle cx="360" cy="418" r="11" class="node factory"/>
+    <circle cx="655" cy="418" r="11" class="node factory"/>
+    <circle cx="1000" cy="418" r="15" class="node factory"/>
+    <circle cx="1000" cy="418" r="6" fill="#2ff3d6"/>
+  </g>
+  <g text-anchor="middle">
+    <text class="t" x="140" y="204">Keycloak</text><text class="s" x="140" y="224">roles, four eyes</text>
+    <text class="t" x="330" y="204">Engine</text><text class="s" x="330" y="224">DBOS, PostgreSQL</text>
+    <text class="t" x="560" y="204">Launcher</text><text class="s" x="560" y="224">pushes for the agent</text>
+    <text class="t" x="800" y="204">Agent container</text><text class="s" x="800" y="224">one per task, gVisor</text>
+    <text class="t" x="1030" y="204">Proxies</text><text class="s" x="1030" y="224">allow-list, AI key</text>
+    <text class="t" x="130" y="462">Previews</text><text class="s" x="130" y="482">checks run here</text>
+    <text class="t" x="360" y="462">CI runners</text><text class="s" x="360" y="482">check, build, sign</text>
+    <text class="t" x="655" y="462">Gitea forge</text><text class="s" x="655" y="482">repos, registry, robots</text>
+    <text class="t" x="1000" y="462">Production</text><text class="s" x="1000" y="482">same digest</text>
+  </g>
+</svg>

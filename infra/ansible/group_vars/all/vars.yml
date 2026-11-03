@@ -12,8 +12,8 @@ chat_domain: "chat.{{ base_domain }}"
 
 # Language of the end-user texts (L10, ADR-025): the engine's mails and pages
 # (EUPADEV_LANGUAGE, orchestrator/lang/<language>.json) and the mock-up frame
-# page of the deployer (roles/deployer/lang/<language>.json). French on the lab.
-eupadev_language: fr
+# page of the deployer (roles/deployer/lang/<language>.json). English by default.
+eupadev_language: en
 
 gitea_domain: "git.{{ base_domain }}"
 

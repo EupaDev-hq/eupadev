@@ -1,4 +1,4 @@
-// Load on the two reads people use most (note §10): the list, then the first request of the list, one VU per realm
+// Load on the two reads people use most: the list, then the first request of the list, one VU per realm
 // person (K4), each under their own rate limit (120 reads per minute and operation: 15 lists and 15 reads per VU), the
 // static headers of the kit. Thresholds: every check passes, p(95) under 300 ms per operation.
 import http from 'k6/http';

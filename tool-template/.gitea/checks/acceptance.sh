@@ -1,8 +1,7 @@
 #!/bin/sh
-# Acceptance and security suite against the deployed Preview (note
-# docs/reflexions/2026-10-26-note-acceptance-on-preview.md §3.2-3.3), run by
-# the `acceptance` job of preview-check.yml on ci-image. Protected
-# (.gitea/**): an agent changes neither this script nor the flags below.
+# Acceptance and security suite against the deployed Preview, run by the
+# `acceptance` job of preview-check.yml on ci-image. Protected (.gitea/**):
+# an agent changes neither this script nor the flags below.
 #
 # One throwaway Playwright container (version = @playwright/test of
 # package.json, checked by guard-rails.sh), no Docker socket, the repository

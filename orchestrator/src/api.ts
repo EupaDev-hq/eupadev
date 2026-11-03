@@ -1,6 +1,6 @@
 /**
- * Local API of the engine (ROADMAP §8.16 M8, "engine for real" note §1.5): `node:http`, no extra dependency, bound to
- * 127.0.0.1 by default; Ilan calls it with `curl` through an SSH tunnel, until the gate pages exist.
+ * Local API of the engine (ROADMAP §8.16 M8): `node:http`, no extra dependency, bound to 127.0.0.1 by default; the
+ * admin calls it through an SSH tunnel (`scripts/eupadev.py`), until the gate pages exist.
  *
  * Guard-rails, in order:
  * 1. `Host`: only localhost, 127.0.0.1 or [::1] (any port) and the name of `DASHBOARD_URL` (the page, chat
@@ -16,17 +16,17 @@
  * 5. `POST /actors/merges` (hat `admin`, migration 0010): "actor B is the same person as A"; `decided_by` is the
  *    token's actor, never the body. Idempotent by its natural key (an actor is absorbed only once): the same merge
  *    replayed → 200 with the existing row; other target, self-merge, cycle, machine, own identity → 409.
- * 6. Reads (chat note 2026-10-25, decision 5): `GET /requests/<cycle>` and `GET /requests/<cycle>/messages?since=<id>`
+ * 6. Reads: `GET /requests/<cycle>` and `GET /requests/<cycle>/messages?since=<id>`
  *    only for the tool's requester or an admin (`hatOnTool`, the same rule as opinions) — 404 if the cycle does not
  *    exist, 403 otherwise, like `POST /messages`; `GET /requests`: one's own requests, all of them for an admin.
- * 7. Browser sign-in (chat note, decision 2; `web-session.ts`): `GET /auth/login` → Keycloak (code + PKCE, client
+ * 7. Browser sign-in (ADR-024, `web-session.ts`): `GET /auth/login` → Keycloak (code + PKCE, client
  *    `eupadev-web`), `GET /auth/callback` → `__Host-session` cookie, `POST /auth/logout` → session deleted, cookie
  *    cleared, Keycloak's end-session page. The cookie authenticates like a Bearer (same `Actor`, same hats; a Bearer
  *    wins when both are sent); an unknown or expired cookie is 401 and cleared. Only these three browser navigations
  *    are exempt from `X-EupaDev: 1`: every API call made with the cookie still needs it (the CSRF control stays), and
  *    a cross-site form cannot reach `/auth/logout` with the cookie (SameSite=Lax). Without `OIDC_WEB_CLIENT_ID`: 503 on
  *    `/auth/*`, the rest of the API unchanged.
- * 8. The requester's page (chat note §4, decision 3; `static.ts`): `GET /`, `/cycles/<id>`, `/app.js`, `/app.css`,
+ * 8. The requester's page (ADR-024, `static.ts`): `GET /`, `/cycles/<id>`, `/app.js`, `/app.css`,
  *    `/lang/*.json` and the vendored deep-chat bundle are served from a fixed table before the header check (a browser
  *    navigation cannot send `X-EupaDev`), with the page's own CSP; the page then calls the API above with the cookie.
  * Every error is returned in the RFC 9457 format (`application/problem+json`).
@@ -201,7 +201,7 @@ async function authenticate(orch: Orchestrator, auth: Authenticator, req: http.I
   throw new Problem(401, 'access token required (Authorization: Bearer <token>)', { [WWW_AUTHENTICATE]: 'Bearer realm="eupadev-api"' });
 }
 
-/** `/auth/*` (decision 2): the sign-in flow, served only when the web client is configured (503 otherwise, fail closed). */
+/** `/auth/*`: the sign-in flow, served only when the web client is configured (503 otherwise, fail closed). */
 async function handleAuth(orch: Orchestrator, auth: Authenticator, web: WebSignIn | null, req: http.IncomingMessage, res: http.ServerResponse, url: URL, route: (...m: string[]) => void): Promise<void> {
   if (web === null) throw new Problem(503, 'web sign-in is not configured (OIDC_WEB_CLIENT_ID, OIDC_WEB_CLIENT_SECRET, OIDC_WEB_REDIRECT_URL)');
   const cookie = cookies(req);
@@ -272,7 +272,7 @@ async function handle(orch: Orchestrator, auth: Authenticator, web: WebSignIn | 
   if (!expectedHost(req.headers.host, hosts)) throw new Problem(421, `unexpected Host: ${[...hosts].join(', ')} only`);
   const url = new URL(req.url ?? '/', 'http://localhost');
   const path = url.pathname;
-  // The requester's page (chat note, decision 3; `static.ts`): public files, no identity needed — the data comes by API calls.
+  // The requester's page (`static.ts`): public files, no identity needed — the data comes by API calls.
   const staticFiles = req.method === 'GET' || req.method === 'HEAD' ? staticFile(page.files, path) : undefined;
   if (staticFiles !== undefined) return serveStatic(staticFiles, page.csp, req, res);
   // The sign-in flow is browser navigations (no custom header possible); everything else, cookie or Bearer, needs it.
@@ -290,7 +290,7 @@ async function handle(orch: Orchestrator, auth: Authenticator, web: WebSignIn | 
   const actor = await authenticate(orch, auth, req);
   if (path === '/requests') {
     route('GET', 'POST');
-    // "My requests" (chat note, decision 5): an admin sees all, a requester the tools they requested.
+    // "My requests": an admin sees all, a requester the tools they requested.
     if (req.method === 'GET') return respond(res, 200, { me: { name: await orch.base.displayName(actor.id), roles: actor.roles }, requests: await orch.base.requests(actor.roles.includes('admin') ? null : actor.id) });
     const key = idempotencyKey(req);
     const d = validate(validateRequest, await readJson(req));

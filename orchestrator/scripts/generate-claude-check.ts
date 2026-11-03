@@ -1,8 +1,8 @@
-// Generates the Claude Code check of the agent image's CI (note docs/reflexions/2026-10-15-note-controle-options-claude.md):
+// Generates the Claude Code check of the agent image's CI:
 // `images/agent/check/claude.sh` (the engine's EXACT command line, CLAUDE_LINE),
 // `images/agent/check/report.schema.json` (the report schema as the engine passes it, schemaDraft07) and
 // `images/agent/managed-settings.json` (managed settings copied into /etc/claude-code/ of the image: forbidden paths of
-// `forbidden-paths.ts`, the same list as the launcher; instructions analysis §3.2).
+// `forbidden-paths.ts`, the same list as the launcher).
 // A single source: the engine; a test fails if the files no longer match.
 // Usage: node scripts/generate-claude-check.ts
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';

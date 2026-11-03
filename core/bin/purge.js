@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Scheduled purge (ADR-003, decision E8 of step 8), with the purge account (`DATABASE_URL` of `<tool>_purge`:
+// Scheduled purge (ADR-003), with the purge account (`DATABASE_URL` of `<tool>_purge`:
 // SELECT, DELETE), outside the web process, in one transaction: first the core's (expired sessions, rate-limit
 // windows older than one hour, audit_log beyond RETENTION_AUDIT), then the tool's `db/purge.sql`. The periods come
 // from the environment, without a default (they are set at Gate 1): `purge.sql` reads each period with

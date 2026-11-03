@@ -1,4 +1,4 @@
-# Real test of step E1 ("engine for real" note §2) — can be rerun.
+# Real test of step E1 — can be rerun.
 #   ansible-playbook verify-engine-mails.yml
 # The engine in service (EUPADEV_EXTERNAL=notifications=smtp, the rest as
 # automatic fakes) sends its mails to Mailpit, on the same VM (lab, ROADMAP

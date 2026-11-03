@@ -1,4 +1,4 @@
-// The twelve mechanical checks of the SEC-* catalogue (§2.10), generated from the contract: `generateCases()` returns
+// The twelve mechanical checks of the SEC-* catalogue, generated from the contract: `generateCases()` returns
 // a list `{ sec, name, verify }`; `verify()` throws if the tool departs from what is expected. Independent of the
 // runner: `for (const c of cases) test(c.name, c.verify)` under node:test as under @playwright/test.
 // The expected values (headers, cookie attributes, codes) are written here, never read from `src/`.
@@ -9,7 +9,7 @@ import { setTimeout as wait } from 'node:timers/promises';
 import { REQUEST_HEADERS, signIn, compliantExample, invalidValues, readContract, httpBrowser } from './index.js';
 
 /**
- * Eight headers of §2.7, at their exact value (and `Cache-Control: no-store` on every API or error answer); with
+ * Eight security headers, at their exact value (and `Cache-Control: no-store` on every API or error answer); with
  * OIDC, `form-action` also names the IdP's origin (sign-out answers 303 to its end-session page): `idpOrigin`.
  */
 export const EXPECTED_HEADERS = Object.freeze({
@@ -22,7 +22,7 @@ export const EXPECTED_HEADERS = Object.freeze({
   'cross-origin-opener-policy': 'same-origin',
   'cross-origin-resource-policy': 'same-origin',
 });
-/** Rate limits without `x-rate-limit` (§2.7): write, read (GET). */
+/** Rate limits without `x-rate-limit`: write, read (GET). */
 export const DEFAULT_RATE = 20;
 export const READ_RATE = 120;
 /** Keys an attacker adds to a valid body (SEC-MASS). */

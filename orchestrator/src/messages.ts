@@ -108,7 +108,7 @@ export function validateMessage(m: unknown): string | null {
   if (typeof m !== 'object' || m === null || Array.isArray(m)) return 'message: object expected';
   const x = m as Record<string, unknown>;
   // Free texts passed on to the agents (chat, clarification, catalogue description): never an invisible character
-  // (instructions note, correction 6: zero-width, bidi, Unicode tags — "Rules File Backdoor").
+  // (zero-width, bidi, Unicode tags — "Rules File Backdoor").
   for (const field of ['text', 'comment']) {
     const invisible = typeof x[field] === 'string' ? invisibleCharacter(x[field]) : null;
     if (invisible !== null) return `${field}: invisible character refused (${invisible})`;

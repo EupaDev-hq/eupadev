@@ -1,5 +1,4 @@
-# First real Claude Code started by the executor IN SERVICE (note
-# docs/reflexions/2026-10-15-note-essai-executeur-claude.md) — can be rerun.
+# First real Claude Code started by the executor IN SERVICE — can be rerun.
 #   ansible-playbook verify-executor-claude.yml -e ai_call=true   (PAID CALL)
 # Without -e ai_call=true, it stops before anything (guard, as verify-engine-claude.yml).
 # Expected cost: a few cents (overlap, Haiku 5.5, effort medium: MODELS_BY_ROLE);

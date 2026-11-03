@@ -53,7 +53,6 @@ voit jamais : un essai local (Gitea 28.1.0, pnpm 12.9.1) a montré qu'un
 store rempli par `pnpm fetch` dans un autre conteneur permet à un conteneur
 sans aucune route vers la forge de lancer `pnpm install --frozen-lockfile`,
 sans que le badge figure dans aucun de ses fichiers.
-Détail et sources : `docs/reflexions/2026-10-22-note-socle-registry.md`.
 
 ## Décision
 Distribuer le socle par le registre npm de la forge, à une version exacte
@@ -106,7 +105,7 @@ par outil ; cela remplace le point *Distribution* d'ADR-019 (et son option
   injoignable pour toute autre version du socle. Un échec du fetch arrête la
   tâche avec un message clair.
 - **Outil de migration** : `node-pg-migrate` est une dépendance d'exécution
-  du socle (Ilan, 2026-10-21, note de l'étape 9), la même image lançant
+  du socle (Ilan, 2026-10-21), la même image lançant
   `bin/migrate.js` avant que le trafic bascule ; cela remplace
   « node-pg-migrate hors de l'image web » dans le point *Dépendances
   autorisées* d'ADR-019. Le plafond de paquets de production vérifié par
