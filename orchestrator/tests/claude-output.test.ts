@@ -23,9 +23,13 @@ test('E4 claude output: documented stops → no report, reason read, cost kept',
   assert.equal(turns.report, null);
   assert.match(turns.error ?? '', /turns cap reached \(error_max_turns, 4 turns, code 1\)/);
   assert.equal(turns.cost_usd, 1.25);
+  assert.equal(turns.capped, true);
   const budget = readClaudeResult(result({ subtype: 'error_max_budget_usd', is_error: true, structured_output: { status: 'done' } }), 1);
   assert.equal(budget.report, null, 'a report present in an error output does not count');
   assert.match(budget.error ?? '', /budget cap reached/);
+  assert.equal(budget.capped, true);
+  // Only the caps keep the work: a crash or a non-compliant report starts again from zero.
+  assert.equal(readClaudeResult(result({ subtype: 'error_during_execution', is_error: true }), 1).capped, undefined);
   // Success announced but a non-zero exit code, or is_error: no report.
   assert.equal(readClaudeResult(result({}), 1).report, null);
   assert.equal(readClaudeResult(result({ is_error: true }), 0).report, null);

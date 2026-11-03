@@ -44,7 +44,7 @@ type Message_ = { key: string; values?: Values };
 const NATURE = new Map<string, string>(STATES.map((e) => [e.id, e.kind]));
 const DESCRIPTION = new Map<string, string>(STATES.map((e) => [e.id, e.description]));
 export const HARDENING_ROLES: readonly Role[] = [...CODE_ROLES, ...REVIEW_ROLES];
-/** S5 (note 2026-10-26 acceptance-on-preview §3.5): Preview controls before the requester's opinion. Patch: the step sequence of W1 changed (README, section on updating the code). */
+/** S5: Preview controls before the requester's opinion. Patch: the step sequence of W1 changed (README, section on updating the code). */
 const PATCH_CHECKS_BEFORE_FEEDBACK = 's5-checks-before-feedback';
 type ReviewRole = (typeof REVIEW_ROLES)[number];
 type Decision = Extract<Message, { type: 'decision' }>;
@@ -223,7 +223,7 @@ export function createToolCycle(deps: Deps, agentTask: AgentTask) {
   const transition = (c: Cycle, memory: Memory | undefined, trigger: string, to: StateId, actor?: string, extra?: (client: pg.PoolClient) => Promise<void>) =>
     step(`transition ${c.state} --[${trigger}]--> ${to}`, () => base.transition(c.id, c.state, trigger, to, actor, extra, memory));
 
-  /** End-user text of the dictionaries (`lang/*.json`), in the deployment's language (L10). */
+  /** End-user text of the dictionaries (`lang/*.json`), in the deployment's language. */
   const tr = (key: string, values?: Values): string => text(config.language, key, values);
   const render = (m: Message_): string => tr(m.key, m.values);
   /**
@@ -879,8 +879,14 @@ export function createToolCycle(deps: Deps, agentTask: AgentTask) {
     const a = await publish(c, 'contract');
     if (a !== null) return cancel(c, memory, a);
     // Always at least one code role per round: the current round is read from the tasks (integration, review). A-R2a: in
-    // the order of CODE_ROLES (tests then builder), never in that of the deviations.
-    const roles = k.rolesConcerned.length > 0 ? CODE_ROLES.filter((r) => k.rolesConcerned.includes(r)) : CODE_ROLES;
+    // the order of CODE_ROLES (tests then builder), never in that of the deviations. A code role that has not delivered
+    // yet in this cycle runs whatever the deviations say: the reviewers only see a round in which every code role has
+    // delivered (cycle 5 of the lab: tests blocked at round 1, tests alone at round 2, then two paid reviews of a
+    // repository the builder had never touched). `DBOS.patch`: a step added here; an older cycle replays its old path.
+    const delivered = (await DBOS.patch('never-delivered-code-roles'))
+      ? await step('code roles delivered in the cycle', async () => (await base.cycleTasks(c.id, { roles: CODE_ROLES })).filter((t) => t.status === 'done').map((t) => t.role))
+      : [...CODE_ROLES];
+    const roles = k.rolesConcerned.length > 0 ? CODE_ROLES.filter((r) => k.rolesConcerned.includes(r) || !delivered.includes(r)) : CODE_ROLES;
     const { builder_findings: builderFindings, ...common } = await context(c, memory, 'round context', async () => ({
       previous_reports: (await base.roundTasks(c.id, k.lastRound, REVIEW_ROLES)).filter((t) => t.status === 'done').map((t) => ({ role: t.role, iteration: t.iteration, report: t.report })),
       // A-R2a: what the builder holds against the suite, evidence included; never the rest of its report (tests does not read the code).
@@ -1041,7 +1047,7 @@ export function createToolCycle(deps: Deps, agentTask: AgentTask) {
     if (isCancellation(r)) return cancel(c, memory, r);
     if (r.health === 'ok') {
       if (env === 'prod') return void (await transition(c, memory, 'task:done', 'end_success'));
-      // S5 (note acceptance-on-preview §3.5): the Preview controls run before the requester is told; a cycle recorded
+      // S5: the Preview controls run before the requester is told; a cycle recorded
       // before this change replays its old path (link sent at deploy time, then the requester's opinion).
       if (await DBOS.patch(PATCH_CHECKS_BEFORE_FEEDBACK)) return void (await transition(c, memory, 'task:done', 'preview_pipeline'));
       await notifyRequester(c, { key: 'chat.previewAvailable', values: { url: r.url, digest } });

@@ -6,14 +6,13 @@ import { fileURLToPath } from 'node:url';
 import { query } from '@eupadev/core/kit/throwaway-postgres.js';
 import { readRealm } from '@eupadev/core/kit/realm.js';
 
-// ponytail: Compose and realm taken from the repository's core (the package does not ship them yet, decision E12);
-// from the core archive at step 9.
+// ponytail: Compose and realm taken from the repository's core (the package does not ship the realm, decision E12).
 export const CORE = fileURLToPath(new URL('../../../core/', import.meta.url));
 export const ROOT = fileURLToPath(new URL('../', import.meta.url));
 export const BASE = 'http://localhost:3000';
 const { people: realmPeople, secret } = readRealm(`${CORE}tests/keycloak/realm-test.json`);
 export const people = realmPeople;
-/** The n-th person holding `role` (note acceptance-on-preview §3.3): people are found by role, never by name, so the
+/** The n-th person holding `role`: people are found by role, never by name, so the
  * same suite runs against the kit stack and against a Preview's personas. */
 export const person = (/** @type {string} */ role, n = 1) => realmPeople.filter((p) => p.roles.includes(role))[n - 1] ?? assert.fail(`no person #${n} with role ${role}`);
 

@@ -1,5 +1,5 @@
 -- Up Migration
--- Measure per cycle (docs/reflexions/2026-10-16-note-mesure-cycle.md): a VIEW, no new data, everything is derived
+-- Measure per cycle: a VIEW, no new data, everything is derived
 -- from the existing tables. Unknown = NULL, never 0. Cost envelopes identical to Database.cumulativeCost (scoping = overlap +
 -- scoping, hardening = the rest); the cap of a task with an unknown cost is already in tasks.cost_usd.
 CREATE VIEW cycle_measures AS

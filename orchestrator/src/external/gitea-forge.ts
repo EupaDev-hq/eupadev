@@ -1,5 +1,5 @@
 /**
- * Real forge: Gitea 28 through its REST API, with the token of the `svc-orchestrator` account ("engine for real" note §1.1, E2).
+ * Real forge: Gitea 28 through its REST API, with the token of the `svc-orchestrator` account (E2).
  * Native `fetch` and the `git` client (integration and diff check, E3), no dependency (this file imports only the
  * contracts: the lab playbooks that verify E2 and E3 run it alone). The token goes
  * out only in a header, never in a URL, an argument, a log or an error message; redirects are refused (the
@@ -13,7 +13,7 @@
  * check 204 / 404; adding a repository to a team 204, 403 "Must be a team member" if the requester is not a
  * member of the team, 403 "Must have permission to manage team repository access" if it is not admin of the repository or if
  * the organisation does not have `repo_admin_change_team_access`; merge 200, 405 "Please try again later" (mergeability being computed) or "The PR is already merged".
- * Watcher (E4): runs, jobs and registry (`docs/reflexions/2026-10-14-note-e4-guetteur.md`).
+ * Watcher (E4): runs, jobs and registry.
  */
 import { execFile } from 'node:child_process';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -249,7 +249,7 @@ export class GiteaForge implements Forge {
   }
 
   /**
-   * E3, local Git ("engine for real" note §1.1): `integration/<cycle>/<round>` starts from main (or from itself if it already
+   * E3, local Git: `integration/<cycle>/<round>` starts from main (or from itself if it already
    * exists: resume), then each role branch present is merged into it (`--no-ff`). A conflict: its files are noted,
    * the merge aborted, next role; if there was one, nothing is pushed. Otherwise push, never forced (Gitea: only this account
    * writes outside `agent/**` and `exception/**`). Not through the API: Gitea merges one branch into another only through a
@@ -282,7 +282,7 @@ export class GiteaForge implements Forge {
    * Diff check of each role (same scope as the launcher, `inScope`: the commons pass), then PR `integration/<cycle>/<round>` → main (resumed if it exists), squash by the
    * orchestrator account, never `force_merge`. An already merged PR returns `ok` (resume). Diff checked (local Git): what
    * the role brought to the integration (its integrated commit = common base of the two branches), from its common base with
-   * main (`main...commit`, note §1.1): the net content the squash brings in. Not the role's branch as it is
+   * main (`main...commit`): the net content the squash brings in. Not the role's branch as it is
    * now (a revert pushed after the integration hides nothing), nor commit by commit (Gitea counts a commit
    * merging main into the branch as changing main's files: `git log -m --first-parent`).
    */
@@ -325,7 +325,7 @@ export class GiteaForge implements Forge {
   }
 
   /**
-   * E4, watcher (E4 note): main CI started by the round's squash — commit read from the PR `integration/<cycle>/<round>`
+   * E4, watcher: main CI started by the round's squash — commit read from the PR `integration/<cycle>/<round>`
    * (mergeable by this account only), never main's head nor a commit status (M6). Last run of `check.yml` on
    * main for that commit: not finished → null; jobs `success` → green, `failure`/`cancelled` → red, `skipped` left out (nothing
    * checked); all green → digest asked of the registry (M5: it is authoritative, never the job's log).
@@ -352,8 +352,8 @@ export class GiteaForge implements Forge {
 
   /**
    * Jobs of a finished run as checks: `success` → green, anything else → red, `skipped` left out; a failed run without a red
-   * job adds a red `pipeline`. A red `acceptance` job carries its failing tests read in its log (`details.failures`, note
-   * acceptance-on-preview 3.7): the hardening round cannot rerun that suite itself. A red `analysis` job carries its Opengrep
+   * job adds a red `pipeline`. A red `acceptance` job carries its failing tests read in its log (`details.failures`):
+   * the hardening round cannot rerun that suite itself. A red `analysis` job carries its Opengrep
    * SARIF results read in its log (`opengrepSarif`, M5).
    */
   async #checks(repo: string, run: Run, signal?: AbortSignal): Promise<CiResult['checks']> {

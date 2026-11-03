@@ -1,4 +1,4 @@
-// Sessions in PostgreSQL (§2.3 of the "common core" research, ADR-019): `id.secret` token following Lucia's reference
+// Sessions in PostgreSQL (ADR-019): `id.secret` token following Lucia's reference
 // model (`auth_session.ts`); `id` = 16 random bytes (lookup key), `secret` = 32 bytes of which only the SHA-256 is
 // stored, compared in constant time; 30 min sliding inactivity, 8 h absolute; `actors.token_version` compared in the
 // same SQL query as the session (ASVS 7.4.2). The time comes from the process (SQL parameter), never from `now()`:

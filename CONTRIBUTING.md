@@ -35,23 +35,25 @@ literally, including by the AI agents that use this template:
   agent charter: the Scoping → Contract → Hardening → Review cycle, roles
   and the folders each may write in, protected files, non-negotiable rules.
 - [`tool-template/.claude/rules/*.md`](tool-template/.claude/rules/) —
-  detailed rules per domain: `backend.md`, `frontend.md`, `security.md`
-  (18 security categories), `quality.md` (7 quality axes), `tests.md`.
+  detailed rules per domain: `backend.md`, `frontend.md`, `security.md`,
+  `quality.md`, `tests.md`.
 - [`docs/architecture.md`](docs/architecture.md) —
   how the platform itself is wired (trust model, pipeline, deployment
   contract).
 - [`docs/governance.md`](docs/governance.md) —
   roles, gates, lifecycle of a generated tool.
 
-If you're changing a rule in `.claude/rules/`, also update the matching
-section of the corresponding read-only review sub-agent in
-`.claude/agents/` if the check needs to change — a rule with no matching
-check is effectively unenforced.
+If you're changing a rule in `.claude/rules/`, also update the prompt of
+the read-only reviewer that checks it (`agents/security-reviewer.md` or
+`agents/quality-reviewer.md`) if the check needs to change, and regenerate
+the closed lists of the report format (`scripts/generate-report-catalogue.js`;
+a unit test fails while they are stale) — a rule with no matching check is
+effectively unenforced.
 
 ## Making a change
 
 1. **`tool-template/`** — any rule or convention change here affects
-   every tool future generated from this template. Keep `AGENTS.md`
+   every future tool generated from this template. Keep `AGENTS.md`
    short (~110 lines) on purpose; detailed reasoning belongs in the
    relevant `.claude/rules/*.md` file, not in `AGENTS.md` itself.
 2. Keep comments explaining *why*, not *what* — the code already shows

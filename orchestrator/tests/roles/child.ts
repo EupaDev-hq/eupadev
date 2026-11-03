@@ -1,4 +1,4 @@
-// Child process of the roles test (docs/reflexions/2026-10-15-note-lanceur-service.md): a full orchestrator of the role
+// Child process of the roles test: a full orchestrator of the role
 // EUPADEV_ROLE (`all-in-one`, `pilot`, `executor`), automatic fake outside world.
 //   CREATE=<slug>          (pilot) creates the tool and its cycle, then writes "CYCLE <id>"
 //   STOP_AT=<state>       (pilot) the humans no longer answer in this state ("ARRIVE <id> <state>" written once)

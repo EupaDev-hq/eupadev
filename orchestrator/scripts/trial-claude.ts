@@ -1,5 +1,4 @@
-// Real trial of the Claude Code engine (run by the lab's verify playbook of the Claude engine, note
-// `docs/reflexions/2026-10-15-note-e4-claude-reel.md`):
+// Real trial of the Claude Code engine (run by the lab playbook infra/ansible/verify-engine-claude.yml):
 // a builder task with the REAL Claude Code, on the agents VM, through the engine's code as is (`ClaudeCodeEngine.execute`).
 // PAID CALL (cap $1): run only by the playbook with -e ai_call=true.
 //   FORGE_URL=https://git.<domain> AGENT_FORGE_TOKEN_FILE=<file> AGENT_IMAGE=<…@sha256:…> AGENT_COSIGN_PUB=<file>

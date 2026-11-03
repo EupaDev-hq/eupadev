@@ -1,7 +1,7 @@
 /**
- * Browser sign-in for the requester's web page (chat note 2026-10-25 §3 option 1, decision 2; ADR-024 proposed; RFC 10017
- * §6.1 "BFF"): the engine is the OIDC client — authorization code + PKCE S256 + state + nonce with `openid-client` (the
- * core's library and model, `core/src/auth.js`), confidential client `eupadev-web`. The browser never sees a token:
+ * Browser sign-in for the requester's web page (ADR-024; RFC 10017 §6.1 "BFF"): the engine is the OIDC client —
+ * authorization code + PKCE S256 + state + nonce with `openid-client` (the core's library and model,
+ * `core/src/auth.js`), confidential client `eupadev-web`. The browser never sees a token:
  * it gets a `__Host-session` cookie (HttpOnly, Secure, SameSite=Lax, Path=/) whose random value is looked up by hash in
  * the `sessions` table (migration 0014, `Database.createSession`…). The access token Keycloak returns at the callback is
  * verified exactly like a CLI Bearer (`Authenticator.verifier`: at+jwt, audience `eupadev-api`, hats from the

@@ -1,6 +1,6 @@
 /**
- * Role instructions (note `docs/reflexions/2026-10-15-note-consignes-agents.md`, decision 1 and correction 1; ROADMAP
- * §8.8 no. 5): they come from the engine image, NEVER from the cloned repository (data that an agent may have written).
+ * Role instructions (ADR-018; ROADMAP §8.8 no. 5): they come from the engine image, NEVER from the cloned repository
+ * (data that an agent may have written).
  * Instructions of a role = `AGENTS.md` + `agents/<role>.md` + the role's domain rules (`.claude/rules/*.md`, without their
  * `paths:` frontmatter), read once at startup in `INSTRUCTIONS_PATH` (the template folder in dev, `/app/instructions`
  * in the image). Fail-closed: a missing or empty file, an invisible character = refusal to start.
@@ -15,7 +15,7 @@ export const ROLES: readonly Role[] = ['overlap', 'scoping', 'contract', 'tests'
 /**
  * Domain rules included in the instructions of each role (those its prompt cites). The rules keep their domain names
  * (`backend.md` = API and data rules, `frontend.md` = interface rules): the builder receives both
- * (ADR-021). Word caps (A-R6, C3, `tests/instructions.test.ts`): charter 500, role 400, rule file 300.
+ * (ADR-021). Word caps (A-R6, `tests/instructions.test.ts`): charter 500, role 400, rule file 300.
  */
 export const RULES_BY_ROLE: Record<Role, readonly string[]> = {
   overlap: [],

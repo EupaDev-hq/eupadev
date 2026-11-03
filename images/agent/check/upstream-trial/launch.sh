@@ -1,5 +1,5 @@
 #!/bin/sh
-# Runs the upstream trial (instructions analysis §4-B) locally with Docker, on an agents' image built from
+# Runs the upstream trial locally with Docker, on an agents' image built from
 # images/agent/ (real Claude Code, the image's version), without Internet (--internal network) or a real key.
 # Usage: sh images/agent/check/upstream-trial/launch.sh <image> [output directory]
 # Passes: code, read, reviewer (assertions), then witnesses without assertion (no --restricted, no --bare, --tools as

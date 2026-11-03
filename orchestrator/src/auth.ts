@@ -1,5 +1,5 @@
 /**
- * Authentication of the API's callers (I0, ADR-017; Keycloak analysis D2, D4, D7): an OIDC access token issued by
+ * Authentication of the API's callers (I0, ADR-017): an OIDC access token issued by
  * Keycloak, verified with `jose` and nothing else — signature by a key of the internal JWKS (`createRemoteJWKSet`: cache
  * 10 min, an unknown `kid` triggers ONE re-read then a 30 s pause), `alg` in a closed list (RS256, ES256; never `none`
  * nor HMAC), header `typ: at+jwt` (RFC 9068: an ID or refresh token is not an access token), `iss` equal to the fixed

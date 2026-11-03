@@ -48,7 +48,7 @@ premières exécutions réelles.
 | Approbation des outils sensibles (veto) | Traitement des incidents, reconstruction |
 
 Au départ, la plateforme est **exploitée par l'exploitant EupaDev**
-(décision n°2). Aucun agent logiciel n'est installé sur votre hyperviseur ni
+(décision n° 2). Aucun agent logiciel n'est installé sur votre hyperviseur ni
 ailleurs dans votre réseau.
 
 ## 1. Les machines virtuelles
@@ -109,7 +109,7 @@ nom du disque du labo).
 dédié (ou un port group / commutateur virtuel) pour les 4 VM ? Tout le reste
 est dans la matrice des flux ci-dessous.
 
-**DNS.** Des enregistrements génériques (ADR-014, ADR-015 ; en place au
+**DNS.** Des enregistrements génériques (ADR-022, ADR-015 ; en place au
 labo) :
 
 | Nom | Pointe vers |
@@ -145,16 +145,18 @@ ce contenu sous un domaine à part.
    plateforme), mais du JavaScript d'une Preview peut encore poser un cookie
    sur votre domaine principal. Ce risque doit être accepté par écrit.
 
-La Prod des outils reste sous votre domaine : son code a passé les
-validations humaines. Sources : `docs/reflexions/2026-10-14-note-e5-deployeur.md`.
+Aujourd'hui, les recettes ne font que l'option 3 (`*.preview.<domaine>` et
+`mockup.<domaine>`) ; un domaine séparé pour les Previews est **prévu**. La
+Prod des outils reste sous votre domaine : son code a passé les validations
+humaines.
 
-**Certificats HTTPS : ouvert.** Votre réseau est interne : des certificats
-publics automatiques (Let's Encrypt) demanderaient un accès entrant depuis
-Internet, que nous ne demandons pas. La réponse probable est un certificat de
-votre autorité de certification interne (ou un certificat générique que vous
-fournissez) ; la prise en charge d'un certificat fourni est **prévue**
-(aujourd'hui, les recettes savent faire un certificat auto-fabriqué de labo
-ou Let's Encrypt seulement).
+**Certificats HTTPS : ouvert, à convenir avec vous.** Les certificats publics
+de Let's Encrypt ne demandent aucun accès entrant depuis Internet avec la
+validation par DNS, seulement un accès à l'API de votre hébergeur DNS (en
+place au labo, avec OVH comme hébergeur DNS). Sur un réseau purement interne,
+la réponse probable est un certificat de votre autorité de certification
+interne (ou un certificat générique que vous fournissez) ; la prise en charge
+d'un certificat fourni est **prévue**.
 
 **Proxy.** Tout le trafic sortant peut passer par votre proxy HTTP(S), y
 compris un proxy qui **inspecte le TLS** : dans ce cas, fournissez-nous le
@@ -172,11 +174,11 @@ Port 443 = HTTPS à travers votre proxy.
 
 | # | Source | Destination | Port | Usage | Statut |
 |---|---|---|---|---|---|
-| 1 | Postes des utilisateurs | VM Plateforme | 443/TCP (80 redirige vers 443) | Interface web de la forge ; plus tard portail, chat, pages des gates, connexion | En place (forge) ; prévu (portail) |
-| 2 | Postes des utilisateurs | VM Outils | 443/TCP | Utilisation des outils générés | Prévu ; acheminement (un point d'entrée unique ou un par VM) **ouvert** |
+| 1 | Postes des utilisateurs | VM Plateforme | 443/TCP (80 redirige vers 443) | Interface web de la forge, connexion (`auth.<domaine>`), la page des demandeurs (`chat.<domaine>`) ; plus tard les pages des gates | En place (forge, connexion, page des demandeurs) ; prévu (pages des gates) |
+| 2 | Postes des utilisateurs | VM Outils | 443/TCP | Utilisation des outils générés | En place au labo (un point d'entrée par VM outils) ; acheminement chez vous (un point d'entrée unique ou un par VM) **ouvert** |
 | 3 | Votre VPN ou bastion | Les 4 VM | 22/TCP | Administration par l'exploitant (Ansible par SSH) | En place (SSH par clé seulement) |
 | 4 | VM CI | VM Plateforme | 443/TCP | Les runners de CI récupèrent le travail, tirent et publient les images | En place |
-| 5 | VM Outils | VM Plateforme | 443/TCP | Récupération des images approuvées dans le registre de la forge ; appels entre outils | Prévu |
+| 5 | VM Outils | VM Plateforme | 443/TCP | Récupération des images approuvées dans le registre de la forge ; connexion des utilisateurs des outils (Keycloak) ; appels entre outils | En place au labo (images, connexion) ; prévu (appels entre outils) |
 | 6 | VM Plateforme | Toutes les VM | 443/TCP | Contrôles de santé (Gatus) | Prévu |
 
 **Sortants**
@@ -186,24 +188,29 @@ Port 443 = HTTPS à travers votre proxy.
 | 7 | Toutes les VM | Vos serveurs DNS et NTP | 53, 123/UDP | Résolution de noms, heure | Obligatoire |
 | 8 | Toutes les VM | `archive.ubuntu.com`, `security.ubuntu.com` (ou votre miroir Ubuntu) | 80/443 | Paquets système, mises à jour de sécurité quotidiennes ; Docker vient des paquets d'Ubuntu | En place |
 | 9 | Toutes les VM | `registry-1.docker.io`, `auth.docker.io`, `production.cloudflare.docker.com` | 443 | Images de conteneurs publiques (PostgreSQL, Caddy, Gitea, runners de CI, scanner), toutes figées par empreinte | En place |
-| 10 | VM CI | `ghcr.io`, `pkg-containers.githubusercontent.com`, `mirror.gcr.io` | 443 | Image du scanner de sécurité dynamique (contrôles de Preview) ; base des vulnérabilités du scanner (Trivy) | En place pour Trivy ; contrôles de Preview écrits, jamais exécutés ; domaines exacts **à confirmer** par la recette de vérification |
+| 10 | VM CI | `ghcr.io`, `pkg-containers.githubusercontent.com`, `mirror.gcr.io` | 443 | Image du scanner de sécurité dynamique (contrôles de Preview) ; base des vulnérabilités du scanner (Trivy) | En place ; domaines exacts **à confirmer** par la recette de vérification |
 | 11 | VM CI | `github.com`, `objects.githubusercontent.com`, `release-assets.githubusercontent.com`, `proxy.golang.org`, `sum.golang.org`, `deb.debian.org` | 443 | Briques de CI figées et reconstruction hebdomadaire de l'image de base (outils de sécurité, paquets Debian) | En place |
-| 12 | VM CI | `registry.npmjs.org` | 443 | Paquets JavaScript des outils et de l'image de base | En place |
-| 13 | VM Plateforme (agents) | `api.anthropic.com` | 443 | Appels au modèle d'IA, clé à votre nom | Prévu |
+| 12 | VM CI, VM Plateforme (agents) | `registry.npmjs.org` | 443 | Paquets JavaScript des outils et de l'image de base | En place |
+| 13 | VM Plateforme (agents) | `api.anthropic.com` | 443 | Appels au modèle d'IA, clé à votre nom | En place au labo (par le proxy IA) |
 | 14 | VM Plateforme | Votre annuaire : AD en LDAPS (636/TCP), ou Entra ID (`login.microsoftonline.com`, 443) | 636 / 443 | Connexion de vos utilisateurs via Keycloak | Prévu |
 | 15 | VM Plateforme | Votre relais SMTP | 25 ou 587 | Notifications par e-mail (gates, alertes). Microsoft 365 : l'authentification SMTP simple est retirée (fin 2026, à confirmer auprès de Microsoft) — prévoir un relais par IP ou certificat, ou OAuth2 | Prévu, facultatif |
 | 16 | Toutes les VM | Votre cible de sauvegarde (compatible S3, SFTP ou NFS) | 443 / 22 / 2049 | Copie des sauvegardes applicatives hors des VM | Prévu |
 | 17 | VM Plateforme | Alertes de l'exploitant et sonde externe | 443 | Alertes vers l'exploitant ; contrôle de vie depuis l'extérieur | Prévu ; sens et domaine **ouverts** |
+| 18 | VM Plateforme, VM CI, VM Outils | `acme-v02.api.letsencrypt.org` ; l'API de votre hébergeur DNS (OVH aujourd'hui : `eu.api.ovh.com`) | 443 | Certificats publics par validation DNS (Let's Encrypt), si vous les choisissez | En place au labo |
+| 19 | VM Plateforme, VM CI, VM Outils | `github.com`, `objects.githubusercontent.com`, `release-assets.githubusercontent.com`, `gcr.io`, `quay.io`, `registry.access.redhat.com`, `downloads.claude.ai`, `gvisor.dev`, `storage.googleapis.com` | 443 | Binaires et images figés récupérés par les recettes et par la construction des images de la plateforme (cosign, Smokescreen, Keycloak, Claude Code, gVisor) | En place ; domaines exacts **à confirmer** par la recette de vérification |
 
 **Jamais exposé** (en place, sauf mention) :
 
 - Rien n'est publié sur Internet ; aucun flux entrant depuis Internet n'est
   nécessaire.
 - Le pare-feu de chaque VM refuse tout trafic entrant sauf SSH (22), plus
-  HTTPS (80/443) sur la VM qui sert le trafic web.
+  HTTPS (443) sur les VM qui servent le trafic web (et 80 sur la forge,
+  redirigé vers 443).
 - SSH : par clé seulement, sans mot de passe, sans connexion root.
-- Les bases PostgreSQL ne publient aucun port ; le port interne de la forge
-  n'écoute que sur la VM elle-même (`127.0.0.1`).
+- Les bases PostgreSQL ne publient aucun port, sauf celle de l'orchestrateur,
+  joignable par les agents seulement (TLS 1.3 avec certificat client, règle de
+  pare-feu) ; le port interne de la forge n'écoute que sur la VM elle-même
+  (`127.0.0.1`).
 - L'accès Git se fait en HTTPS avec jeton seulement ; la forge n'a pas de
   serveur SSH.
 - L'API Docker n'est jamais joignable depuis le réseau ; les tâches de CI qui
@@ -240,7 +247,7 @@ Port 443 = HTTPS à travers votre proxy.
   administrateurs.
 - Les approbations (gates) sont données par un **référent métier** ; votre DSI
   est prévenue et dispose d'un **veto** sur les outils sensibles ou au profil
-  renforcé (décision n°12 ; les pages des gates sont **prévues**).
+  renforcé (décision n° 12 ; les pages des gates sont **prévues**).
 
 ## 4. Sauvegarde, PRA, réversibilité
 
@@ -249,9 +256,9 @@ Port 443 = HTTPS à travers votre proxy.
 | Étage | Qui | Quoi | Statut |
 |---|---|---|---|
 | 1. VM entières | Votre DSI, avec votre outil habituel (Veeam, Hyper-V, Proxmox Backup Server…) | Les 4 VM | Votre périmètre ; utile quand tout est perdu |
-| 2. Données applicatives | EupaDev | Forge (dépôts, registre, base) par `gitea dump`, base de l'orchestrateur par `pg_dump` ; chaque nuit à 02:30 UTC ; 7 conservées ; restauration réelle testée automatiquement | En place au labo, **stockées sur la VM seulement** |
+| 2. Données applicatives | EupaDev | Forge (dépôts, registre, base) par `gitea dump`, bases de l'orchestrateur et de Keycloak par `pg_dump` ; chaque nuit à 02:30 UTC ; 7 conservées (4 sur la forge) ; restauration réelle testée automatiquement | En place au labo, **stockées sur la VM seulement** |
 | 2b. Copie hors des VM | EupaDev, vers une cible que vous fournissez (compatible S3, SFTP ou NFS) | Copie chiffrée de l'étage 2 (restic) | **Prévu** |
-| 2c. Bases des outils | EupaDev | Une base par outil | **Prévu** |
+| 2c. Bases des outils | EupaDev | Un `pg_dump` par base d'outil, chaque nuit | En place au labo (VM outils), **stockées sur la VM seulement** |
 
 Pourquoi deux étages : la sauvegarde « à chaud » d'une VM qui contient une
 base n'est pas garantie cohérente ; la sauvegarde applicative l'est. Merci de
@@ -277,26 +284,29 @@ pour restaurer une sauvegarde).
 
 - **La clé de l'IA est à votre nom.** Vous contractez directement avec le
   fournisseur d'IA (Anthropic) ; il est votre sous-traitant, l'exploitant
-  n'est pas intermédiaire sur ce flux (décision n°11).
+  n'est pas intermédiaire sur ce flux (décision n° 11).
 - **Ce qui est envoyé à l'IA :** la conversation de cadrage, le code des
   outils et des données de test fictives. **Aucune donnée de production n'est
-  jamais envoyée à l'IA** (décision n°15 ; les contrôles qui l'imposent sont
+  jamais envoyée à l'IA** (décision n° 15 ; les contrôles qui l'imposent sont
   **prévus**).
-- **Plafonds de dépense** par appel, par outil et par mois (**prévu**).
+- **Plafonds de dépense** : par tâche d'agent (en place : le moteur donne à
+  chaque tâche un plafond de coût) ; par outil et par mois (**prévu** ;
+  aujourd'hui le plafond de dépense de l'espace de travail chez le fournisseur
+  d'IA).
 - **Contrat de sous-traitance :** un DPA (RGPD art. 28) est signé entre vous et
   l'exploitant, qui administre des VM contenant des données personnelles.
 - **Diagnostic assisté par une IA** (facultatif) : recettes en lecture seule,
   données personnelles masquées, corrections appliquées par l'exploitant,
   seulement avec votre accord écrit dans le DPA ; pas proposé aux clients
-  très sensibles (décision n°10, **prévu**).
+  très sensibles (décision n° 10, **prévu**).
 - **Transparence :** le chat de cadrage indique aux utilisateurs qu'ils
   parlent à une IA (AI Act art. 50) ; la Gate 1 demande si un outil utilise
   l'IA pour un usage RH (haut risque) (**prévu**).
-- **Ouvert : hébergement UE de l'API de l'IA.** Le traitement des données dans
-  l'UE par l'API du fournisseur, et à quelles conditions, **n'a pas été
-  vérifié** ; à contrôler à la source avant l'offre. La possibilité d'utiliser
-  à la place un accès hébergé dans l'UE au même modèle **n'est pas vérifiée**
-  non plus.
+- **Ouvert : traitement dans l'UE des appels à l'IA.** Avec l'API directe du
+  fournisseur, le traitement peut avoir lieu hors de l'UE ; un traitement dans
+  l'UE est possible via Amazon Bedrock ou Google Vertex AI, que Claude Code
+  prend en charge mais que la plateforme n'utilise pas encore
+  (`docs/fr/governance.md`).
 
 Cette section n'est pas un avis juridique.
 
@@ -304,7 +314,7 @@ Cette section n'est pas un avis juridique.
 
 | Point | Responsable |
 |---|---|
-| Hébergement UE de l'API de l'IA, conditions de transfert du fournisseur | Exploitant, à la source, avant l'offre |
+| Traitement dans l'UE des appels à l'IA (Amazon Bedrock ou Google Vertex AI, pas encore branchés dans la plateforme), conditions de transfert du fournisseur | Exploitant, avant l'offre |
 | Certificats HTTPS sur un réseau interne (AC interne, certificat générique fourni) | Exploitant + votre DSI |
 | Accès des utilisateurs aux outils des VM Outils (point d'entrée unique ou un par VM) | Exploitant, conception |
 | Proxy avec inspection TLS : prise en charge par les recettes, test à travers votre proxy | Exploitant (prévu) |

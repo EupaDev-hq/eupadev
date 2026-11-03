@@ -1,4 +1,4 @@
-// A-R0 (note docs/reflexions/2026-10-17-note-dockerfile-fixe.md): a tool's image comes from the platform's FIXED Dockerfile
+// A-R0: a tool's image comes from the platform's FIXED Dockerfile
 // (.gitea/image/ of the template), never from a file of the agent. Reads the template's files (no Docker: the real
 // build is proven by verify-template on the lab) and runs check 4 of the guard-rails (the package check).
 import { test } from 'node:test';
@@ -61,7 +61,7 @@ test('guard-rails 4: package.json without lifecycle script or devEngines', () =>
   assert.deepEqual(findingsOf(JSON.parse(read('package.json'))), [], 'the template’s package.json passes');
 });
 
-test('guard-rails 4 core package.json: registry versions only, core at an exact version (G4, agents review 3, M1)', () => {
+test('guard-rails 4 core package.json: registry versions only, core at an exact version (G4)', () => {
   assert.deepEqual(findingsOf({ dependencies: { '@eupadev/core': '0.1.0', pg: '^8.23.1' }, devDependencies: { a: '~1.2', b: 'latest', c: '>=1 <2', d: '1.0.0 || 2.0.0', e: '*' } }), []);
   for (const spec of ['file:lib/core', 'link:lib/core', 'link:../core', 'file:vendor/eupadev-core-0.1.0.tgz', 'git+https://forge.example/x/core.git#v0.1.0',
     'git://x/core', 'git+ssh://git@x/core.git', 'github:x/core', 'x/core', 'https://forge.example/core-0.1.0.tgz', 'http://x/core.tgz',

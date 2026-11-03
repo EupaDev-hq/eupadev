@@ -46,7 +46,6 @@ registry behind an egress proxy with a badge the agent never sees: a local
 trial (Gitea 28.1.0, pnpm 12.9.1) showed that a store filled by `pnpm fetch`
 in another container lets a container without any route to the forge run
 `pnpm install --frozen-lockfile`, with the badge nowhere in its files.
-Detail and sources: `docs/reflexions/2026-10-22-note-socle-registry.md`.
 
 ## Decision
 Distribute the core through the forge's npm registry, at an exact version
@@ -93,7 +92,7 @@ option "forge npm registry"), the rest of ADR-019 stands.
   then installs from it, the forge being unreachable for any other core
   version. A fetch failure stops the task with a clear message.
 - **Migration tool**: `node-pg-migrate` is a runtime dependency of the
-  core (Ilan, 2026-10-21, step-9 note), the same image running
+  core (Ilan, 2026-10-21), the same image running
   `bin/migrate.js` before traffic switches; this replaces "node-pg-migrate
   outside the web image" in ADR-019's *Allowed dependencies* point. The
   production package cap checked by `core.yml` goes from 85 to 95 (91

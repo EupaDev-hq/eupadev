@@ -276,12 +276,36 @@ test('E4 claude: overlap without a repository — the forge has no repository ye
   assert.equal(leftovers(e.task_id), '');
 });
 
-test('E4 claude: Claude Code stops (turns, budget, unreadable output, no report) — reason read, cost kept or unknown, nothing pushed', async () => {
+test('E4 claude: Claude Code capped (turns, budget) — its commits are checked and pushed to the task branch, the task still fails, the next attempt starts from them; refused content stays unpushed', async () => {
+  for (const [scenario, error] of [['max_turns', /turns cap reached \(error_max_turns.*; its commits are kept on agent\/trial-tool\/1\/builder$/], ['budget', /budget cap reached \(error_max_budget_usd.*; its commits are kept on agent\/trial-tool\/1\/builder$/]] as const) {
+    const f = forge();
+    const m = engine(f.url);
+    const e = input(scenario);
+    const s = await m.execute(e);
+    assert.equal(s.report, null, scenario);
+    assert.match(s.error ?? '', error, `${scenario}: ${s.error}`);
+    assert.equal(s.cost_usd, 0.42, scenario);
+    assert.equal(s.tree_hash, null, scenario);
+    assert.equal(f.git('log', '-1', '--format=%s', e.branch), 'unfinished', `${scenario}: pushed`);
+    assert.equal(leftovers(e.task_id), '', scenario);
+    // The next attempt starts from the branch: the finished work sits on top of the unfinished commit, fast-forward.
+    assert.ok((await m.execute(input('success'))).report !== null, scenario);
+    assert.deepEqual(f.git('log', '--format=%s', e.branch).split('\n'), ['ping', 'unfinished', 'template'], scenario);
+  }
+  // Capped with content outside the role's scope: nothing pushed, the cap and the refusal both reported.
+  const f = forge();
+  const e = input('budget_out_of_scope');
+  const s = await engine(f.url).execute(e);
+  assert.equal(s.report, null);
+  assert.match(s.error ?? '', /budget cap reached \(error_max_budget_usd.*; agent's work refused: outside the scope of role builder "tests\/acceptance\/attacker\.js"/, s.error);
+  assert.equal(branchExists(f, e.branch), false, 'nothing pushed');
+  assert.equal(leftovers(e.task_id), '');
+});
+
+test('E4 claude: Claude Code stops (unreadable output, no report) — reason read, cost kept or unknown, nothing pushed', async () => {
   const f = forge();
   const m = engine(f.url);
   const cases: [string, RegExp, number | null][] = [
-    ['max_turns', /turns cap reached \(error_max_turns/, 0.42],
-    ['budget', /budget cap reached \(error_max_budget_usd/, 0.42],
     ['unreadable', /unreadable Claude Code output.*; errors: error: reason of the refusal at startup/, null],
     ['no_report', /without a structured report/, 0.42],
   ];

@@ -1,4 +1,4 @@
-// Web protections (§2.7 of the "common core" research, D4): home-made "hybrid on top of Go 1.25" CSRF
+// Web protections (D4): home-made "hybrid on top of Go 1.25" CSRF
 // (`net/http.CrossOriginProtection`) without a token, static header on /api/**, `csrf_blocked` counter,
 // `safeReturnTo`, `safeEqual`, `ctx.fetch`.
 import { createHash, timingSafeEqual } from 'node:crypto';
@@ -32,9 +32,9 @@ export function originRefusal(req, appUrl) {
 }
 
 /**
- * `onRequest` hook of the core: static header on /api/** (reads included, rule 2) then the origin rule on the
+ * `onRequest` hook of the core: static header on /api/** (reads included) then the origin rule on the
  * writes of /api/** and of the routes marked `config.origin` (`POST /auth/logout`); under /files/ (downloads,
- * rule 7, D3: a navigation sends neither `Origin` nor `X-Requested-With`), every request carries
+ * D3: a navigation sends neither `Origin` nor `X-Requested-With`), every request carries
  * `Sec-Fetch-Site: same-origin`, reads included. Each refusal is counted (`csrf_blocked`, like Rails'
  * `csrf_request_blocked`): the precise rule goes to the log, never to the response.
  * @param {string} appUrl
@@ -70,7 +70,7 @@ export function createOriginGuard(appUrl) {
 }
 
 /**
- * Return after sign-in (§2.7): a relative path with a single `/` (neither `//`, nor `/\`, nor a scheme, nor a blank),
+ * Return after sign-in: a relative path with a single `/` (neither `//`, nor `/\`, nor a scheme, nor a blank),
  * `/` otherwise.
  * @param {unknown} next
  */
@@ -93,7 +93,7 @@ const FETCH_TIMEOUT_MS = 10_000;
 /**
  * `ctx.fetch`: native `fetch` that never follows a redirect (the handler sees the 3xx), accepts only http(s)
  * (neither `file:` nor `data:`), times out after 10 s unless `init.signal`, and goes out through the environment
- * proxy when Node runs with `NODE_USE_ENV_PROXY=1` (Smokescreen, §2.7; the network without egress remains the real
+ * proxy when Node runs with `NODE_USE_ENV_PROXY=1` (Smokescreen; the network without egress remains the real
  * barrier, ADR-014).
  * @param {string | URL} url @param {RequestInit} [init]
  */

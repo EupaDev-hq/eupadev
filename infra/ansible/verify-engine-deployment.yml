@@ -1,6 +1,6 @@
-# Full cycle with the real forge and the real deployer (E5, g3 of the note
-# 2026-10-21-note-e5-refresh.md) — free: the executor runs the pushing fake
-# (engine=pushing), no AI. Needs the lab switched to the real world:
+# Full cycle with the real forge and the real deployer (E5) — free: the
+# executor runs the pushing fake (engine=pushing), no AI. Needs the lab
+# switched to the real world:
 #   ansible-playbook site.yml --limit orchestrator,agents -e orchestrator_real_world=true </dev/null
 #   ansible-playbook verify-engine-deployment.yml </dev/null
 # Requester and admin are the lab's verification clients (check-requester,
@@ -8,11 +8,11 @@
 # the forge → scoping pushes a page → mock-up served from the scoping archive
 # → requester satisfied → hardening pushes, integration, squash, the tool's
 # real CI publishes the signed image → Gate 1 (the core tool registered by
-# register-tools.yml, as Ilan does, then approved) → Preview deployed →
+# register-tools.yml, as the admin does, then approved) → Preview deployed →
 # Preview pipeline started by W1, read by the watcher (perf, accessibility,
 # DAST, acceptance: all green, recorded against the digest) → only then the
 # requester gets the link and is satisfied → Gate 2 → Prod switched →
-# end_success, Prod answers (order S5 of the note 2026-10-26 acceptance-on-preview).
+# end_success, Prod answers (order S5).
 # The pushing fake writes no acceptance suite and a missing suite is red: the
 # suite of verify-engine-preview.yml (files/trial-acceptance, one scenario as a
 # "user" persona found by role) is committed on main by svc-orchestrator
@@ -188,7 +188,7 @@
           changed_when: false
           failed_when: check_state.stdout != 'gate_1'
 
-        # The tool is a core tool: before approving Gate 1, Ilan registers it
+        # The tool is a core tool: before approving Gate 1, the admin registers it
         # (D-E5); the test runs the same playbook for its slug.
         - name: Gate 1 registration of the test tool (register-tools.yml)
           ansible.builtin.command:
@@ -207,7 +207,7 @@
           ansible.builtin.include_tasks: tasks/engine-step.yml
           vars:
             engine_state: gate_1
-            engine_message: { type: decision, gate: gate_1, outcome: approved }
+            engine_message: { type: decision, gate: gate_1, outcome: approved, comment: "Lab check of the deployment, not a real tool" }
 
         # S5: Preview deployed by SSH, then its pipeline (started by W1, read by the watcher) before the requester is told.
         - name: Wait for the feedback on the Preview (Preview deployed, Preview pipeline green)

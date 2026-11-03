@@ -1,4 +1,4 @@
-// The requester's page (chat note 2026-10-25 §4, ADR-024). Vanilla JS, no build step: the list of my requests, one
+// The requester's page (ADR-024). Vanilla JS, no build step: the list of my requests, one
 // conversation per cycle in <deep-chat>, the opinions the state allows, a new-request form, FR/EN from one flat
 // dictionary per language. Rules: deep-chat is configured by JS properties only (never attributes), messages are plain
 // `text` (never the `html` type), every string we insert ourselves goes through `textContent`, every API call carries
@@ -24,8 +24,19 @@ async function api(method, path, body, key) {
     throw new ApiError(0, t['error.network']);
   }
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new ApiError(res.status, typeof data.detail === 'string' ? data.detail : res.statusText);
+  if (res.status === 401 && signedIn) sessionExpired();
+  if (!res.ok) throw new ApiError(res.status, res.status === 401 && signedIn ? t['error.session'] : typeof data.detail === 'string' ? data.detail : res.statusText);
   return data;
+}
+/** Set once the first API call succeeded: a later 401 is an expired session (30 min idle, 8 h at most), not a visitor. */
+let signedIn = false;
+/** A banner on top of the page, kept as is (the unsent text stays in the chat to be copied), with the sign-in link. */
+function sessionExpired() {
+  if (document.getElementById('expired')) return;
+  main.prepend(el('p', { id: 'expired', class: 'error', role: 'alert' }, [
+    `${t['error.session']} `,
+    el('a', { href: `/auth/login?next=${encodeURIComponent(location.pathname)}&lang=${lang}`, text: t['auth.signin'] }),
+  ]));
 }
 
 // ── Language ──────────────────────────────────────────────────────────────────────────────────────
@@ -87,15 +98,21 @@ function viewError(e) {
   ]));
 }
 
-/** The left column: "New request", then my requests (the open one marked as the current page). */
+/** The signed-in person (`GET /requests`): their hats decide what the page offers (the admin's gates). */
+let me = { roles: [] };
+const isAdmin = () => me.roles.includes('admin');
+/** The left column: "New request", for an admin the requests waiting at a gate, then my requests (the open one marked as the current page). */
 function renderSide(requests, currentId) {
   const nav = document.getElementById('requests');
-  const links = requests.map((r) => el('a', { href: `/cycles/${r.cycle_id}`, ...(r.cycle_id === currentId ? { 'aria-current': 'page' } : {}) }, [
+  const link = (r) => el('a', { href: `/cycles/${r.cycle_id}`, ...(r.cycle_id === currentId ? { 'aria-current': 'page' } : {}) }, [
     el('span', { text: r.name }),
     el('span', { class: 'sub', text: stateLabel(r.state) }),
-  ]));
+  ]);
+  const waiting = isAdmin() ? requests.filter((r) => r.state.startsWith('gate_')) : null;
+  const links = requests.map(link);
   nav.replaceChildren(
     el('a', { href: '/', class: 'new', text: t['new.title'], ...(currentId === undefined ? { 'aria-current': 'page' } : {}) }),
+    ...(waiting === null ? [] : [el('h2', { text: t['list.waiting'] }), ...(waiting.length > 0 ? waiting.map(link) : [el('p', { class: 'empty', text: t['list.nothingWaiting'] })])]),
     el('h2', { text: t['list.title'] }),
     ...(links.length > 0 ? links : [el('p', { class: 'empty', text: t['list.empty'] })]),
   );
@@ -118,6 +135,11 @@ function newRequestForm() {
   const slug = el('input', { type: 'text', maxlength: '63', pattern: '[a-z0-9]+(-[a-z0-9]+)*', autocapitalize: 'off', spellcheck: 'false' });
   const service = el('input', { type: 'text', maxlength: '200' });
   const need = el('textarea', { maxlength: '10000' });
+  let slugEdited = false;
+  slug.addEventListener('input', () => { slugEdited = true; });
+  name.addEventListener('input', () => {
+    if (!slugEdited) slug.value = name.value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 63).replace(/-+$/, '');
+  });
   const submit = el('button', { type: 'submit', class: 'primary', text: t['new.submit'] });
   const form = el('form', { class: 'fields card', novalidate: '' }, [
     field('name', 'new.name', name), field('slug', 'new.slug', slug), field('owner_service', 'new.service', service), field('need', 'new.need', need), el('div', { class: 'row' }, [submit]),
@@ -139,25 +161,26 @@ function newRequestForm() {
   return form;
 }
 
-/** Opinion buttons per state: label key, message, kind (`primary`, `danger`, or `text` = takes the optional details as `text`). */
-const OPINIONS = {
-  waiting_scoping_feedback: [
-    ['btn.scoping.ok', { type: 'scoping_feedback', outcome: 'satisfied' }, 'primary'],
-    ['btn.scoping.correction', { type: 'scoping_feedback', outcome: 'correction' }, 'text'],
-    ['btn.abandon', { type: 'requester_abandonment' }, 'danger'],
-  ],
-  scoping_pause: [['btn.abandon', { type: 'requester_abandonment' }, 'danger']],
-  waiting_preview_feedback: [
-    ['btn.preview.ok', { type: 'preview_feedback', outcome: 'satisfied' }, 'primary'],
-    ['btn.preview.bug', { type: 'preview_feedback', outcome: 'bug' }, 'text'],
-    ['btn.preview.capability', { type: 'preview_feedback', outcome: 'new_capability' }, 'text'],
-  ],
-};
 /** What a text typed in the chat means in this state (the only states where the engine accepts one). */
 const TYPED = {
   waiting_scoping_feedback: (text) => ({ type: 'scoping_feedback', outcome: 'correction', text }),
   scoping_pause: (text) => ({ type: 'requester_message', text }),
+  waiting_preview_feedback: (text) => ({ type: 'preview_feedback', outcome: 'bug', text }),
 };
+/**
+ * The requester just talks: a short acceptance ("ok", "c'est bon"… the whole message, nothing else) is confirmed before
+ * it is sent as `satisfied`; at the Preview, anything else is a bug or a new capability, which the page asks first.
+ */
+const ACCEPT = /^(ok|okay|yes|oui|accepted|approved?|looks good|lgtm|satisfied|c['’]est bon|d['’]accord|valid[eé]|validée|parfait|perfect|good|fine|great)[\s!.]*$/i;
+const FEEDBACK = {
+  waiting_scoping_feedback: { type: 'scoping_feedback', ok: 'btn.scoping.ok' },
+  waiting_preview_feedback: { type: 'preview_feedback', ok: 'btn.preview.ok', kinds: [['btn.preview.bug', 'bug'], ['btn.preview.capability', 'new_capability']] },
+};
+/** States where the requester may still abandon (after the merge only the admin cancels). */
+const ABANDON = new Set(['waiting_scoping_feedback', 'scoping_pause']);
+/** Gate decisions in plain words; `decision.<gate>.<outcome>` wins over `decision.<outcome>` (the incident's "retry"). */
+const decisionLabel = (gate, outcome) => t[`decision.${gate}.${outcome}`] ?? t[`decision.${outcome}`] ?? outcome;
+const NEEDS_COMMENT = new Set(['correction', 'scope_change', 'refused']);
 /** A new answer appears a few words at a time (instant for my own messages, or when the viewer asks for reduced motion). */
 async function typeIn(chat, msg) {
   const words = msg.text.split(/(?<=\s)/);
@@ -201,7 +224,7 @@ async function viewConversation(id) {
   chat.submitButtonStyles = { submit: { svg: { styles: { default: { filter: 'none' } } } } };
   chat.remarkable = { html: false, breaks: true, linkTarget: '_blank' };
   chat.errorMessages = { displayServiceErrorMessages: true, overrides: { default: t['error.title'] } };
-  // deep-chat's a11y is weak (note §2): its submit button has no name, its input no label — given here, in its open shadow root.
+  // deep-chat's a11y is weak: its submit button has no name, its input no label — given here, in its open shadow root.
   // Its methods (placeholder, submit button) only act once rendered: the first state is applied here, the next ones by the poll.
   chat.onComponentRender = (ref) => {
     ref.shadowRoot?.querySelector('.input-button')?.setAttribute('aria-label', t['chat.send']);
@@ -214,16 +237,30 @@ async function viewConversation(id) {
       const text = (body?.messages?.[0]?.text ?? '').trim();
       const typed = TYPED[state.state];
       if (text === '' || typed === undefined) return signals.onResponse({ error: t['conv.noInput'] });
+      const fb = FEEDBACK[state.state];
+      const kinds = fb?.kinds?.map(([label, outcome]) => [label, { type: fb.type, outcome, text }]);
+      if (fb && ACCEPT.test(text)) {
+        ask('conv.askAccept', [[fb.ok, { type: fb.type, outcome: 'satisfied' }, 'primary'], ['conv.notAccept', kinds ? () => ask('conv.askKind', kinds) : typed(text)]]);
+        return signals.onResponse({ text: t['conv.askAccept'], role: 'orchestrator' });
+      }
+      if (kinds) {
+        ask('conv.askKind', kinds);
+        return signals.onResponse({ text: t['conv.askKind'], role: 'orchestrator' });
+      }
       try {
-        await api('POST', '/messages', { cycle_id: id, message: typed(text) }, crypto.randomUUID());
-        sent.add(text);
+        await post(typed(text));
         await signals.onResponse({ text: t['conv.sent'], role: 'orchestrator' });
-        await poll();
       } catch (e) {
         await signals.onResponse({ error: e.message });
       }
     },
   };
+  /** `POST /messages` (one Idempotency-Key per call site), the text remembered for the poll, then the state refreshed. */
+  async function post(message, key = crypto.randomUUID()) {
+    await api('POST', '/messages', { cycle_id: id, message }, key);
+    if (message.text) sent.add(message.text);
+    await poll();
+  }
 
   const badgeSlot = el('span');
   const opinions = el('div', { class: 'opinions' });
@@ -235,46 +272,87 @@ async function viewConversation(id) {
 
   function placeholder() {
     if (state.state.startsWith('end_')) return t['conv.placeholder.closed'];
-    return state.state === 'scoping_pause' ? t['conv.placeholder.pause'] : state.state === 'waiting_scoping_feedback' ? t['conv.placeholder.scoping'] : t['conv.placeholder.wait'];
+    return t[`conv.placeholder.${state.state}`] ?? t['conv.placeholder.wait'];
   }
   function applyInput() {
     chat.setPlaceholderText(placeholder());
     chat.disableSubmitButton(TYPED[state.state] === undefined);
   }
   function renderState() {
+    Object.assign(main.dataset, { state: state.state, visit: state.visit });
     badgeSlot.replaceChildren(badge(state.state));
-    const sub = document.querySelector('#requests a[aria-current] .sub');
-    if (sub) sub.textContent = stateLabel(state.state);
     applyInput();
     renderOpinions();
   }
-  function renderOpinions() {
-    const defs = OPINIONS[state.state] ?? [];
-    opinions.replaceChildren();
-    if (defs.length === 0) return;
-    const details = el('input', { type: 'text', maxlength: '10000', placeholder: t['conv.details'], 'aria-label': t['conv.details'] });
-    const buttons = defs.map(([label, message, kind]) => {
+  /**
+   * Buttons that send one message each (one Idempotency-Key per button), all disabled while one is in flight. An option
+   * is `[label key, message or () => message | undefined, class]`: a function builds the message on click, or asks
+   * something else first and returns nothing.
+   */
+  function senders(container, options) {
+    const buttons = options.map(([label, action, kind]) => {
       const key = crypto.randomUUID();
-      const b = el('button', { type: 'button', class: kind === 'text' ? '' : kind, text: t[label] });
+      const b = el('button', { type: 'button', class: kind ?? '', text: t[label] ?? label });
       b.addEventListener('click', async () => {
-        if (message.type === 'requester_abandonment' && !confirm(t['conv.confirmAbandon'])) return;
-        const m = { ...message };
-        const d = details.value.trim();
-        if (kind === 'text' && d !== '') m.text = d;
+        const message = typeof action === 'function' ? action() : action;
+        if (message === undefined) return;
         for (const x of buttons) x.disabled = true;
         try {
-          await api('POST', '/messages', { cycle_id: id, message: m }, key);
-          if (m.text) sent.add(m.text);
-          await poll();
+          await post(message, key);
+          chat.addMessage({ text: t['conv.sent'], role: 'orchestrator' });
+          if (container.classList.contains('ask')) container.remove();
         } catch (e) {
-          showError(opinions, e);
+          showError(container, e);
           for (const x of buttons) x.disabled = false;
         }
       });
       return b;
     });
-    opinions.append(el('div', { class: 'row' }, buttons));
-    if (defs.some((d) => d[2] === 'text')) opinions.append(el('div', { class: 'row' }, [details]));
+    return buttons;
+  }
+  /** A question above the input (the chat shows it too) with its answers; replaced by the next state or question. */
+  function ask(question, options) {
+    const box = el('div', { class: 'ask', role: 'group', 'aria-label': t[question] });
+    box.append(el('div', { class: 'row' }, senders(box, options)));
+    renderOpinions(box);
+  }
+  function renderOpinions(pending) {
+    opinions.replaceChildren();
+    if (pending) opinions.append(pending);
+    else if (isAdmin() && state.possible_decisions.length > 0) opinions.append(decisionCard());
+    if (ABANDON.has(state.state)) opinions.append(el('button', { type: 'button', class: 'ghost abandon', text: t['btn.abandon'], onclick: async () => {
+      if (!confirm(t['conv.confirmAbandon'])) return;
+      try { await post({ type: 'requester_abandonment' }, abandonKey); } catch (e) { showError(opinions, e); }
+    } }));
+  }
+  const abandonKey = crypto.randomUUID();
+  /**
+   * The admin's decision at a gate: the gate in plain words, the engine's reason, at Gate 2 the candidate digest (the
+   * full one is cited in the decision), a comment (required to correct, change the scope or refuse; at Gate 1 the
+   * approval's comment becomes the tool's catalogue description), one button per possible decision.
+   */
+  function decisionCard() {
+    const gate = state.state;
+    const comment = el('textarea', { id: 'decision-comment', maxlength: '10000', rows: '2' });
+    const card = el('section', { class: 'card decision', 'aria-label': t['gate.title'] }, [
+      el('h2', { text: t[`gate.${gate}`] ?? t['state.gate'] }),
+      ...(state.gate_reason ? [el('p', { class: 'reason', text: state.gate_reason })] : []),
+      ...(gate === 'gate_2' && state.candidate_digest ? [el('p', { text: `${t['gate.digest']} ` }, [el('code', { text: state.candidate_digest.slice(0, 12), title: state.candidate_digest })])] : []),
+      el('label', { for: comment.id }, [el('span', { text: t[gate === 'gate_1' ? 'gate.comment.gate_1' : 'gate.comment'] }), comment]),
+    ]);
+    const decide = (outcome) => () => {
+      const c = comment.value.trim();
+      if (c === '' && NEEDS_COMMENT.has(outcome)) {
+        showError(card, new Error(t['gate.commentRequired']));
+        comment.focus();
+        return undefined;
+      }
+      const digest = gate === 'gate_2' && outcome === 'approved' && state.candidate_digest ? { digest: state.candidate_digest } : {};
+      return { type: 'decision', gate, outcome, ...(c === '' ? {} : { comment: c }), ...digest };
+    };
+    const options = state.possible_decisions.map((outcome) => [decisionLabel(gate, outcome), decide(outcome), outcome === 'approved' ? 'primary' : outcome === 'refused' ? 'danger' : '']);
+    card.append(el('div', { class: 'row' }, senders(card, options)));
+    return card;
   }
   /** New rows since the last id (the engine's answers, the agents' questions) and the state, every POLL_MS. */
   let polling = false;
@@ -292,6 +370,7 @@ async function viewConversation(id) {
       if (fresh.state !== state.state || fresh.visit !== state.visit) {
         state = fresh;
         renderState();
+        renderSide((await api('GET', '/requests')).requests, id);
       }
     } catch { /* the next poll will try again */ } finally { polling = false; }
   }
@@ -322,7 +401,9 @@ async function start() {
   });
   const m = /^\/cycles\/([1-9][0-9]*)$/.exec(location.pathname);
   try {
-    const { me, requests } = await api('GET', '/requests');
+    const { me: who, requests } = await api('GET', '/requests');
+    me = who;
+    signedIn = true;
     document.getElementById('account').replaceChildren(me.name, el('span', { class: 'roles', text: ` · ${me.roles.map((r) => t[`hat.${r}`] ?? r).join(', ')}` }));
     renderSide(requests, m ? Number(m[1]) : undefined);
     if (m) await viewConversation(Number(m[1]));

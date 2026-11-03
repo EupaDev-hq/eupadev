@@ -664,7 +664,7 @@
             success_msg: "OK — Opengrep analyses the file hidden by api/.gitignore: red on the analysis ({{ pipeline_jobs }})"
             fail_msg: >-
               FAILED — hidden file: {{ pipeline.conclusion }} ({{ pipeline_jobs }});
-              api/masked.js {{ 'vu' if job_log.analysis is search('masked') else 'ABSENT' }} — {{ pipeline.html_url }}
+              api/masked.js {{ 'seen' if job_log.analysis is search('masked') else 'ABSENT' }} — {{ pipeline.html_url }}
 
         - name: "6b. Tests: without package.json, the job fails instead of passing"
           ansible.builtin.assert:

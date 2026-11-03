@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Report every line that still contains French (switch plan: docs/reflexions/2026-10-20-note-english-switch.md).
+"""Report every line that contains French (ADR-025: the repository is written in English).
 
 Usage (from the repository root):
   check-english.py [PATH...]             every tracked file (or those under PATH): file:line: reasons: text,
@@ -28,7 +28,7 @@ import unicodedata
 
 GLOSSARY = 'docs/glossary.md'
 ALLOW_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'check-english-allow.txt')
-ALLOWED_PATHS = ('docs/fr/*', '*/docs/fr/*', 'docs/reflexions/*', '*.fr.md', '*/lang/fr.json', GLOSSARY,
+ALLOWED_PATHS = ('docs/fr/*', '*/docs/fr/*', 'docs/reflexions/*', '*.fr.md', '*.fr.svg', '*/lang/fr.json', GLOSSARY,
                  '*pnpm-lock.yaml', '*package-lock.json', '*.terraform.lock.hcl')
 ACCENT = re.compile(r'[àâäçéèêëîïôöùûüÿœæÀÂÄÇÉÈÊËÎÏÔÖÙÛÜŸŒÆ«»]')
 # French words that do not occur in English text; one is enough.
@@ -109,7 +109,7 @@ def allowed(path, text, rules):
 def reasons(text, words, terms):
     """Why the line is French; empty when it is not."""
     why = []
-    # A path into the private French notes (L7) is a publication matter, not a language one.
+    # A path into the private French notes is a publication matter, not a language one.
     text = PRIVATE_NOTE.sub('', text)
     m = ACCENT.search(text)
     if m:

@@ -39,7 +39,7 @@ the tag `<version>-<YYYYMMDD>`, signs it with cosign and the installation's
 key (repository secrets `COSIGN_PRIVATE_KEY`, `COSIGN_PASSWORD`, no public
 transparency log) and verifies the signature. Its log ends with
 `Agent image digest: <registry>/eupadev/agent@sha256:…`, the only
-reference the launcher will use.
+reference the launcher uses.
 
 Real test: `infra/ansible/verify-image-agent.yml`.
 
@@ -49,8 +49,8 @@ Real test: `infra/ansible/verify-image-agent.yml`.
 upstream server that logs requests and answers scripted `tool_use` blocks, in a trapped clone (project and user
 settings, hooks, CLAUDE.md, AGENTS.md, `paths:` rule, `.mcp.json`, each with a canary); `--internal` network, fake key.
 Checks that no canary reaches the model, that the "attacker" named by the settings receives nothing, that hooks and MCP
-do not start, that forbidden paths are refused and that normal work goes through (`verify.mjs`). Results of
-2026-10-15: `docs/reflexions/2026-10-15-note-consignes-agents.md`.
+do not start, that forbidden paths are refused and that normal work goes through (`verify.mjs`); first passed on
+2026-10-15.
 
 In the pipeline (step "Claude Code is not hijacked by a trapped repository"), before publication and signature:
 `VARIANTS="code read reviewer"` (the three passes with assertions, the witnesses only serve the analysis), on the CI

@@ -4,13 +4,12 @@ The first complete tool on `@eupadev/core`. Someone reports a maintenance
 need, a manager handles it, an administrator keeps the list of categories. It
 is the reference the agents copy, the target of the kit's SEC-* checks and of
 the scanners, and the tutorial below. It was written by hand, one phase at a
-time, following `docs/reflexions/2026-10-19-note-exemple-demandes.md` (§11);
-decisions E1 to E14 of that note are referred to by number.
+time; its decisions are in `docs/DECISIONS.md`, referred to below by number.
 
 **State: step 8 done.** Every story of `docs/spec.md` works on the real
 database and is covered by a Gherkin scenario; the twelve SEC-* checks,
 Schemathesis (zero failures) and k6 (thresholds) block the CI; a ZAP pass was
-run once locally (result in the note, §14).
+run once locally.
 
 ## Run it
 
@@ -69,7 +68,7 @@ refuses. What the linter requires, learned the hard way:
   found by Schemathesis; hence the shared `Version` schema);
 - the error responses the core itself produces are declared on every
   operation: 401, 403, 429, plus 400 with parameters or a body, 415 with a
-  body, 404 with a path parameter, 413 with a file body (K9);
+  body, 404 with a path parameter, 413 with a file body;
 - a download lives under `/files/` and answers 200 in a closed list of
   types; a file body declares only `application/pdf`, `image/png`,
   `image/jpeg` and its `x-max-bytes`.
@@ -213,4 +212,4 @@ signs in through the real Keycloak form: no test bypass exists.
   bytes.
 - A French translation of the screens (i18n), and a check at start that the
   mail settings are present.
-- The dashboard (`getStats`, E14): optional, not built.
+- The dashboard (`getStats`): optional, not built.

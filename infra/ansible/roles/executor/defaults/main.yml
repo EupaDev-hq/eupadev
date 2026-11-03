@@ -1,4 +1,4 @@
-# DBOS executor of the agents VM (note docs/reflexions/2026-10-15-note-lanceur-service.md).
+# DBOS executor of the agents VM.
 # Same image as the pilot, same digest (deployed together): a single source,
 # the variable of the orchestrator group.
 executor_image: "{{ hostvars[groups['orchestrator'][0]].orchestrator_image }}"

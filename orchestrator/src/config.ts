@@ -13,7 +13,7 @@ import type { Effort, Role } from './external/contracts.ts';
 
 /**
  * ROADMAP no. 25 (a): model (full name, never an alias that would change model without a decision) and effort per role,
- * passed to the agent engine like the cap. Starting table of A-R5 (agents research §6.3, Ilan's decision 8 of 2026-10-17):
+ * passed to the agent engine like the cap. Starting table of A-R5 (Ilan's decision of 2026-10-17):
  * overlap Haiku 5.5 `medium` (at `low`, Haiku "skip a search, stop early"); scoping Sonnet 5.5 `medium`; contract Opus 5.5
  * `high` (it freezes the scope); tests and builder (A-R1, ADR-021: the "code" line) Opus 5.5 `medium`; reviewers Opus 5.5
  * `high`. Fable 5.1 in no line: escalation only. To be readjusted on the real costs of the measurement run (`tasks` columns).
@@ -93,15 +93,15 @@ export interface Config {
   /** Model and effort of each role (MODELS_BY_ROLE). */
   models: typeof MODELS_BY_ROLE;
   /**
-   * Engine-side emergency stop ("engine for real" note §3.7): `PAUSE_AGENTS=1` → this process no longer takes any task
+   * Engine-side emergency stop: `PAUSE_AGENTS=1` → this process no longer takes any task
    * from the agents queue (DBOS: `agent-tasks` removed from `listenQueues`); the cycles go on (messages, gates) and the tasks stay queued.
    */
   pauseAgents: boolean;
   /** Local API (§8.16 M8): listen address (127.0.0.1 by default; 0.0.0.0 in a container whose port is published on 127.0.0.1) and port. */
   api: { address: string; port: number };
-  /** Role of the process (`EUPADEV_ROLE`, `docs/reflexions/2026-10-15-note-lanceur-service.md`): see `ROLES`. */
+  /** Role of the process (`EUPADEV_ROLE`): see `ROLES`. */
   role: ProcessRole;
-  /** Language of the end-user texts (chat messages, mails, gate reasons): `EUPADEV_LANGUAGE`, English by default (L10). */
+  /** Language of the end-user texts (chat messages, mails, gate reasons): `EUPADEV_LANGUAGE`, English by default (ADR-025). */
   language: Language;
   /**
    * I0 (ADR-017): the IdP (Keycloak) as seen by the API — `OIDC_ISSUER` (public iss, fixed), `OIDC_JWKS_URL` (keys, internal
@@ -109,7 +109,7 @@ export interface Config {
    */
   oidc: OptionsOidc;
   /**
-   * Browser sign-in of the requester's web page (chat note 2026-10-25, decision 2; ADR-024): confidential client
+   * Browser sign-in of the requester's web page (ADR-024): confidential client
    * `OIDC_WEB_CLIENT_ID` (`eupadev-web`), `OIDC_WEB_CLIENT_SECRET` (or `_FILE`), `OIDC_WEB_REDIRECT_URL`
    * (`<page origin>/auth/callback`). null = not configured: the `/auth/*` routes refuse (503), the rest of the API works.
    */

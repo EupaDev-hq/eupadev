@@ -65,7 +65,7 @@ gitea_core_org:
   units_map: { repo.packages: write }
 
 # Human accounts of the forge (no administration): the human path of the
-# approved exceptions (docs/reflexions/2026-10-13-note-exceptions.md). Random
+# approved exceptions (registry .gitea/exceptions.txt of each tool). Random
 # initial password, never stored: the person sets it themselves
 # (gitea admin user change-password), later through Keycloak.
 # Same shape as gitea_service_accounts (one team per entry): the team
@@ -252,7 +252,7 @@ gitea_platform_repos:
     secrets: [COSIGN_PRIVATE_KEY, COSIGN_PASSWORD]
     template: false
     description: "Image of the AI agents (pinned Claude Code version, built, scanned, signed by cosign)"
-  # Keycloak (identity, docs/reflexions/2026-10-15-note-keycloak-labo.md):
+  # Keycloak (identity):
   # official image built for PostgreSQL, signed by the same key as `engine`
   # and `agent` (repository secrets, public key at its original path).
   - name: keycloak
@@ -270,7 +270,7 @@ gitea_platform_repos:
     template: false
     description: "Caddy image of the platform (OVH DNS module, scanned, signed by cosign)"
   # Core of the tools (@eupadev/core), published to the forge's npm
-  # registry (docs/reflexions/2026-10-22-note-socle-registry.md): pipeline in
+  # registry (ADR-023): pipeline in
   # images/core, core/ recopied at its original path, file by file and
   # folder by folder (never the controller's node_modules/). badges: robot
   # badges created by Ansible and stored in the secrets of THIS repository

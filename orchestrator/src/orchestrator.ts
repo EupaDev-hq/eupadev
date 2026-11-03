@@ -51,7 +51,7 @@ const CHECK = /[\u0000-\u001f\u007f]/;
  * whole life of the process.
  */
 export const ENGINE_LOCK_KEY = '7362584910244';
-/** D23 per role (`docs/reflexions/2026-10-15-note-lanceur-service.md`): a single executor of the agent tasks at a time. */
+/** D23 per role: a single executor of the agent tasks at a time. */
 export const EXECUTOR_LOCK_KEY = '7362584910245';
 /** Locks taken per role: the all-in-one (`all-in-one`) also runs the agent tasks, it holds both. */
 const LOCKS: Record<ProcessRole, readonly string[]> = { 'all-in-one': [ENGINE_LOCK_KEY, EXECUTOR_LOCK_KEY], pilot: [ENGINE_LOCK_KEY], executor: [EXECUTOR_LOCK_KEY] };
@@ -73,7 +73,7 @@ export class AuthorizationError extends Error {
 /**
  * I0: the hat under which `actorId` (canonical, 0010) acts on the cycle's tool — `requester` if they are the tool's
  * requester and wear that hat, else `admin` if they wear it; otherwise refused. One rule for opinions, abandon, messages
- * and reading the cycle (chat note 2026-10-25, decision 5).
+ * and reading the cycle.
  */
 export function hatOnTool(c: Pick<Cycle, 'requester_id' | 'slug'>, actorId: string, roles: readonly Hat[], what: string): Hat {
   if (actorId === c.requester_id && roles.includes('requester')) return 'requester';
@@ -189,8 +189,8 @@ export class Orchestrator {
       // account); DBOS only checks its version at launch and refuses to start if it is missing or behind.
       // S1: DBOS patching — constant application version ("PATCHING_ENABLED"), never computed from the source: a code
       // update resumes the workflows in place; a change of step sequence goes through DBOS.patch (README).
-      // Queues listened to according to the role (`docs/reflexions/2026-10-15-note-lanceur-service.md`): only the pilot serves
-      // `control`, only the executor `agent-tasks` (the all-in-one both). Emergency stop (§3.7, `PAUSE_AGENTS=1`):
+      // Queues listened to according to the role: only the pilot serves `control`, only the executor `agent-tasks` (the
+      // all-in-one both). Emergency stop (`PAUSE_AGENTS=1`):
       // `agent-tasks` is no longer listened to, so no agent task starts any more; they stay queued (ENQUEUED) and start
       // again on a restart without pause. The W1s go on (messages, gates). The executor takes the DBOS id reserved for it.
       const files = [...(config.role === 'executor' ? [] : [CONTROL_QUEUE]), ...(config.role === 'pilot' || config.pauseAgents ? [] : [TASK_QUEUE])];
@@ -278,7 +278,7 @@ export class Orchestrator {
     return this.#stopping;
   }
 
-  /** End-user text of the dictionaries (`lang/*.json`), in the deployment's language (L10). */
+  /** End-user text of the dictionaries (`lang/*.json`), in the deployment's language. */
   #text(key: string, values?: Values): string {
     return text(this.config.language, key, values);
   }
@@ -520,7 +520,7 @@ export class Orchestrator {
   }
 
   /**
-   * E0: health for the container's check (§3.5): null if the engine runs and reaches its db, otherwise the reason. The loss
+   * E0: health for the container's check: null if the engine runs and reaches its db, otherwise the reason. The loss
    * of the lock (D23) stops the engine (`#lockLoss`): it shows here as `engine stopped`.
    */
   async health(): Promise<string | null> {

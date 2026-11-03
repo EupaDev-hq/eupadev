@@ -13,8 +13,7 @@ Generated tools are born simple (one screen, one user) and then grow:
 users, roles, reference data, consumers; some become critical. Levels (N1,
 N2, N3) with different stacks would make a tool change technology at each
 step up, through a migration by agents on a tool in production; and a
-level chosen at scoping does not survive the tool's life. Source:
-`docs/reflexions/recherche-2026-10-11/05-revision-croissance-fable.md`.
+level chosen at scoping does not survive the tool's life.
 
 ## Decision
 Keep a single technical stack for every tool, which never changes

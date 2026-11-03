@@ -423,7 +423,7 @@ test('E2 forge: timeout exceeded — retried then transient error; cancellation 
 
 test('E2 forge: malformed answer, redirect, 401 — permanent refusals', async () => {
   await withFake(async (g, forge) => {
-    g.faults.set(`POST /repos/${ORG}/tool-template/generate`, [{ status: 201, raw: '<html>portail captif</html>' }]);
+    g.faults.set(`POST /repos/${ORG}/tool-template/generate`, [{ status: 201, raw: '<html>captive portal</html>' }]);
     await refusal(forge.createRepo('html'), /unreadable answer \(201, not JSON\)/, false);
     g.faults.set(`POST /repos/${ORG}/tool-template/generate`, [{ status: 302, headers: { Location: 'http://elsewhere.example/' } }]);
     await refusal(forge.createRepo('redirected'), /refusal 302/, false);

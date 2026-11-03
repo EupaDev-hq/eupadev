@@ -48,7 +48,7 @@ Gate 1. Add every variable of the tool's own to this section, mirrored in
 | `tests/unit/` | unit tests | the role that owns the code |
 | `tests/acceptance/` | Gherkin features, steps, security specs | contract (features), tests |
 | `tests/perf/` | k6 scenario run against the deployed Preview | adapt the example |
-| `docs/spec.md`, `docs/DECISIONS.md` | scope and decisions specific to this tool | scoping, then every role |
+| `docs/spec.md`, `docs/DECISIONS.md` | scope and decisions specific to this tool | scoping; `docs/DECISIONS.md` also the builder |
 | `design/` | shared design system, copied unchanged into `web/styles/` | protected |
 | `AGENTS.md`, `agents/`, `.claude/`, `.opengrep/`, `.gitea/`, `pnpm-workspace.yaml` | agent charter, role prompts, analysis rules, CI, pnpm settings | protected |
 | `docs/fr/` | French translations for human readers (English is authoritative) | — |
@@ -65,4 +65,5 @@ database (migration by the same image) and probed on `/health`.
 On `main` only, that same image is published to the forge registry and its digest recorded: Preview
 and Production receive this exact digest, nothing is rebuilt.
 `preview-check.yml` runs performance, accessibility and dynamic security
-checks against the deployed Preview; the orchestrator starts it.
+checks, and the tool's acceptance suite with the platform's SEC-* checks,
+against the deployed Preview; the orchestrator starts it.

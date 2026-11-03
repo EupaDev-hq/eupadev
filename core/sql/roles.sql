@@ -1,4 +1,4 @@
--- PostgreSQL roles of a tool (§2.5 of the "common core" research), run by the platform (deployer or Ansible) with a
+-- PostgreSQL roles of a tool, run by the platform (deployer or Ansible) with a
 -- superuser, on the tool's database, idempotent:
 --   psql -v ON_ERROR_STOP=1 -v tool=requests -v owner_password=… -v app_password=… -v purge_password=… -d requests -f sql/roles.sql
 -- Two group roles per server, without login: core_app and core_purge; the GRANTs of migrations/0001_core.sql

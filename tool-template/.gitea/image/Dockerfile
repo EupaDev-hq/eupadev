@@ -1,6 +1,6 @@
-# Tool image — FIXED by the platform (A-R0, docs/reflexions/2026-10-17-note-dockerfile-fixe.md
-# in the EupaDev repository). Protected file (.gitea/**): no agent can change
-# it, and a Dockerfile anywhere else in the repository is refused at push time.
+# Tool image — FIXED by the EupaDev platform (A-R0). Protected file
+# (.gitea/**): no agent can change it, and a Dockerfile anywhere else in the
+# repository is refused at push time.
 # CI builds it with BuildKit: docker build -f .gitea/image/Dockerfile .
 # (BuildKit is required: only BuildKit reads Dockerfile.dockerignore next to it.)
 #

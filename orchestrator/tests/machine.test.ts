@@ -10,7 +10,7 @@ const exitsOf = (id: StateId) => TRANSITIONS.filter((t) => t.from === id);
 // Exits that change state (reminders with from === to are not exits).
 const realExits = (id: StateId) => exitsOf(id).filter((t) => t.to !== t.from);
 
-function atteignables(since: StateId, noIncidentDetour = false): Set<StateId> {
+function reachable(since: StateId, noIncidentDetour = false): Set<StateId> {
   const seen = new Set<StateId>([since]);
   const pile: StateId[] = [since];
   for (let e = pile.pop(); e !== undefined; e = pile.pop()) {
@@ -22,10 +22,10 @@ function atteignables(since: StateId, noIncidentDetour = false): Set<StateId> {
   return seen;
 }
 /** Business path: the round trip through the incident gate (D21) returns to the original state, it opens no path. */
-const walk = (since: StateId) => atteignables(since, true);
+const walk = (since: StateId) => reachable(since, true);
 
 test('(a) every non-end state has at least one exit that changes the state', () => {
-  for (const e of nonEnds) assert.ok(realExits(e.id).length > 0, `impasse : ${e.id}`);
+  for (const e of nonEnds) assert.ok(realExits(e.id).length > 0, `dead end: ${e.id}`);
 });
 
 test('(a bis) an end has no exit, notifies the requester and cleans up', () => {
@@ -38,12 +38,12 @@ test('(a bis) an end has no exit, notifies the requester and cleans up', () => {
 });
 
 test('(b) every state is reachable from the entry', () => {
-  const seen = atteignables(INITIAL_STATE);
-  for (const e of STATES) assert.ok(seen.has(e.id), `inatteignable : ${e.id}`);
+  const seen = reachable(INITIAL_STATE);
+  for (const e of STATES) assert.ok(seen.has(e.id), `unreachable: ${e.id}`);
 });
 
 test('(c) every end is reachable', () => {
-  const seen = atteignables(INITIAL_STATE);
+  const seen = reachable(INITIAL_STATE);
   for (const id of ends) assert.ok(seen.has(id), `unreachable end: ${id}`);
 });
 
@@ -110,7 +110,7 @@ test('(h) no duplicate transition (same from + trigger)', () => {
 
 test('(i) from every state, an end is reachable (no closed loop without a way out)', () => {
   for (const e of STATES) {
-    const seen = atteignables(e.id);
+    const seen = reachable(e.id);
     assert.ok(ends.some((f) => seen.has(f)), `no end reachable from ${e.id}`);
   }
 });
@@ -145,7 +145,7 @@ test('Preview: bug → hardening, new capability → contract, never scoping (D6
   assert.ok(!s.some((t) => t.to === 'preview_pipeline'), 'an already checked digest does not go through the pipeline again');
 });
 
-test('S5 (note acceptance-on-preview §3.5): the Preview checks run before the requester is told; a red one goes back to hardening without them', () => {
+test('S5: the Preview checks run before the requester is told; a red one goes back to hardening without them', () => {
   const target = (from: StateId, k: string) => exitsOf(from).find((t) => triggerKey(t.trigger) === k)?.to;
   assert.equal(target('preview_deployment', 'task:done'), 'preview_pipeline');
   assert.equal(target('preview_pipeline', 'event:preview_pipeline_finished:green'), 'waiting_preview_feedback');

@@ -60,7 +60,7 @@ variable "vms" {
   default = {
     forge = { host = 10, cpu = 2, memory = "4GiB", disk = "15GiB", docker_disk = "60GiB" }
     ci    = { host = 11, cpu = 2, memory = "4GiB", disk = "15GiB", docker_disk = "40GiB" }
-    # orch: engine + PostgreSQL + Keycloak (≈ 1.25 GiB, Keycloak lab note).
+    # orch: engine + PostgreSQL + Keycloak (Keycloak alone ≈ 1.25 GiB).
     orch  = { host = 12, cpu = 2, memory = "6GiB", disk = "15GiB", docker_disk = "20GiB" }
     # agents: containers of the AI agents under gVisor (ROADMAP §8.16 L1). 4 GiB
     # in the lab because of the host machine's memory; 4 vCPU / 8 GiB targeted.

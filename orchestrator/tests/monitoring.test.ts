@@ -335,7 +335,7 @@ test('E4 watcher: scheduled task — CI in progress: nothing; green: registry di
     calls.push(`${slug}/${cycle}/${round}`);
     if (calls.filter((a) => a.startsWith(`${slug}/`)).length <= 3) return null;
     return slug.endsWith('-faulty')
-      // Q5: the red `analysis` job (the template's Opengrep job) carries its SARIF: one deviation per finding, on its file.
+      // The red `analysis` job (the template's Opengrep job) carries its SARIF: one deviation per finding, on its file.
       ? { outcome: 'red', checks: [{ check: 'tests', result: 'green' }, { check: 'analysis', result: 'red', details: SARIF }] }
       : { outcome: 'green', digest: digest, checks: [{ check: 'tests', result: 'green' }] };
   };

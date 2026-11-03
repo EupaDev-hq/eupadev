@@ -1,5 +1,5 @@
 -- Up Migration
--- Maintenance requests (docs/reflexions/2026-10-19-note-exemple-demandes.md §4, §5; ADR-003, ADR-004).
+-- Maintenance requests (ADR-003, ADR-004).
 -- The requests (identifiers only) on one side, their free texts and their attachment (personal data) on the other;
 -- the status history and the legality of transitions are kept by the database (decision E7).
 SET LOCAL lock_timeout = '5s';
@@ -68,7 +68,7 @@ CREATE TABLE request_history (
 CREATE INDEX request_history_request ON request_history (request_id, id);
 CREATE INDEX request_history_at ON request_history (at);
 
--- ── Transitions (§4) ───────────────────────────────────────────────────────────
+-- ── Transitions ───────────────────────────────────────────────────────────
 -- A request is born a draft; a status change outside the list is refused (constraint requests_transition: the
 -- handler turns it into 422 INVALID_TRANSITION); resolving or rejecting requires the closing note, written in the
 -- same transaction before the status change. Every status reached adds a history row with the actor of the

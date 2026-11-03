@@ -1,5 +1,5 @@
 -- Up Migration
--- E1 ("engine for real" note §1.4, M9): one row per notification sent, under its idempotency key (workflow + step
+-- E1 (M9): one row per notification sent, under its idempotency key (workflow + step
 -- + message key, or visit + reminder number). The SMTP adapter inserts the row and sends the mail in ONE transaction: a
 -- key already there never goes out again (an engine killed after sending, a replayed DBOS step, a late attempt that
 -- succeeds at the same time as its retry: the second one's INSERT waits for the first one's COMMIT, then does nothing).

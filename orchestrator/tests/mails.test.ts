@@ -1,4 +1,4 @@
-// E1: real notifications (note "engine for real" §1.4, §2) — the SMTP adapter against a real server (throwaway Mailpit,
+// E1: real notifications — the SMTP adapter against a real server (throwaway Mailpit,
 // the lab's one) and a throwaway migrated PostgreSQL (idempotency table, migration 0007); then the engine killed right after
 // sending the Gate 1 mail: on restart, the step is replayed with the same key and no 2nd mail goes out.
 import { after, before, test } from 'node:test';

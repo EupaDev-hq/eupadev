@@ -1,6 +1,5 @@
-// Permanent replay of the security advisories of Fastify, find-my-way, Hono and @hono/node-server (§2.1.4 of the
-// research, list of cases): each case has its expected status; never 200, never 500, never a crash. To be extended
-// with each new advisory. The cases an HTTP client would normalise (leading space, lower-case method, 1 001 headers,
+// Permanent replay of the security advisories of Fastify, find-my-way, Hono and @hono/node-server: each case has
+// its expected status; never 200, never 500, never a crash. To be extended with each new advisory. The cases an HTTP client would normalise (leading space, lower-case method, 1 001 headers,
 // endless chunked body) go through a raw socket.
 import assert from 'node:assert/strict';
 import { connect } from 'node:net';

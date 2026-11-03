@@ -1,5 +1,5 @@
 # Builds, checks, publishes (by digest) and SIGNS the AI agents' image in
-# the forge's registry (ROADMAP §8.11 n°21, §8.16, ADR-005, ADR-013).
+# the forge's registry (ROADMAP §8.11 no. 21, §8.16, ADR-005, ADR-013).
 # Claude Code is downloaded HERE, on the installation's forge, at a pinned
 # and verified version (signature of Anthropic's manifest, see Dockerfile):
 # EupaDev never publishes an image that contains it. Runs on every

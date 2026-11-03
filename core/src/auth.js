@@ -1,4 +1,4 @@
-// Server-side OIDC authentication (BFF, §2.2 of the "common core" research, ADR-019, ADR-017): code + PKCE S256 +
+// Server-side OIDC authentication (BFF, ADR-019, ADR-017): code + PKCE S256 +
 // state + nonce with openid-client (certified), confidential client, callback by GET, transaction cookie
 // `__Host-oidc`, `id.secret` session (sessions.js), RP-initiated and back-channel logout (jose), `(iss, sub)` → actor.
 // The `/auth/*` routes are served by the core, never declared in the contract.

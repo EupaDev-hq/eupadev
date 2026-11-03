@@ -1,4 +1,4 @@
-// The platform's SEC-* against the Preview (note acceptance-on-preview §3.3; A-R6 decision D1): generated from the
+// The platform's SEC-* against the Preview: generated from the
 // tool's contract by the core's kit (pinned by the tool's lockfile), written by nobody per tool. Run by acceptance.sh
 // under node --test; protected (.gitea/**). The Preview database is not reachable from the job (no rate-limit reset)
 // and every check spends the same per-minute windows: SEC-RATE checks run last, each at the start of a new minute.

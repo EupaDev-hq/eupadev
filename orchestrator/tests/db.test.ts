@@ -723,7 +723,7 @@ test('I0: four eyes — the database refuses the Gate 2 approval by the requeste
     [{ decision: 'correction', actor: REQUESTER_MAIL, four_eyes_exemption: false }, { decision: 'approved', actor: REQUESTER_MAIL, four_eyes_exemption: true }, { decision: 'approved', actor: ADMIN_MAIL, four_eyes_exemption: false }]);
 });
 
-// ── Measurement per cycle (migrations/0009, docs/reflexions/2026-10-16-note-mesure-cycle.md) ───
+// ── Measurement per cycle (migrations/0009) ─────────────────────────────────────────────────
 /** Task started (one run) then closed with its measurement; `null` = left in progress. */
 async function measuredTask(tool: number, cycle: number, iteration: number, role: Parameters<typeof Database.taskId>[2],
   end: { status: string; cost: number; input: number; output: number; duration: number } | null, tentative = 1): Promise<void> {
@@ -861,7 +861,7 @@ test('0010: actor merge — append-only, transitive, no self-merge, cycle, machi
   await merge(b, a);
   assert.equal(await canonical(b), a);
   await merge(a, c);
-  assert.deepEqual([await canonical(b), await canonical(a), await canonical(c)], [c, c, c], 'transitif : B → A → C');
+  assert.deepEqual([await canonical(b), await canonical(a), await canonical(c)], [c, c, c], 'transitive: B → A → C');
   // Cycle: C (canonical of all) goes back down neither onto B nor onto A; B, already absorbed, is not absorbed a second time.
   await assert.rejects(merge(c, b), /cycle/);
   await assert.rejects(merge(c, a), /cycle/);

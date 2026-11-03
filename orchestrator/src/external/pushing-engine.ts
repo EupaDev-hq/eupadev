@@ -1,5 +1,5 @@
 /**
- * "Pushing fake" (E3, "engine for real" note §1.6, ROADMAP no. 18): an agent engine WITHOUT AI that really pushes
+ * "Pushing fake" (E3, ROADMAP no. 18): an agent engine WITHOUT AI that really pushes
  * to the forge, with the `svc-agent` token, a set of files prepared per role, on the task's branch
  * (`agent/<tool>/<cycle>/<role>`, L5), then returns a compliant report. Enough to exercise real integration, merge and CI
  * without an agent. Lab only: in production, the `svc-agent` token belongs to the launcher alone (separate process).

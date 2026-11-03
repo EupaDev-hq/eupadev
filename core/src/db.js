@@ -1,4 +1,4 @@
-// Database: `pg` pool and `tx()`, the handlers' only access to the database (§2.5). Each transaction starts with
+// Database: `pg` pool and `tx()`, the handlers' only access to the database. Each transaction starts with
 // `set_config(…, true)` (same as SET LOCAL): `audit_row()` and the RLS policies read `app.actor_id`, `app.roles`,
 // `app.request_id`. After the transaction, the connection given back to the pool carries an empty string (not NULL):
 // hence the `NULLIF(current_setting(…, true), '')` guard on the SQL side.

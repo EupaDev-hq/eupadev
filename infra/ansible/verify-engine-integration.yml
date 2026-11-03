@@ -1,4 +1,4 @@
-# Real test of step E3 ("engine for real" note §2, E3 note) — can be rerun.
+# Real test of step E3 — can be rerun.
 #   ansible-playbook verify-engine-integration.yml
 # The ENGINE'S CODE (orchestrator/src/external/{gitea-forge,pushing-engine}.ts,
 # run by orchestrator/scripts/trial-integration.ts), from the orchestrator VM,

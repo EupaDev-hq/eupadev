@@ -1,4 +1,4 @@
-// Security test kit of the tools (§2.10 of the "common core" research): reading the contract, static headers,
+// Security test kit of the tools: reading the contract, static headers,
 // valid and invalid data drawn from the schemas, sign-in through the Keycloak form. The SEC-* checks are in
 // `sec.js`, the two-user helpers (Playwright) in `two-users.js`.
 // The oracle is independent of the code under test: Ajv is instantiated here, never imported from `src/`.

@@ -1,4 +1,4 @@
-// Who may ask for which status (note §3, §4). The legality of the (from, to) pair and the history stay in the database
+// Who may ask for which status. The legality of the (from, to) pair and the history stay in the database
 // (trigger requests_transition): here only what the database does not know, the caller's role and ownership.
 
 /** Statuses only the author asks for; the others are kept for whoever manages (manager, admin). */

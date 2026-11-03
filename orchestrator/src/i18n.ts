@@ -1,5 +1,5 @@
 /**
- * End-user texts of the engine (L10, ADR-025): the requester's chat messages, the mails, the reasons shown to the admin
+ * End-user texts of the engine (ADR-025): the requester's chat messages, the mails, the reasons shown to the admin
  * at a gate. One dictionary per language (`lang/en.json`, `lang/fr.json`, English keys, the same keys in both, checked by
  * `tests/i18n.test.ts`); the deployment chooses the language (`EUPADEV_LANGUAGE`, English by default, French on the
  * lab). `{name}` is replaced by `values.name`. Messages for developers and operators (logs, errors, database refusals)

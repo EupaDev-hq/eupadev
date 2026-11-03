@@ -2,7 +2,6 @@
 
 Format of the tool template's scoping role (its `agents/scoping.md`): this page
 can be given as is to the agents to compare their tool with this one.
-Design: `docs/reflexions/2026-10-19-note-exemple-demandes.md`.
 
 ## Why
 
@@ -26,7 +25,7 @@ left to do.
 
 ## Constraints
 
-- Three roles: requester (realm role `reader`), manager, administrator.
+- Three roles: requester (role `reader` of the test realm's client), manager, administrator.
 - A draft is visible to its author only, whatever their role.
 - One attachment per request, 5 MiB at most, PDF, PNG or JPEG.
 - Two managers changing the same request at the same time: the second one is
@@ -41,7 +40,7 @@ left to do.
 
 ## Assumptions
 
-- A1: the requester is the role `reader` of the test realm (decision E2 of the note).
+- A1: the requester is the role `reader` of the test realm (decision E2 of `docs/DECISIONS.md`).
 - A2: the managers receive the submission mails in a shared mailbox (the tool does not know the list of managers).
 - A3: a failed mail never prevents the state change.
 

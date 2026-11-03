@@ -1,4 +1,4 @@
-// Pilot and executor in separate processes (note docs/reflexions/2026-10-15-note-lanceur-service.md): the pilot
+// Pilot and executor in separate processes: the pilot
 // (orchestrator VM) runs the cycles, the executor (agents VM) only the agent tasks, on the same database. Real
 // processes (tests/roles/child.ts), real DBOS, throwaway PostgreSQL, a fresh database per test, automatic fake world.
 import { after, before, test } from 'node:test';

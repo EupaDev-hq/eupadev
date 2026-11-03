@@ -1,4 +1,4 @@
-// Static files of the tool (`web/`): a URL → file `Map` built at start (Safe Coding, §2.7); the received URL is only
+// Static files of the tool (`web/`): a URL → file `Map` built at start (Safe Coding); the received URL is only
 // a key of this table, never a path: `..`, `%2F`, `%5C` find nothing → 404.
 import { createHash } from 'node:crypto';
 import { createReadStream, lstatSync, readdirSync, readFileSync } from 'node:fs';
@@ -53,7 +53,7 @@ function entry(path) {
 }
 
 /**
- * Front modules of the core (§2.8, R15): the package's `web/` under `/core/…` (dictionaries `lang/*.json`
+ * Front modules of the core (R15): the package's `web/` under `/core/…` (dictionaries `lang/*.json`
  * included), DOMPurify under `/core/vendor/purify.js`, served from `node_modules`, never copied into the tool's `web/`.
  * @param {Map<string, Entry>} table
  */

@@ -1,5 +1,4 @@
-# PostgreSQL of the orchestrator over verified TLS (note
-# docs/reflexions/2026-10-15-note-lanceur-service.md, correction 4; CIS PostgreSQL §5.4, §6.8):
+# PostgreSQL of the orchestrator over verified TLS (CIS PostgreSQL §5.4, §6.8):
 #   - server certificate signed by the database authority (db_pki role),
 #     names "db" (Compose services) and IP of the VM (executor);
 #   - our own pg_hba (the image's accepts clear text): TLS 1.3 required

@@ -51,7 +51,7 @@ Gate 1. Ajouter à cette section chaque variable propre à l'outil, reprise dans
 | `tests/unit/` | tests unitaires | le rôle propriétaire du code |
 | `tests/acceptance/` | features Gherkin, étapes, specs de sécurité | contract (features), tests |
 | `tests/perf/` | scénario k6 joué contre la Preview déployée | adapter l'exemple |
-| `docs/spec.md`, `docs/DECISIONS.md` | périmètre et décisions propres à l'outil | scoping, puis chaque rôle |
+| `docs/spec.md`, `docs/DECISIONS.md` | périmètre et décisions propres à l'outil | scoping ; `docs/DECISIONS.md` aussi le builder |
 | `design/` | design system partagé, copié tel quel dans `web/styles/` | protégé |
 | `AGENTS.md`, `agents/`, `.claude/`, `.opengrep/`, `.gitea/`, `pnpm-workspace.yaml` | charte des agents, prompts des rôles, règles d'analyse, CI, réglages pnpm | protégé |
 | `docs/fr/` | traductions françaises pour les lecteurs humains (l'anglais fait foi) | — |
@@ -68,4 +68,6 @@ lecture seule avec une base jetable (migration par la même image) et interrogé
 de la forge et son empreinte enregistrée : la Preview et la Production
 reçoivent exactement cette empreinte, rien n'est reconstruit.
 `preview-check.yml` joue les contrôles de performance, d'accessibilité et de
-sécurité dynamique contre la Preview déployée ; c'est l'orchestrateur qui le lance.
+sécurité dynamique, et la suite d'acceptation de l'outil avec les contrôles
+SEC-* de la plateforme, contre la Preview déployée ; c'est l'orchestrateur qui
+le lance.

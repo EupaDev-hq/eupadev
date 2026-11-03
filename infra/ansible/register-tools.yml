@@ -1,6 +1,5 @@
-# Registration of the core tools after Gate 1 (D-E5, S5, S8; note
-# docs/reflexions/2026-10-21-note-e5-refresh.md "d5"). Run by Ilan after
-# adding the tool's entry to group_vars/all/core-tools.yml:
+# Registration of the core tools after Gate 1 (D-E5, S5, S8). Run by the
+# admin after adding the tool's entry to group_vars/all/core-tools.yml:
 #   ansible-playbook register-tools.yml </dev/null
 # Idempotent (second run: changed=0); nothing is ever removed.
 # 1. Keycloak (realm tools, through its configuration client): clients <slug>
@@ -11,7 +10,7 @@
 #    generated once; database URLs and client secret encrypted with
 #    systemd-creds; a Gate 1 entry <slug>.json (client id, retentions) that
 #    eupadev-deployer requires for a core image.
-# 3. Test personas (note 2026-10-26-note-acceptance-on-preview.md §3.1): two
+# 3. Test personas: two
 #    users per role, <slug>-<role>-<n>, each with that single role on the
 #    <slug>-preview client only (Prod answers 403 "No role for this tool");
 #    passwords generated once, kept encrypted on the orchestrator VM

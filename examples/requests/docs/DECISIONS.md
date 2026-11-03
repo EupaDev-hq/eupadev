@@ -1,14 +1,13 @@
 # Decisions of the "requests" tool
 
-Decisions specific to this tool, one line each with its reason. The details
-are in `docs/reflexions/2026-10-19-note-exemple-demandes.md` (§12, Ilan's
-decisions of 2026-10-19).
+Decisions specific to this tool, one line each with its reason (decided on
+2026-10-19).
 
 ## Technical
 
-- Core referenced by `file:../../core`: same repository, the CI always tests the current core; `.tgz` archive at step 9 (E12).
+- Core referenced by `file:../../core`: same repository, the CI always tests the current core; generated tools take it from the forge's npm registry at an exact version (ADR-023) (E12).
 - Contract `openapi.yaml` at the root: default of `start()` (E13).
-- Realm role `reader` = requester: no change to the test realm shared with the lab (E2).
+- Role `reader` of the test realm's client `trial-tool` = requester: no change to the test realm shared with the lab (E2).
 - Concurrency by `version` in the `PATCH` body: `ctx` does not expose the headers (E11).
 - History and legality of the transitions by an SQL trigger in the tool's migration: a trigger cannot be forgotten (E7).
 - Attachment in the database (`bytea`), one per request, 5 MiB, declared binary body, PDF/PNG/JPEG checked by signature: no volume, no path, no dependency (E4, E5).

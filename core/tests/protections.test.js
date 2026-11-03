@@ -1,4 +1,4 @@
-// Web protections (§2.7) on the example tool, without Docker: extended SEC-CSRF (hybrid rule, static header,
+// Web protections on the example tool, without Docker: extended SEC-CSRF (hybrid rule, static header,
 // preflight), cases of `csrf_test.go` (Go 1.25 `net/http.CrossOriginProtection`) and of
 // `request_forgery_protection_test.rb` (Rails, including PR #56350 `:header_only`) ported with the deviations marked,
 // `csrf_blocked` counter, rate limiting on a fake database (SEC-RATE), `safeEqual`, `ctx.fetch`.
@@ -89,7 +89,7 @@ describe('extended SEC-CSRF: static header X-Requested-With on /api/**', () => {
   });
 });
 
-describe('SEC-CSRF: /files/ downloads (navigation, rule 7, D3)', () => {
+describe('SEC-CSRF: /files/ downloads (navigation, D3)', () => {
   const CSV = '/files/items.csv';
   /** @param {Record<string, string>} headers without X-Requested-With, like a navigation */
   const navigate = (headers = {}, path = CSV, method = 'GET') => call(`${s.base}${path}`, { method, role: 'reader', headers: { 'x-requested-with': '', ...headers } });
@@ -141,7 +141,7 @@ describe('cases of csrf_test.go ported (Go 1.25, TestCrossOriginProtectionSecFet
   /** [name, method, Sec-Fetch-Site, Origin, Go's result, the core's result (if different)] */
   const GO = /** @type {const} */ ([
     ['same-origin allowed', 'POST', 'same-origin', '', 200, 200],
-    ['none allowed', 'POST', 'none', '', 200, 403], // deliberate deviation: `none` refused (§2.7 rule 3)
+    ['none allowed', 'POST', 'none', '', 200, 403], // deliberate deviation: `none` refused
     ['cross-site blocked', 'POST', 'cross-site', '', 403, 403],
     ['same-site blocked', 'POST', 'same-site', '', 403, 403],
     ['no header with GET', 'GET', '', '', 200, 200],

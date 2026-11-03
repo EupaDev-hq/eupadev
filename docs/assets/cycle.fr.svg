@@ -1,0 +1,90 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 500" role="img" aria-labelledby="t d">
+  <title id="t">Comment un outil se construit</title>
+  <desc id="d">Version française ; description détaillée dans README.fr.md.</desc>
+  <style>
+    .t { font: 600 15px ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; fill: #e8fbf8; }
+    .s { font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #7fa9b3; }
+    .k { font: 600 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: 2px; fill: #7fa9b3; }
+    .line { fill: none; stroke-linecap: round; stroke-linejoin: round; }
+    .flow { stroke-dasharray: 2 12; animation: flow 1.2s linear infinite; }
+    .agent { stroke: #2ff3d6; }
+    .human { stroke: #ff4fa3; }
+    .factory { stroke: #f4fffd; }
+    @keyframes flow { to { stroke-dashoffset: -14; } }
+    @media (prefers-reduced-motion: reduce) { .flow { animation: none; } .pulse { display: none; } }
+  </style>
+  <defs>
+    <filter id="bloom" filterUnits="userSpaceOnUse" x="-100" y="-100" width="1400" height="700">
+      <feGaussianBlur stdDeviation="4" result="a"/>
+      <feGaussianBlur stdDeviation="10" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="a"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <radialGradient id="room" cx="50%" cy="45%" r="75%">
+      <stop offset="0" stop-color="#0d2a33"/>
+      <stop offset="1" stop-color="#05090d"/>
+    </radialGradient>
+    <marker id="ah" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M1 1L9 5L1 9" fill="none" stroke="context-stroke" stroke-width="1.5"/></marker>
+    <path id="main" d="M110 170H1060C1160 170 1160 380 1060 380H200"/>
+    <g id="lock"><rect x="-9" y="-3" width="18" height="15" rx="3"/><path d="M-5 -3V-8Q-5 -14 0 -14Q5 -14 5 -8V-3"/></g>
+  </defs>
+
+  <rect width="1200" height="500" rx="22" fill="url(#room)"/>
+
+  <!-- legend -->
+  <g transform="translate(40 44)">
+    <circle r="6" class="line agent" stroke-width="2.5" filter="url(#bloom)"/><text class="k" x="16" y="4">AGENTS IA</text>
+    <circle cx="170" r="6" class="line factory" stroke-width="2.5" filter="url(#bloom)"/><text class="k" x="186" y="4">USINE</text>
+    <circle cx="320" r="6" class="line human" stroke-width="2.5" filter="url(#bloom)"/><text class="k" x="336" y="4">HUMAINS</text>
+  </g>
+
+  <!-- track -->
+  <use href="#main" class="line" stroke="#1d4a52" stroke-width="3"/>
+  <path d="M110 170H1060" class="line agent flow" stroke-width="2" opacity=".55"/>
+  <path d="M1060 170C1160 170 1160 380 1060 380H200" class="line factory flow" stroke-width="2" opacity=".45"/>
+
+  <!-- loops back to the builder -->
+  <path d="M1048 150Q965 78 884 148" marker-end="url(#ah)" class="line agent" stroke-width="1.5" stroke-dasharray="5 6" opacity=".8"/>
+  <text class="s" x="965" y="92" text-anchor="middle">écarts</text>
+  <path d="M640 362C640 300 870 320 870 254" marker-end="url(#ah)" class="line human" stroke-width="1.5" stroke-dasharray="5 6" opacity=".8"/>
+  <text class="s" x="790" y="352" text-anchor="middle">modification demandée</text>
+
+  <!-- agent stations -->
+  <g class="line agent" stroke-width="2.5" fill="#05090d">
+    <g filter="url(#bloom)">
+      <circle cx="110" cy="170" r="11"/><circle cx="300" cy="170" r="11"/><circle cx="490" cy="170" r="11"/>
+      <circle cx="680" cy="170" r="11"/><circle cx="870" cy="170" r="11"/><circle cx="1060" cy="170" r="11"/>
+    </g>
+  </g>
+  <g text-anchor="middle">
+    <text class="t" x="110" y="214">Demande</text><text class="s" x="110" y="234">en mots simples</text>
+    <text class="t" x="300" y="214">Cadrage</text><text class="s" x="300" y="234">maquette avec vous</text>
+    <text class="t" x="490" y="214">Contrat</text><text class="s" x="490" y="234">OpenAPI + Gherkin</text>
+    <text class="t" x="680" y="214">Tests</text><text class="s" x="680" y="234">sans lire le code</text>
+    <text class="t" x="870" y="214">Constructeur</text><text class="s" x="870" y="234">écrit le code</text>
+    <text class="t" x="1060" y="214">Relecture</text><text class="s" x="1060" y="234">sécurité, qualité</text>
+  </g>
+
+  <!-- factory and human stations -->
+  <g class="line factory" stroke-width="2.5" fill="#05090d" filter="url(#bloom)">
+    <circle cx="1060" cy="380" r="11"/><circle cx="640" cy="380" r="11"/>
+  </g>
+  <g class="line human" stroke-width="2.5" fill="#05090d" filter="url(#bloom)">
+    <g transform="translate(850 382)"><use href="#lock"/></g>
+    <g transform="translate(430 382)"><use href="#lock"/></g>
+  </g>
+  <g filter="url(#bloom)">
+    <circle cx="200" cy="380" r="15" class="line factory" stroke-width="2.5" fill="#05090d"/>
+    <circle cx="200" cy="380" r="6" fill="#2ff3d6"/>
+  </g>
+  <g text-anchor="middle">
+    <text class="t" x="1060" y="424">Fusion, un seul build</text><text class="s" x="1060" y="444">une image, une empreinte</text>
+    <text class="t" x="850" y="424">Gate 1</text><text class="s" x="850" y="444">nom et domaine</text>
+    <text class="t" x="640" y="424">Preview</text><text class="s" x="640" y="444">contrôles + vous testez</text>
+    <text class="t" x="430" y="424">Gate 2</text><text class="s" x="430" y="444">cette empreinte précise</text>
+    <text class="t" x="200" y="424">Production</text><text class="s" x="200" y="444">même empreinte, rien reconstruit</text>
+  </g>
+
+  <circle class="pulse" r="5" fill="#f4fffd" filter="url(#bloom)">
+    <animateMotion dur="9s" repeatCount="indefinite" calcMode="linear"><mpath href="#main"/></animateMotion>
+  </circle>
+</svg>

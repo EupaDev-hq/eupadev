@@ -12,12 +12,12 @@ change the infra without breaking or rediscovering anything.
   site.yml` gives `changed=0` everywhere. A "change" that comes back on every
   run is a bug to fix (`changed_when`).
 - **Proof of a behaviour**: the real tests `verify-forge.yml`,
-  `verify-ci.yml`, `verify-template.yml`, `verify-orchestrator.yml`,
+  `verify-ci.yml`, `verify-base-image.yml`, `verify-template.yml`, `verify-core.yml`, `verify-orchestrator.yml`,
   `verify-storage.yml`, `verify-backup.yml`, `verify-system.yml`, `verify-engine.yml`,
-  `verify-engine-forge.yml`, `verify-engine-mails.yml`, `verify-engine-ci.yml`, `verify-agents.yml`, `verify-image-agent.yml`, `verify-deployer-access.yml`, `verify-deployer.yml`, `verify-mockup.yml`, `verify-engine-preview.yml`, `verify-prod-switch.yml`, `verify-deployer-core.yml`, `verify-engine-deployment.yml`, `verify-engine-claude.yml`, `verify-executor-claude.yml`, `verify-keycloak.yml`, `verify-engine-chat.yml`, `verify-letsencrypt.yml`. Every new capability comes with
+  `verify-engine-forge.yml`, `verify-engine-mails.yml`, `verify-engine-integration.yml`, `verify-engine-ci.yml`, `verify-agents.yml`, `verify-image-agent.yml`, `verify-deployer-access.yml`, `verify-deployer.yml`, `verify-mockup.yml`, `verify-engine-preview.yml`, `verify-prod-switch.yml`, `verify-deployer-core.yml`, `verify-engine-deployment.yml`, `verify-engine-claude.yml`, `verify-executor-claude.yml`, `verify-keycloak.yml`, `verify-engine-chat.yml`, `verify-letsencrypt.yml`. Every new capability comes with
   its real test, which cleans up after itself (`always` block) and prints the
   useful logs on failure.
-- **ansible-lint** (production profile) must pass, locally and on GitHub
+- **ansible-lint** must pass, locally and on GitHub
   (`.github/workflows/infra-lint.yml`). Exceptions only through `# noqa`
   with the reason written down.
 
@@ -48,7 +48,7 @@ ansible-playbook verify-mockup.yml </dev/null  # E5e: mock-up archives on the sc
 ansible-playbook verify-engine-preview.yml </dev/null  # E5f: a template tool (core) — a trivial commit runs its real CI, which publishes the signed image; registered by register-tools.yml; the engine deploys it as Preview, starts preview-check.yml with the URL and reads the run (perf, pa11y, ZAP, acceptance — a one-scenario suite signed in as a persona, then the platform SEC-* — all green); an injected fault turns acceptance red with the failing test in the result; features without Playwright config turn guard-rails red at push; -e orchestrator_image=<digest> tests a candidate engine image; job logs printed on failure
 ansible-playbook verify-prod-switch.yml </dev/null  # E5g: Prod on the tools VM: creation, switch beside the old one, unhealthy version refused while the old one keeps serving, rollback = previous digest (still local), removal
 ansible-playbook verify-deployer-core.yml </dev/null  # d5: core mode with a throwaway stand-in image (NOT the core): refused before registration, register-tools.yml twice (changed=0), migration then traffic, _app role over TLS, OIDC secret accepted via Smokescreen, other host refused, no secret in inspect, failing migration keeps the old version (Preview and Prod), Preview database emptied on a new digest only (same digest kept, Prod never), purge (command and timer), Prod backup; personas (two per role, one role on the Preview client, PREVIEW_PERSONAS in a throwaway repository); with a core tool served in Prod: its digest as Preview, kit `signIn` signs persona -1 in there, Prod answers 403 with no session row; cleans up (clients, personas, database, roles, secrets, repository, images)
-ansible-playbook register-tools.yml </dev/null  # Ilan, after Gate 1 of a core tool (D-E5): entries of group_vars/all/core-tools.yml → Keycloak clients, databases and roles, secrets, /etc/eupadev/tools/<slug>.json, test personas (`<slug>-<role>-<n>`, Preview client only) and the tool repository's Actions secret PREVIEW_PERSONAS
+ansible-playbook register-tools.yml </dev/null  # the administrator, after Gate 1 of a core tool (D-E5): entries of group_vars/all/core-tools.yml → Keycloak clients, databases and roles, secrets, /etc/eupadev/tools/<slug>.json, test personas (`<slug>-<role>-<n>`, Preview client only) and the tool repository's Actions secret PREVIEW_PERSONAS
 ansible-playbook verify-engine-deployment.yml </dev/null  # E5 full cycle, free (pushing fake): needs site.yml --limit orchestrator,agents -e orchestrator_real_world=true first (real forge + real deployer); drives the cycle with check-requester / check-admin up to Prod, registering the core tool by register-tools.yml at Gate 1; the Preview pipeline (four controls, acceptance suite files/trial-acceptance committed on main by a throwaway svc-orchestrator token) runs before the requester is asked (S5); cleans up (registration and token included); site.yml without -e goes back to the fakes
 ansible-playbook verify-engine-claude.yml -e ai_call=true </dev/null  # PAID (cap $1): real Claude Code through the engine's code on the agents VM, commit pushed to the task's branch, nothing left behind
 ansible-playbook verify-executor-claude.yml -e ai_call=true </dev/null  # PAID (overlap, Haiku 5.5, cap $4 per task, provisional A-R5): the pilot queues a task, the executor in service runs the real Claude Code; cycle cancelled, executor set back to the fake
@@ -61,7 +61,7 @@ ansible-playbook verify-letsencrypt.yml </dev/null  # Let's Encrypt DNS-01 at OV
 ansible-playbook measure-resources.yml -e mode=<start|end> </dev/null  # memory/CPU/disk peaks per VM and per container during a real cycle (stops by itself after 4 h); end: table + data in ~/eupadev-measures/, nothing left on the VMs
 ansible-playbook registry-cleanup.yml </dev/null  # forge registry: trial mode (list + space freed); -e apply=true deletes (keeps the images in service, base-node movable tags, last 3 builds per variant, their signatures); automatically: Sunday 01:30 UTC timer (role registry_cleanup)
 ansible-playbook maintenance.yml </dev/null  # immediate restart, one VM at a time (otherwise: nightly slot)
-ansible-playbook emergency-stop.yml -e level=<0|1|2|3> -e confirm=yes </dev/null  # Ilan only
+ansible-playbook emergency-stop.yml -e level=<0|1|2|3> -e confirm=yes </dev/null  # the administrator only
 ANSIBLE_COLLECTIONS_PATH=$PWD/.ansible/collections ansible-lint
 ```
 
@@ -75,7 +75,7 @@ environment ("non-blocking IO").
 | `eupadev-forge` | 10.42.0.10 | base, docker_disk, docker, gitea, gitea_org, backup, registry_cleanup, lab_ca (last: trusts its own Caddy, to pull the platform's Caddy image on the next pass) |
 | `eupadev-ci` | 10.42.0.11 | base, docker_disk, docker, lab_ca, runner (2 runners: `standard`, `image`), postgres_tools, deployer (mockup, preview) |
 | `eupadev-orch` | 10.42.0.12 | base, docker_disk, docker, lab_ca, orchestrator, keycloak, backup (6 GiB: Keycloak) |
-| `eupadev-agents` | 10.42.0.13 | base, docker_disk, gvisor, docker, lab_ca, agent_proxies, executor |
+| `eupadev-agents` | 10.42.0.13 | base, docker_disk, gvisor, docker, lab_ca, executor, agent_proxies |
 | `eupadev-tools` | 10.42.0.14 | base, docker_disk, docker, lab_ca, postgres_tools, deployer (prod), backup |
 
 Gitea API seen from the forge: `http://127.0.0.1:3000/api/v1` (local
@@ -110,12 +110,12 @@ secrets of the `core` repository only, `gitea_platform_repos[].badges`).
   `ANTHROPIC_KEY_FILE=<file>`), encrypted, outside the repository,
   created by `init-vault.sh` without ever reading an existing vault (a new
   secret = a new vault added to the script), and their password
-  `~/.eupadev-vault-pass`. Read by Ilan only, in a separate terminal.
+  `~/.eupadev-vault-pass`. Read by the administrator only, in a separate terminal.
 - Every task that handles a secret has `no_log: true`. Git credentials
   passed in an HTTP header (`http.extraHeader`), never in a URL.
 - The `svc-ci` badge lives in the secrets of the Gitea organisation
   (`REGISTRY_TOKEN`), never on disk. The engine's cosign key lives in the
-  secrets of the **repositories** `engine` and `agent` (`gitea_platform_repos[].secrets`),
+  secrets of the **repositories** `engine`, `agent`, `keycloak` and `caddy` (`gitea_platform_repos[].secrets`),
   not of the organisation: no tool repository sees it. The cosign key **of
   the tools**, a different one, lives in the secrets of the organisation
   (`COSIGN_TOOLS_*`, `gitea_org_secrets`); its public key is committed in
@@ -196,11 +196,6 @@ secrets of the `core` repository only, `gitea_platform_repos[].badges`).
 - A failing assertion prints its whole `item`: never loop an `assert` over
   the raw result of a `no_log` task (it contains the command, hence the
   credentials); keep only the useful fields first.
-- **Unresolved**: Docker 29 (Ubuntu) stores images and build cache in
-  `/var/lib/containerd` (containerd image store), hence on the 14 GB system
-  disk, not on the `/var/lib/docker` disk. The CI VM filled up ("no space
-  left on device" during a build); emptied by hand with
-  `docker builder prune -af`. To fix in `docker_disk`/`docker`.
 - `ansible-vault` started by a script in the agent's environment: redirect
   its output to a file ("non-blocking IO", like Ansible).
 - Gitea 1.27, changing a team (PATCH `/teams/{id}`): without `permission`,
@@ -311,8 +306,7 @@ secrets of the `core` repository only, `gitea_platform_repos[].badges`).
   Verification: `verify --key cosign.pub --insecure-ignore-tlog=true` (works
   offline). Signature in bundle format, stored under the tag
   `sha256-<digest>` of the same repository (OCI fallback without the
-  referrers API); wrong key: "failed to verify signature". Acceptance by the
-  Gitea registry not yet observed (local trial on `registry:3`).
+  referrers API); wrong key: "failed to verify signature".
 - Image pulled by digest (`docker pull name@sha256:…`): found again by
   `docker image inspect name@sha256:…` (containerd storage), hence checked
   once, at download; `pull_policy: never` prevents Compose from pulling an
@@ -419,7 +413,7 @@ secrets of the `core` repository only, `gitea_platform_repos[].badges`).
 - **Orchestrator database over TLS** (roles `db_pki`, `orchestrator`
   `db-tls.yml`, `executor`): dedicated authority (vault `vault-db-pki.yml`),
   keys generated on the VMs, CSR signed on the admin machine
-  (`community.crypto` 2.x: 3.x requires ansible-core ≥ 2.17). Our own
+  (`community.crypto` 3.x, pinned in `requirements.yml`). Our own
   `pg_hba` (the image's accepts plain text); certificate or rules changed →
   `docker compose kill -s HUP db`. Port published on the VM's IP, filtered
   in `DOCKER-USER` by `eupadev-db-firewall.service` (before Docker: no
@@ -441,8 +435,7 @@ secrets of the `core` repository only, `gitea_platform_repos[].badges`).
 - **Docker publishes its ports bypassing ufw**: Caddy's 443 is reachable even
   without the ufw rule (Docker docs, "Packet filtering and firewalls", ufw
   section; not measured in the lab); the rule documents the intent.
-- **Keycloak** (role `keycloak`, Compose of the orchestrator, note
-  `docs/reflexions/2026-10-15-note-keycloak-labo.md`):
+- **Keycloak** (role `keycloak`, Compose of the orchestrator):
   - `KC_BOOTSTRAP_ADMIN_*` on the service recreates temp-admin at **every**
     start as long as master has no other user (trial of 2026-10-15) →
     bootstrap by the one-shot command `kc.sh bootstrap-admin user
@@ -483,7 +476,7 @@ secrets of the `core` repository only, `gitea_platform_repos[].badges`).
     (`master` of the fact `keycloak.fact`) changes. Temporary password and
     required actions set at creation only. A drift made by hand in the
     console is seen only by `verify-keycloak.yml`.
-    Ilan's console (`ilan-admin`): tunnel `ssh … -N -L 8180:127.0.0.1:8180
+    The named administrator's console (`ilan-admin`): tunnel `ssh … -N -L 8180:127.0.0.1:8180
     ansible@10.42.0.12`, `http://127.0.0.1:8180/admin/master/console/`,
     temporary password through `ansible-vault view` (separate terminal), OTP
     enrolment required: complete procedure in `README.md` ("Keycloak").

@@ -1,5 +1,5 @@
 // Logger: pino (D17), one JSON object per line on stdout, secrets redacted, `request_id` in the W3C Trace Context
-// format (§2.9): taken from `traceparent` when valid, generated otherwise; sent back as a header and set in `app.request_id`.
+// format: taken from `traceparent` when valid, generated otherwise; sent back as a header and set in `app.request_id`.
 import { randomBytes } from 'node:crypto';
 import { pino } from 'pino';
 

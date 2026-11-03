@@ -1,9 +1,8 @@
-# CI of the example tool "requests" (examples/requests/, step 8 of the core,
-# docs/reflexions/2026-10-19-note-exemple-demandes.md §10). Job `tests`:
-# contract and handlers checked by the core's entry point (--verify), Squawk
-# on the tool's migrations, throwaway database (catalogue, privileges,
-# transitions, purge), unit tests; later steps add the types. Job `kit`: the
-# core's test Compose stack on this tool, twelve SEC-*, then the acceptance suite.
+# CI of the example tool "requests" (examples/requests/, step 8 of the core).
+# Job `tests`: contract and handlers checked by the core's entry point
+# (--verify), Squawk on the tool's migrations, throwaway database (catalogue,
+# privileges, transitions, purge), unit tests. Job `kit`: the core's test
+# Compose stack on this tool, twelve SEC-*, then the acceptance suite.
 name: Example requests — tests and kit
 
 on:

@@ -49,7 +49,7 @@ export interface Counters {
 }
 
 export type Mechanism = 'M2-fine' | 'M2-category' | 'M7-inherited' | 'M3-patience' | 'M4-oscillation';
-/** A stagnation reason: its mechanism, and its text for the admin as a dictionary key (`lang/*.json`) and values (L10). */
+/** A stagnation reason: its mechanism, and its text for the admin as a dictionary key (`lang/*.json`) and values. */
 export interface Reason { mechanism: Mechanism; key: string; values: Values }
 
 export interface Thresholds { stagnation: number; patience: number }

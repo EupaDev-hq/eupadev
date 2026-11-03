@@ -1,4 +1,4 @@
-# Agents VM: the DBOS executor (note docs/reflexions/2026-10-15-note-lanceur-service.md).
+# Agents VM: the DBOS executor.
 # Same image as the pilot (orchestrator VM), same digest, role
 # EUPADEV_ROLE=executor: it takes only the agent-tasks queue (W2), has
 # neither API, nor watcher, nor monitoring, and launches the agent containers

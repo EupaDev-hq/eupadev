@@ -1,4 +1,4 @@
-// Rate limiting (§2.7) against a real PostgreSQL: the `INSERT … ON CONFLICT` statement, the one-minute window that
+// Rate limiting against a real PostgreSQL: the `INSERT … ON CONFLICT` statement, the one-minute window that
 // turns (clock passed as a parameter), SEC-RATE with two instances (two pools on the same database), purge of
 // windows older than one hour, rights of the application role. Docker is required.
 import assert from 'node:assert/strict';

@@ -36,7 +36,7 @@ Then('task {string} of iteration {int} records its role\'s model and effort and 
   assert.equal(t.instructions_sha256, createHash('sha256').update(e.instructions, 'utf8').digest('hex'), `instructions received: ${e.instructions}`);
 });
 
-/** Instructions note: the instructions come from the template copied into the engine image (charter + role prompt + rules), never from the repository. */
+/** ADR-018: the instructions come from the template copied into the engine image (charter + role prompt + rules), never from the repository. */
 Then('the instructions the engine received for task {string} of iteration {int} are the role\'s instructions in the template', async function (this: World, r: string, iteration: number) {
   const e = await input(this, await this.taskId(r, iteration));
   const expected = loadInstructions(this.bench.orch.config.instructionsPath)[r as Role];

@@ -141,7 +141,7 @@ describe('external tools: static headers and session passed on', () => {
 });
 
 /**
- * Deliberate mutations (§2.10 "proof of the kit"): a text replacement in a copy of src/ (and a second one, `then`,
+ * Deliberate mutations ("proof of the kit"): a text replacement in a copy of src/ (and a second one, `then`,
  * when needed), each `before` present exactly once in the original (otherwise the mutation is stale and the test
  * fails).
  * @type {{ sec: string, name: string, file: string, before: string, after: string, then?: [string, string, string] }[]}

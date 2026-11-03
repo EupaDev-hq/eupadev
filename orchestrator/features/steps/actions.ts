@@ -140,7 +140,7 @@ Given('a tool in production whose creation cycle cost {int} $', async function (
   await unprotected(this.bench.orch.config.databaseUrl, `UPDATE tasks SET cost_usd = 0 WHERE cycle_id = $1`, [creation]);
   await unprotected(this.bench.orch.config.databaseUrl, `UPDATE tasks SET cost_usd = $2 WHERE id = (SELECT id FROM tasks WHERE cycle_id = $1 ORDER BY created_at DESC, id DESC LIMIT 1)`, [creation, cost]);
 });
-/** Instructions note, decision 2: a tool of the catalogue, whose description is the comment of the Gate 1 approval. */
+/** Overlap search: a tool of the catalogue, whose description is the comment of the Gate 1 approval. */
 Given('an existing tool {string} approved at Gate 1 with comment {string}', async function (this: World, slug: string, comment: string) {
   const creation = await this.pilot.createCycle(slug);
   await this.pilot.driveUntil(creation, 'gate_1');

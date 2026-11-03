@@ -45,7 +45,7 @@ runs.
 | Approval of sensitive tools (veto) | Incident handling, rebuild |
 
 At the start, the platform is **operated by the EupaDev operator**
-(decision n°2). No software agent is installed on your hypervisor or
+(decision no. 2). No software agent is installed on your hypervisor or
 elsewhere in your network.
 
 ## 1. The virtual machines
@@ -104,7 +104,7 @@ currently knows the lab's disk name only).
 (or port group / virtual switch) for the 4 VMs? Everything else is in the flow
 matrix below.
 
-**DNS.** Wildcard records (ADR-014, ADR-015; in place in the lab):
+**DNS.** Wildcard records (ADR-022, ADR-015; in place in the lab):
 
 | Name | Points at |
 |---|---|
@@ -136,15 +136,16 @@ such content under a separate domain.
    JavaScript can still set a cookie on your main domain. This risk must be
    accepted in writing.
 
-Production tools stay under your domain: their code has passed the human
-approvals. Sources: `docs/reflexions/2026-10-14-note-e5-deployeur.md`.
+Today the recipes implement option 3 only (`*.preview.<domain>` and
+`mockup.<domain>`); a separate previews domain is **planned**. Production
+tools stay under your domain: their code has passed the human approvals.
 
-**HTTPS certificates: open.** Your network is internal, so public automatic
-certificates (Let's Encrypt) would require inbound Internet access, which we
-do not ask for. The likely answer is a certificate from your internal
-certificate authority (or a wildcard you supply); support for a supplied
-certificate is **planned** (today the recipes handle a self-made lab
-certificate or Let's Encrypt only).
+**HTTPS certificates: open, to agree with you.** Public certificates from
+Let's Encrypt need no inbound Internet access with DNS validation, only access
+to your DNS host's API (in place in the lab, with OVH as the DNS host). On a
+purely internal network, the likely answer is a certificate from your
+internal certificate authority (or a wildcard you supply); support for a
+supplied certificate is **planned**.
 
 **Proxy.** All outbound traffic can go through your HTTP(S) proxy, including
 a proxy that **inspects TLS**: in that case, give us your internal CA
@@ -161,11 +162,11 @@ means HTTPS through your proxy.
 
 | # | Source | Destination | Port | Purpose | Status |
 |---|---|---|---|---|---|
-| 1 | User workstations | Platform VM | 443/TCP (80 redirects to 443) | Forge web interface; later portal, chat, gate pages, sign-in | In place (forge); planned (portal) |
-| 2 | User workstations | Tool VMs | 443/TCP | Using the generated tools | Planned; routing (one entry point or one per VM) **open** |
+| 1 | User workstations | Platform VM | 443/TCP (80 redirects to 443) | Forge web interface, sign-in (`auth.<domain>`), the requesters' page (`chat.<domain>`); later the gate pages | In place (forge, sign-in, requesters' page); planned (gate pages) |
+| 2 | User workstations | Tool VMs | 443/TCP | Using the generated tools | In place in the lab (one entry point per tool VM); routing at your site (one entry point or one per VM) **open** |
 | 3 | Your VPN or bastion | All 4 VMs | 22/TCP | Administration by the operator (Ansible over SSH) | In place (SSH by key only) |
 | 4 | CI VM | Platform VM | 443/TCP | CI runners fetch work, pull and publish images | In place |
-| 5 | Tool VMs | Platform VM | 443/TCP | Pull approved images from the forge registry; calls between tools | Planned |
+| 5 | Tool VMs | Platform VM | 443/TCP | Pull approved images from the forge registry; sign-in of the tools' users (Keycloak); calls between tools | In place in the lab (images, sign-in); planned (calls between tools) |
 | 6 | Platform VM | All VMs | 443/TCP | Health checks (Gatus) | Planned |
 
 **Outbound**
@@ -175,23 +176,27 @@ means HTTPS through your proxy.
 | 7 | All VMs | Your DNS and NTP servers | 53, 123/UDP | Name resolution, time | Required |
 | 8 | All VMs | `archive.ubuntu.com`, `security.ubuntu.com` (or your Ubuntu mirror) | 80/443 | System packages, daily security updates; Docker comes from Ubuntu's own packages | In place |
 | 9 | All VMs | `registry-1.docker.io`, `auth.docker.io`, `production.cloudflare.docker.com` | 443 | Public container images (PostgreSQL, Caddy, Gitea, CI runners, scanner), all pinned by digest | In place |
-| 10 | CI VM | `ghcr.io`, `pkg-containers.githubusercontent.com`, `mirror.gcr.io` | 443 | Dynamic security scanner image (preview checks); vulnerability database of the scanner (Trivy) | In place for Trivy; preview checks written, never run; exact domains **to be confirmed** by the check recipe |
+| 10 | CI VM | `ghcr.io`, `pkg-containers.githubusercontent.com`, `mirror.gcr.io` | 443 | Dynamic security scanner image (preview checks); vulnerability database of the scanner (Trivy) | In place; exact domains **to be confirmed** by the check recipe |
 | 11 | CI VM | `github.com`, `objects.githubusercontent.com`, `release-assets.githubusercontent.com`, `proxy.golang.org`, `sum.golang.org`, `deb.debian.org` | 443 | Pinned CI building blocks and the weekly rebuild of the base image (security tools, Debian packages) | In place |
-| 12 | CI VM | `registry.npmjs.org` | 443 | JavaScript packages of the tools and of the base image | In place |
-| 13 | Platform VM (agents) | `api.anthropic.com` | 443 | Calls to the AI model, key in your name | Planned |
+| 12 | CI VM, Platform VM (agents) | `registry.npmjs.org` | 443 | JavaScript packages of the tools and of the base image | In place |
+| 13 | Platform VM (agents) | `api.anthropic.com` | 443 | Calls to the AI model, key in your name | In place in the lab (through the AI proxy) |
 | 14 | Platform VM | Your directory: AD over LDAPS (636/TCP), or Entra ID (`login.microsoftonline.com`, 443) | 636 / 443 | Sign-in of your users through Keycloak | Planned |
 | 15 | Platform VM | Your SMTP relay | 25 or 587 | Email notifications (gates, alerts). Microsoft 365: basic SMTP authentication is being retired (end of 2026, to be confirmed with Microsoft) — provide a relay by IP or certificate, or OAuth2 | Planned, optional |
 | 16 | All VMs | Your backup target (S3-compatible, SFTP or NFS) | 443 / 22 / 2049 | Copy of application backups outside the VMs | Planned |
 | 17 | Platform VM | Operator's alerting and external probe | 443 | Alerts reaching the operator; liveness check from outside | Planned; direction and domain **open** |
+| 18 | Platform VM, CI VM, tool VMs | `acme-v02.api.letsencrypt.org`; your DNS host's API (OVH today: `eu.api.ovh.com`) | 443 | Public certificates by DNS validation (Let's Encrypt), if you choose them | In place in the lab |
+| 19 | Platform VM, CI VM, tool VMs | `github.com`, `objects.githubusercontent.com`, `release-assets.githubusercontent.com`, `gcr.io`, `quay.io`, `registry.access.redhat.com`, `downloads.claude.ai`, `gvisor.dev`, `storage.googleapis.com` | 443 | Pinned binaries and images fetched by the recipes and by the builds of the platform images (cosign, Smokescreen, Keycloak, Claude Code, gVisor) | In place; exact domains **to be confirmed** by the check recipe |
 
 **Never exposed** (in place, unless marked):
 
 - Nothing is published on the Internet; no inbound Internet flow is required.
 - Each VM's firewall denies all inbound traffic except SSH (22), plus HTTPS
-  (80/443) on the VM that serves web traffic.
+  (443) on the VMs that serve web traffic (and 80 on the forge, redirected to
+  443).
 - SSH: key only, no password, no root login.
-- PostgreSQL databases publish no port; the forge's internal port listens on
-  the VM itself only (`127.0.0.1`).
+- PostgreSQL databases publish no port, except the orchestrator's, reachable
+  from the agents only (TLS 1.3 with a client certificate, firewall rule); the
+  forge's internal port listens on the VM itself only (`127.0.0.1`).
 - Git access is HTTPS with a token only; the forge runs no SSH server.
 - The Docker API is never reachable from the network; CI jobs that run code
   written by agents have no Docker access at all.
@@ -226,7 +231,7 @@ means HTTPS through your proxy.
   requesters, approvers, administrators.
 - Approvals (gates) are given by a **business referent**; your IT department
   is notified and has a **veto** on sensitive tools or tools on the hardened
-  profile (decision n°12; the gate pages are **planned**).
+  profile (decision no. 12; the gate pages are **planned**).
 
 ## 4. Backup, disaster recovery, reversibility
 
@@ -235,9 +240,9 @@ means HTTPS through your proxy.
 | Tier | Who | What | Status |
 |---|---|---|---|
 | 1. Whole VMs | Your IT department, with your usual tool (Veeam, Hyper-V, Proxmox Backup Server…) | The 4 VMs | Your scope; useful when everything is lost |
-| 2. Application data | EupaDev | Forge (repositories, registry, database) with `gitea dump`, orchestrator database with `pg_dump`; every night at 02:30 UTC; 7 kept; real restore tested automatically | In place on the lab, **stored on the VM only** |
+| 2. Application data | EupaDev | Forge (repositories, registry, database) with `gitea dump`, orchestrator and Keycloak databases with `pg_dump`; every night at 02:30 UTC; 7 kept (4 on the forge); real restore tested automatically | In place on the lab, **stored on the VM only** |
 | 2b. Copy outside the VMs | EupaDev, to a target you provide (S3-compatible, SFTP or NFS) | Encrypted copy of tier 2 (restic) | **Planned** |
-| 2c. Tool databases | EupaDev | One database per tool | **Planned** |
+| 2c. Tool databases | EupaDev | One `pg_dump` per tool database, every night | In place on the lab (tools VM), **stored on the VM only** |
 
 Why two tiers: a live VM backup of a database is not guaranteed to be
 consistent; the application backup is. Please schedule your VM backups
@@ -260,24 +265,26 @@ the contract is **open** (it is required to restore a backup).
 
 - **The AI key is in your name.** You contract directly with the AI provider
   (Anthropic); the provider is your subcontractor, the operator is not an
-  intermediary on that flow (decision n°11).
+  intermediary on that flow (decision no. 11).
 - **What is sent to the AI:** the scoping conversation, the tools' code and
   synthetic test data. **No production data is ever sent to the AI**
-  (decision n°15; the enforcing checks are **planned**).
-- **Spending caps** per call, per tool and per month (**planned**).
+  (decision no. 15; the enforcing checks are **planned**).
+- **Spending caps**: per agent task (in place: the engine gives each task a
+  cost cap); per tool and per month (**planned**; today the AI provider's
+  workspace spending limit).
 - **Data processing agreement:** a DPA (GDPR art. 28) is signed between you
   and the operator, who administers VMs that contain personal data.
 - **Diagnostic with an AI assistant** (optional): read-only recipes,
   personal data masked, corrections applied by the operator, only with your
   consent written in the DPA; not offered to very sensitive clients
-  (decision n°10, **planned**).
+  (decision no. 10, **planned**).
 - **Transparency:** the scoping chat tells users they are talking to an AI
   (EU AI Act art. 50); Gate 1 asks whether a tool uses AI for an HR purpose
   (high risk) (**planned**).
-- **Open: EU hosting of the AI API.** Whether the provider's API processes
-  data inside the EU, and under which terms, has **not been verified**; it
-  must be checked at the source before the offer. Whether an EU-hosted access
-  to the same model could be used instead is also **not verified**.
+- **Open: EU processing of the AI calls.** With the provider's API directly,
+  processing may happen outside the EU; EU processing is possible through
+  Amazon Bedrock or Google Vertex AI, which Claude Code supports but the
+  platform does not use yet (`docs/governance.md`).
 
 This section is not legal advice.
 
@@ -285,7 +292,7 @@ This section is not legal advice.
 
 | Point | Owner |
 |---|---|
-| EU hosting of the AI API, and the provider's transfer terms | Operator, at the source, before the offer |
+| EU processing of the AI calls (Amazon Bedrock or Google Vertex AI, not wired in the platform yet), and the provider's transfer terms | Operator, before the offer |
 | HTTPS certificates on an internal network (internal CA, supplied wildcard) | Operator + your IT department |
 | How users reach the tools on the tool VMs (one entry point or one per VM) | Operator, design |
 | Proxy with TLS inspection: support in the recipes, test through your proxy | Operator (planned) |

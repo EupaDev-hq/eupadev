@@ -1,8 +1,8 @@
 ---
 adr: 010
 title: Lab on Incus and OpenTofu before publication
-status: proposed
-date:
+status: rejected
+date: 2026-11-02
 decision-makers: Ilan
 supersedes:
 related: [ADR-001, ADR-007]
@@ -20,8 +20,7 @@ LXD has Canonical behind it. Terraform has been under BSL since 1.6 (August
 2023); OpenTofu (MPL 2.0, Linux Foundation) reads the same files. The
 licence rule (ADR-007) tolerates a lab-only tool: **the licence alone does
 not force a change**. At a client, the IT department provides the VMs
-(ADR-001): neither LXD nor Incus. Source:
-`docs/reflexions/recherche-2026-10-12/recherche-forge-labo.md`.
+(ADR-001): neither LXD nor Incus.
 
 ## Decision
 Move the lab from LXD to Incus and from Terraform to OpenTofu, in a single
@@ -55,10 +54,23 @@ piece of work, before the repository is published.
 
 ## Verification
 - A full rebuild of the lab from scratch (OpenTofu, Ansible, restore),
-  followed by the `verify-*` workflows (forge, CI, backups), will prove the
+  followed by the `verify-*` playbooks (forge, CI, backups), will prove the
   change.
 - A pattern check in the GitHub CI will refuse, in `infra/`, what runs the
   old tools: provider `terraform-lxd/lxd`, resources `lxd_*`, a call of the
   `terraform` binary at the start of a command, installation of the `lxd`
   snap; not the word "terraform" in general (state, `terraform {}` block
   kept by OpenTofu, documentation).
+
+## Rejection
+Rejected on 2026-11-02 as written above, for three reasons:
+- neither licence restricts our use: the lab only creates its own VMs,
+  which Terraform's BSL and LXD's AGPLv3 both allow, for the maintainer and
+  for contributors alike;
+- the cost is a full rebuild of the lab and a rewrite of the VM recipe
+  (`lxd_*` to `incus_*`), for a gain of image and caution only, before the
+  project has a single user;
+- OpenTofu reads the same files: a contributor who prefers it can use it
+  without any change in the repository, which `infra/README.md` says.
+To reopen if a contributor asks for it, or if HashiCorp or Canonical change
+the terms of use again.

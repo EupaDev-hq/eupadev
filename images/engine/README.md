@@ -3,7 +3,8 @@
 Repository `engine` of the forge, synchronised by Ansible (`gitea_platform_repos`)
 from EupaDev: this folder at the root, plus the build context
 of the engine at its original path (`orchestrator/Dockerfile`, its sources,
-its migrations and `tool-template/agents/report.schema.json`).
+migrations, dictionaries and web page, the template's agent instructions and
+the example tool: list in `gitea_platform_repos`).
 
 The pipeline `.gitea/workflows/publish.yml` builds the image
 (`docker build -f orchestrator/Dockerfile .`), scans it (Trivy), publishes it

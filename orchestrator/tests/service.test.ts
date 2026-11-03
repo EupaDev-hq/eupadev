@@ -1,4 +1,4 @@
-// E0: the engine as a service (note "engine for real" §2-3) — automatic fake outside world, only the humans
+// E0: the engine as a service — automatic fake outside world, only the humans
 // answer; real DBOS + throwaway PostgreSQL. I0 (ADR-017): the API requires an access token from the fake IdP
 // (tests/helpers/fake-oidc.ts); the hats come from the token, the identity never from the body.
 import { after, before, test } from 'node:test';

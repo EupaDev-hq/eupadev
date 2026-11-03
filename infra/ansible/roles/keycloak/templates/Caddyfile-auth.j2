@@ -24,8 +24,8 @@
 	}
 }
 
-# Chat step 6: the requesters' page and its API, served by the engine (note
-# 2026-10-25 §3). TLS and HSTS here; the engine's own headers (CSP) and its
+# Chat step 6: the requesters' page and its API, served by the engine
+# (ADR-024). TLS and HSTS here; the engine's own headers (CSP) and its
 # Host guard are untouched (Caddy forwards the client's Host).
 {{ chat_domain }} {
 	tls {{ caddy_tls }}

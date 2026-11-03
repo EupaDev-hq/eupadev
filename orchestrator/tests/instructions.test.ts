@@ -1,4 +1,4 @@
-// Role instructions (note docs/reflexions/2026-10-15-note-consignes-agents.md): assembled from the template (the engine image),
+// Role instructions (ADR-018): assembled from the template (the engine image),
 // never from the cloned repository; fail-closed at loading. Without a database.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

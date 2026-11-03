@@ -3,7 +3,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-/** Default path: the realm of the repository's core (the package does not ship it yet: step 9). */
+/** Default path: the realm of this repository's core (`tests/` is not shipped by the package). */
 export const TEST_REALM = fileURLToPath(new URL('../tests/keycloak/realm-test.json', import.meta.url));
 
 /** @typedef {{ clientId: string, secret: string }} RealmClient */

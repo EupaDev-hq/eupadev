@@ -17,9 +17,7 @@ branches take the same number. Measured (node-pg-migrate 9.0.0):
 `checkOrder` refuses a file sorted before an already applied file, not the
 reverse; SQL always runs in a transaction, outside a transaction only in
 JavaScript (`pgm.noTransaction()`), where `SET LOCAL` has no effect. Squawk
-(Apache 2.0) reports dangerous statements. Sources:
-`docs/reflexions/recherche-2026-10-11/brut/K-experiences-bdd.md`,
-`docs/reflexions/2026-10-13-adr-details.md`.
+(Apache 2.0) reports dangerous statements.
 
 ## Decision
 Write the tools' migrations as immutable SQL files, without rollback,

@@ -102,7 +102,9 @@ def login(auth):
     redirect = f'http://127.0.0.1:{server.server_port}/callback'
     url = oidc(auth, 'auth') + '?' + urllib.parse.urlencode({
         'client_id': CLIENT, 'response_type': 'code', 'scope': 'openid', 'redirect_uri': redirect,
-        'state': state, 'code_challenge': challenge, 'code_challenge_method': 'S256'})
+        'state': state, 'code_challenge': challenge, 'code_challenge_method': 'S256',
+        # Always ask who signs in: the browser's Keycloak session may belong to someone else (a requester).
+        'prompt': 'login'})
     print(f'Opening the browser to log in. If nothing opens, paste this address into it:\n{url}', file=sys.stderr)
     webbrowser.open(url)
     server.timeout = 300

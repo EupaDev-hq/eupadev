@@ -1,7 +1,7 @@
 # Ansible collections used by the recipes (installation:
 #   ansible-galaxy collection install -r requirements.yml).
 collections:
-  # Versions pinned per major branch (note 2026-10-15-note-ansible-core.md);
+  # Versions pinned per major branch;
   # read only from .ansible/collections (collections_path, ansible.cfg).
   - name: community.general
     version: ">=13.5.0,<14.0.0"

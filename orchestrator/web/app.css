@@ -75,7 +75,13 @@ textarea { min-height: 7rem; resize: vertical; }
 .conv-head .slug { color: var(--muted); font-weight: 400; }
 deep-chat { display: block; flex: 1; min-height: 0; width: 100%; }
 .opinions { display: grid; gap: 0.5rem; padding-top: 0.5rem; }
-.opinions input { flex: 1 1 16rem; }
+.opinions .abandon { justify-self: end; font-size: 0.85rem; padding: 0.2rem 0.5rem; text-decoration: underline; }
+.decision { display: grid; gap: 0.6rem; }
+.decision h2 { margin: 0; font-size: 1rem; }
+.decision p { margin: 0; }
+.decision .reason { white-space: pre-wrap; color: var(--muted); font-size: 0.92rem; }
+.decision label { display: grid; gap: 0.25rem; font-size: 0.9rem; color: var(--muted); }
+.decision textarea { min-height: 3.2rem; }
 
 /* Phones: the list above the conversation, the page scrolls. */
 @media (max-width: 760px) {

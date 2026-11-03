@@ -4,7 +4,9 @@ Code of the v2 orchestrator (`ROADMAP.md` §8.13): strict TypeScript run
 directly by Node 22+ (erasable syntax, no build), state in PostgreSQL,
 DBOS durable workflows (a library, not a server).
 
-**Status: step §8.9 no. 2-3, first slice** — the engine runs and is tested
+**Status**: the engine runs on the lab VMs as a service (pilot on the orchestrator VM, executor on the agents VM),
+with the real forge, deployer, mail and Claude Code adapters; what each piece proves is in `docs/architecture.md`.
+The steps that built it, in order. **First slice (§8.9 no. 2-3)**: the engine runs and is tested
 locally against a throwaway PostgreSQL: workflow W1 `toolCycle` (the whole machine),
 W2 `agentTask` (queue with concurrency N, N = 1 by default), gates (`waitForDecision`),
 **fake** outside world (agent engine, forge, deployments, notifications),
@@ -23,9 +25,11 @@ rest automatic fakes; **E1**: real mails (SMTP, nodemailer), chosen by `notifica
 `forge=gitea,notifications=smtp`), a single mail per notification even after a hard stop; **E3**: real integration and
 merge (local Git in the engine) and "pushing fake" (`engine=pushing`: reports without AI, files
 really pushed with the token of `svc-agent`, lab only); **E4**: CI watcher (DBOS scheduled task, real forge
-only: runs and jobs of the squash's CI, digest read in the registry → `ci_finished`; green CI but image missing from the registry → incident gate at once, with the exact reason); DBOS history of the scheduled tasks purged by the monitoring (successful passes older than one day, `purgeScheduled`); the other real adapters are steps E5 to E7. **Launcher, step 4**: Claude Code
+only: runs and jobs of the squash's CI, digest read in the registry → `ci_finished`; green CI but image missing from the registry → incident gate at once, with the exact reason); DBOS history of the scheduled tasks purged by the monitoring (successful passes older than one day, `purgeScheduled`). **Launcher, step 4**: Claude Code
 engine in a container (`src/external/claude-engine.ts`, `EUPADEV_EXTERNAL=engine=claude`), tested locally with a
-fake `claude` (`docs/reflexions/2026-10-13-note-e4-moteur-claude.md`); real test on the agents VM still to do.
+fake `claude`, then on the agents VM (`infra/ansible/verify-engine-claude.yml`, `verify-executor-claude.yml`, paid
+calls). **E5 to E7**: real deployer (`deployer=ssh`), full cycle without AI up to Production, real agent engine; all
+passed in the lab (`docs/architecture.md`).
 
 ## Contents
 
@@ -42,7 +46,7 @@ fake `claude` (`docs/reflexions/2026-10-13-note-e4-moteur-claude.md`); real test
 | `src/external/smtp-notifications.ts` | **Real mails** (E1): one text mail per notification, over SMTP (nodemailer) — Mailpit on the lab, the client's relay in production; admin = `ADMIN_ESCALATION_ADDRESS`, requester = `tools.requester` (address required at entry); **idempotency**: key inserted into `sent_notifications` and mail sent in a single transaction (key already committed → nothing goes out again, even when a step is replayed after a hard stop or for two simultaneous attempts); `Message-ID` = sha256 of the key; subject passed as is (no header built by hand) |
 | `src/external/claude-engine.ts` | **Claude Code engine** (launcher, step 4): bare clone of the tool (token of `svc-agent` in a header), `git bundle` of the base, hardened throwaway container (`runsc`, read-only root, no capability, uid 10001, the task's `--internal` network, the task's volume), `claude --bare -p` with JSON output; report, cost, tokens and stop reason read in the `result` message; work fetched by bundle into the clean clone (strict fsck, never Git in the agent's repository), pushed without force to the task's branch only; cancellation = `docker rm -f`; replay: leftovers removed, base = branch already pushed. **Harness**: `--bare --restricted`, `dontAsk` for all the roles (never bypassPermissions), Bash and Edit allowed to the code roles, `--add-dir /tmp/task`, `--strict-mcp-config`; `--bare` exposes only Bash, Read, Edit. **Net content checked before the push** (`contentRefused`): forbidden path, outside the role's scope (`inScope`), symbolic link, submodule, name with an invisible character. **`overlap` without a repository** (`ROLES_WITHOUT_REPO`): neither clone nor push, catalogue of the tools as data in `task.md` |
 | `src/agent-engine/report.ts` | Validation of a report against `tool-template/agents/report.schema.json` (Ajv, closed lists M1): invalid = failed task |
-| `src/agent-engine/instructions.ts` | **Instructions of the roles** (`docs/reflexions/2026-10-15-note-consignes-agents.md`): `AGENTS.md` + `agents/<role>.md` + the role's domain rules (`.claude/rules/*.md` without frontmatter), read at start-up in `INSTRUCTIONS_PATH` (the template in dev, `/app/instructions` in the image), never in the cloned repository; fail-closed (missing file, empty or with an invisible character = no start-up); W1 passes them as they are to each task (DBOS records them) |
+| `src/agent-engine/instructions.ts` | **Instructions of the roles**: `AGENTS.md` + `agents/<role>.md` + the role's domain rules (`.claude/rules/*.md` without frontmatter), read at start-up in `INSTRUCTIONS_PATH` (the template in dev, `/app/instructions` in the image), never in the cloned repository; fail-closed (missing file, empty or with an invisible character = no start-up); W1 passes them as they are to each task (DBOS records them) |
 | `src/agent-engine/forbidden-paths.ts` | **A single list** of the paths no agent changes (`.claude/`, `.gitea/`, `agents/`, `AGENTS.md`, `.npmrc`, `.pnpmfile.cjs`…, root and subfolders): refused by the launcher before the push (`contentRefused`), by the `managed-settings.json` of the agents' image (generated) and by `gitea_protected_files` (checked by `tests/forbidden-paths.test.ts`) |
 | `src/text.ts` | Invisible or control characters (zero-width, bidi, Unicode tags) refused in the instructions, the message texts and the names of pushed files |
 | `src/workflows/toolCycle.ts` | **W1**: loop "read the state and the memory in the database → process → transition"; durable waits (`DBOS.recv`), deadlines and reminders read in the history, gates (3 reminders then one reminder a week, S6), cancellation E15 in any non-final state (even transient), ends (notification + retried cleanup, limited to the cycle's resources — Preview always removed, Prod removed from a creation that does not succeed —, alert if incomplete); tasks and outside operations as **child workflows whose native end W1 waits for** (`DBOS.waitAll` + status/output, S4), operations with a **native timeout** (`timeoutMS`, S3); deployed digest compared with the expected one (Prod serving another digest: recorded, removed or restored, alert, M5); **error boundary**: any exception → incident gate (D21), never a dead workflow; failure during the incident: new attempt after a short, growing wait, cancellation read during the wait; a message received during the incident is not kept: the resumed state **asks for it again** (S5) |
@@ -51,7 +55,7 @@ fake `claude` (`docs/reflexions/2026-10-13-note-e4-moteur-claude.md`); real test
 | `src/migrate.ts` | **Migration** (owner account, `pnpm migrate`): versioned migrations (node-pg-migrate "up"), then the `dbos` schema by the official function `DBOS.migrate(url, { applicationRole: 'orch_engine' })` |
 | `src/orchestrator.ts` | Start-up (config, **"one engine only" lock** taken on a dedicated connection — clear refusal if another engine holds it, clean stop if it is lost, D23 —, DBOS with **patching** enabled (constant application version, S1), queue, **sweep** at start-up and then by a **DBOS scheduled task** (`applySchedules`, S2), one at a time: decision on the real state of each cycle (G1), W1 really dead (ERROR, CANCELLED, MAX_RECOVERY_ATTEMPTS_EXCEEDED, waiting at another executor) → children stopped, incident, W1 **resumed from the start under the same id** (`rewindWorkflow`) + alert; environments still served for a finished cycle or an archived tool removed with an alert; a cycle in error does not stop the others); `newRequest` (validated; tool + cycle in one transaction → W1); `send` (message validated in full, then checked against the machine; dead workflow → resumed, message refused except a cancellation or an unchanged pass, e.g. a decision at the incident gate, M3; marked with the current pass; the cancellation also stops the children; `transmitted: true` only if delivered to a live workflow and in the targeted pass, checked at the delivery itself: the cycle is held in its pass by a shared lock on its row) |
 | `src/main.ts` | Entry point of the process: outside world chosen by `EUPADEV_EXTERNAL` (`src/external/world.ts`), fake watcher, local API |
-| `src/api.ts` | **Local API** (`node:http`, §8.16 M8): `GET /health`, `POST /requests`, `GET /requests` (my requests; all for an admin), `GET /requests/<cycle>`, `GET /requests/<cycle>/messages?since=<id>` (the chat; reads limited to the tool's requester or an admin), `POST /messages`; local `Host` only, header `X-EupaDev: 1`, **Keycloak access token required** except `/health` (401 + `WWW-Authenticate`, 403 without a hat or when an authorisation rule is broken, I0), the identity never comes from the body, `Idempotency-Key` + actor = id of the DBOS workflow, bodies validated by Ajv, RFC 9457 errors |
+| `src/api.ts` | **Local API** (`node:http`, §8.16 M8): `GET /health`, `POST /requests`, `GET /requests` (my requests; all for an admin), `GET /requests/<cycle>`, `GET /requests/<cycle>/messages?since=<id>` (the chat; reads limited to the tool's requester or an admin), `POST /messages`, `POST /actors/merges` (identity merge, admin), `GET /auth/login`, `GET /auth/callback`, `POST /auth/logout` (requester web page, ADR-024) and the page's static files; local `Host` only, header `X-EupaDev: 1`, **Keycloak access token required** except `/health` (401 + `WWW-Authenticate`, 403 without a hat or when an authorisation rule is broken, I0), the identity never comes from the body, `Idempotency-Key` + actor = id of the DBOS workflow, bodies validated by Ajv, RFC 9457 errors |
 | `src/auth.ts` | **Identity** (I0, ADR-017): access token checked with `jose` (internal JWKS, `alg` RS256/ES256, `typ at+jwt`, `iss`, `aud eupadev-api`, `cnf` refused), principal `(issuer, subject, mail, name, hats)`; hats = roles of the `eupadev-api` client only. Resolved into an actor by `Database.resolveActor` (table `actor_identities`, never by the mail) |
 | `Dockerfile`, `Dockerfile.dockerignore` | Image of the engine (built from the root of the repository): two commands, non-root user, read-only possible, `HEALTHCHECK` on `/health`, reports schema copied into it |
 | `tests/machine.test.ts`, `tests/stagnation.test.ts` | Tests without a database: no dead end, decisions, mechanisms M1–M7 |
@@ -74,11 +78,11 @@ fake `claude` (`docs/reflexions/2026-10-13-note-e4-moteur-claude.md`); real test
 | `tests/gitea-forge.test.ts` | E2, E3, E4: the real forge against a local **fake Gitea 28** (`node:http`, answers taken from the code of Gitea 28.1.0; real Git repositories served by `git http-backend`, push rules of the robots imitated by a hook): creation, resumption on 409, repository that is not ours, 403, 5xx/429, timeout, cancellation, malformed answer, redirection, pushing fake, integration, conflict, out of scope, merge; watcher: runs, jobs, registry (scope `read:package`) |
 | `tests/mails.test.ts` | E1: the SMTP adapter against a **throwaway Mailpit** (`tests/helpers/throwaway-mailpit.ts`, same image as the lab) and the migrated database: addresses, `Message-ID`, subject without header injection, replayed or simultaneous key → a single mail, sending failure → key free, requester without an address → final error; then the engine (`tests/resume/child-mails.ts`, `notifications=smtp`) **killed just after sending** the Gate 1 mail, before DBOS records the step: on restart the step is replayed under the same key and no 2nd mail goes out |
 | `tests/claude-output.test.ts`, `tests/claude-engine.test.ts` | Launcher, step 4: reading of the documented JSON output (without Docker); then the engine against the real Docker and local Git repositories, with a **fake `claude`** (`tests/helpers/fake-claude/`): options, hardening seen from the inside, push, replay, stops (turns, budget, unreadable output, container killed, cancellation in under 15 s), refused work (rewritten history, merge, `.git`, forbidden path, out of scope, symbolic link, submodule, invisible name), `overlap` without a repository, proxies, signature of the image (real `cosign`, throwaway registry: unsigned or another key = refused) |
-| `tests/mutations/` | **Tests that do not lie** (D2): `mutations.ts` = 205 realistic faults (1st review R01–R18, counter-review C01–C19, C09b, C11b, survivors of the targeted review X-…, 3rd round T-…, native DBOS features S1–S6, engine rights D6, engine as a service E0-…, real forge E2-…, real mails E1-…, integration E3-…, Claude Code engine E4-…, CI watcher CI-…, history purge PURGE-…, instructions INSTR-…, overlap OV-…, harness and pushed content E4-…), `launch.ts` applies them one by one on a throwaway copy and requires the expected test to fail, for the right reason |
+| `tests/mutations/` | **Tests that do not lie** (D2): `mutations.ts` = 338 realistic faults (1st review R01–R18, counter-review C01–C19, C09b, C11b, survivors of the targeted review X-…, 3rd round T-…, native DBOS features S1–S6, engine rights D6, engine as a service E0-…, real forge E2-…, real mails E1-…, integration E3-…, Claude Code engine E4-…, CI watcher CI-…, history purge PURGE-…, instructions INSTR-…, overlap OV-…, harness and pushed content E4-…), `launch.ts` applies them one by one on a throwaway copy and requires the expected test to fail, for the right reason |
 | `features/*.feature` + `features/steps/`, `features/support/` | Gherkin scenarios run by Cucumber against the real engine + fakes (a fresh database per scenario); `hooks.ts` checks that each `@t:` tag was really traced by its scenario and, on a full run, that **every transition of the machine** was |
 | `tests/helpers/` | Throwaway PostgreSQL, bench (orchestrator + fakes, injectable internal faults and freezes), **pilot** that drives a cycle up to a state along the machine's real path |
 | `sql/roles.sql` | PostgreSQL accounts (idempotent, run by a superuser with `psql`): see "PostgreSQL accounts" |
-| `migrations/` | `0001_schema.sql` (schema, triggers), `0002_state-machine.sql` (**generated** from `states.ts`), `0003_grants.sql` (rights of the engine) … `0007_sent-notifications.sql` (idempotency of the mails, append only), `0008_actors.sql` (identity: `actors`, `actor_identities` append only, `actor_id` on the audit tables with the name at the time of the facts, four eyes in the database), `0009_cycle-measures.sql` (view `cycle_measures`, read-only for the engine); the DBOS tables are in the `dbos` schema of the same database, installed by `src/migrate.ts` |
+| `migrations/` | `0001_schema.sql` (schema, triggers), `0002_state-machine.sql` (**generated** from `states.ts`), `0003_grants.sql` (rights of the engine) … `0007_sent-notifications.sql` (idempotency of the mails, append only), `0008_actors.sql` (identity: `actors`, `actor_identities` append only, `actor_id` on the audit tables with the name at the time of the facts, four eyes in the database), `0009_cycle-measures.sql` (view `cycle_measures`, read-only for the engine), `0010_actor-merge.sql` (identity merge), `0011_role-builder.sql` (roles tests and builder, ADR-021), `0012_state-machine.sql` and `0015_state-machine.sql` (**generated**, the current machine is in the last one), `0013_deviation-target-role.sql`, `0014_sessions.sql` (sessions of the requester web page); the DBOS tables are in the `dbos` schema of the same database, installed by `src/migrate.ts` |
 | `MACHINE.md` | v1 → v2 mapping + **generated** mermaid diagram |
 
 ## PostgreSQL accounts
@@ -106,8 +110,8 @@ the engine: an omission shows up in the tests instead of opening a hole.
 `runMigrations: false`; it only checks the version of the `dbos` schema and refuses to start, with a clear message,
 if it is missing or behind. The migration runs separately, with the owner account:
 `ORCH_MIGRATION_DATABASE_URL=postgres://orch_owner:…@host/database pnpm migrate` (versioned migrations, then
-`DBOS.migrate`, which gives `orch_engine` the rights on the `dbos` schema only). In production, this will be a one-off
-"migrate" service of the Compose file, run before the engine.
+`DBOS.migrate`, which gives `orch_engine` the rights on the `dbos` schema only). In production, it is the one-off
+"migrate" service of the Compose file (`infra/compose/orchestrator/compose.yml`), run before the engine.
 
 The tests do the same: the test bench creates the accounts, migrates as `orch_owner` (`src/migrate.ts`) and starts the
 engine with the URL of `orch_engine`. The setups that deliberately bypass the protections
@@ -120,10 +124,11 @@ Prerequisites: Node ≥ 22.18, pnpm 12.16.1 (`corepack enable`, or `corepack pnp
 ```sh
 pnpm install
 pnpm typecheck      # tsc --noEmit (src, tests, scripts, features)
-pnpm test           # secrets, machine + coverage of the transitions by executed scenarios + anti-loop, without a database
-pnpm test:db        # throwaway PostgreSQL: schema/triggers, creation + evolution end to end on DBOS, robustness, replacement, monitoring, engine as a service (E0), real mails against a throwaway Mailpit (E1)
+pnpm test           # without a database: secrets, identity, instructions, forbidden paths, fixed image, Claude Code output, fake Gitea, SSH deployer, machine + coverage of the transitions by executed scenarios, anti-loop, jargon, i18n
+pnpm test:db        # throwaway PostgreSQL: schema/triggers, creation + evolution end to end on DBOS, robustness, replacement, monitoring, engine as a service (E0), real mails against a throwaway Mailpit (E1), Claude Code engine against the real Docker, database roles
 pnpm test:resume    # throwaway PostgreSQL: cycle killed three times (SIGKILL) and resumed
 pnpm test:bdd       # Cucumber: the scenarios without @to-wire, fresh database and DBOS restarted per scenario (≈ 10 min); fails if a transition is never traced
+pnpm test:web       # the requester web page in a real Chromium (Playwright)
 pnpm test:all       # everything above
 pnpm test:mutations # (≈ 70 min) each mutation of tests/mutations/mutations.ts must be killed by its test, for the right reason;
                     # `node tests/mutations/launch.ts R05 C10` for a few of them, `--parallel N`, `--no-witness`
@@ -181,7 +186,7 @@ seconds included; refused at start-up if invalid), `INCIDENT_RETRY_DELAY_MS` (1 
 `STEP_INTERVAL_MS` (1000, doubled at each retry). Every delay, concurrency or number of attempts must be a
 strictly positive integer (and ≤ 2³¹−1 ms for those that arm a timer), otherwise the start-up is refused.
 
-**Measure per cycle** (view `cycle_measures`, migration 0009, `docs/reflexions/2026-10-16-note-mesure-cycle.md`): one
+**Measure per cycle** (view `cycle_measures`, migration 0009): one
 row per cycle, unknown = NULL (never 0), readable by `orch_engine`:
 `SELECT tool, type, state, total_cost_usd, work_duration_min, hardening_rounds, first_ci_pass_green, gate_decisions FROM cycle_measures ORDER BY cycle_id DESC LIMIT 10;`
 
@@ -192,7 +197,7 @@ reports schema, `tool-template/agents/report.schema.json`, is copied into the im
 `Dockerfile.dockerignore`). Base: `node:22.23.4-trixie-slim` by digest, hardened like
 `base-node:run-24` (npm/corepack/yarn removed, user `node`); not `FROM base-node:run-24`, because the engine image
 is built upstream and then copied by digest to the client (§8.16 M2). Nothing is written in the image:
-`read_only: true` possible (`tmpfs: /tmp` planned for the future Git clones).
+`read_only: true` with `tmpfs: /tmp` (the lab's Compose file).
 
 ```sh
 # 1. migration (owner account), then 2. the engine (orch_engine account), same image
@@ -212,7 +217,7 @@ and a fake watcher sends the green CI and the green Preview pipeline. Only the h
 
 ### Local API (§8.16 M8)
 
-From Ilan's workstation, through an SSH tunnel (`ssh -N -L 8080:127.0.0.1:8080 <engine-vm>`), then `curl`. Every request carries
+From the administrator's workstation, through an SSH tunnel (`ssh -N -L 8080:127.0.0.1:8080 <engine-vm>`), then `curl`. Every request carries
 `X-EupaDev: 1` (otherwise 403: a web page cannot send it without a preflight request, which nothing answers) and
 a local `Host` (`localhost`, `127.0.0.1`, `[::1]`, any port) or the name of `DASHBOARD_URL` (the page, behind
 Caddy; otherwise 421, against DNS rebinding). The `POST`s
@@ -227,28 +232,27 @@ H=(-H 'X-EupaDev: 1' -H 'Content-Type: application/json')
 curl -s "${H[@]}" http://localhost:8080/health
 # → {"status":"ok","pause_agents":false}  (503 otherwise)
 curl -s "${H[@]}" -H "Idempotency-Key: $(uuidgen)" http://localhost:8080/requests \
-  -d '{"type":"creation","name":"Car fleet","slug":"car-fleet","requester":"ilan@example.fr","owner_service":"logistics","need":"Track the department'\''s vehicles"}'
-# → 201 {"tool_id":1,"cycle_id":1,"workflow_id":"cycle-1"}   (evolution: {"type":"evolution","tool_id":1,"requester":"…"})
+  -d '{"type":"creation","name":"Car fleet","slug":"car-fleet","owner_service":"logistics","need":"Track the department'\''s vehicles"}'
+# → 201 {"tool_id":1,"cycle_id":1,"workflow_id":"cycle-1"}   (evolution: {"type":"evolution","tool_id":1,"need":"…"})
 curl -s "${H[@]}" http://localhost:8080/requests/1
 # → state, visit, gate_reason, candidate_digest, possible_decisions, status of the workflow
 curl -s "${H[@]}" http://localhost:8080/requests
 # → {"requests":[{"cycle_id":1,"tool_id":1,"slug":"car-fleet","name":"Car fleet","type":"creation","state":"…","created_at":"…","finished_at":null,"last_message_at":"…"}]}
 #   my requests (tools.requester_id = me), newest first; an admin gets all of them
 curl -s "${H[@]}" 'http://localhost:8080/requests/1/messages?since=0'
-# → {"cycle_id":1,"messages":[{"id":1,"author_type":"requester","author":"ilan@example.fr","content":"Track…","created_at":"…"}]}
+# → {"cycle_id":1,"messages":[{"id":1,"author_type":"requester","author":"requester@example.org","content":"Track…","created_at":"…"}]}
 #   a polling page passes back the last id it got in `since` and receives only the new ones
 curl -s "${H[@]}" -H "Idempotency-Key: $(uuidgen)" http://localhost:8080/messages \
-  -d '{"cycle_id":1,"message":{"type":"scoping_feedback","outcome":"satisfied","author":"ilan@example.fr"}}'
+  -d '{"cycle_id":1,"message":{"type":"scoping_feedback","outcome":"satisfied"}}'
 # → 202 {"transmitted":true}
 curl -s "${H[@]}" -H "Idempotency-Key: $(uuidgen)" http://localhost:8080/messages \
-  -d '{"cycle_id":1,"message":{"type":"decision","gate":"gate_2","outcome":"approved","actor":"ilan@example.fr","digest":"sha256:…"}}'
+  -d '{"cycle_id":1,"message":{"type":"decision","gate":"gate_2","outcome":"approved","digest":"sha256:…"}}'
 ```
 
 Messages accepted by `POST /messages`: the humans' only — `scoping_feedback`, `preview_feedback`,
-`requester_abandonment`, `requester_message`, `decision` (`gate`, `outcome`, `actor`, `comment`, `budget_top_up_usd`,
+`requester_abandonment`, `requester_message`, `decision` (`gate`, `outcome`, `comment`, `budget_top_up_usd`,
 `digest` at Gate 2), `cancellation`. The forge's signals (`ci_finished`, `preview_pipeline_finished`) never come
-in through the API. The identity (`author`, `actor`) is declarative as long as only Ilan has the SSH key; the OIDC
-identity will come with the dashboard.
+in through the API. The identity never comes from the body: it is read from the access token (I0).
 
 #### From the terminal with a Keycloak login (`scripts/eupadev.py`)
 
@@ -278,6 +282,7 @@ python3 orchestrator/scripts/eupadev.py health
 python3 orchestrator/scripts/eupadev.py submit --tool-id 1 --need-file change.txt
 python3 orchestrator/scripts/eupadev.py opinion 1 satisfied
 python3 orchestrator/scripts/eupadev.py opinion 1 correction what-to-fix.txt
+python3 orchestrator/scripts/eupadev.py preview 1 satisfied
 python3 orchestrator/scripts/eupadev.py answer 1 my-answer.txt
 python3 orchestrator/scripts/eupadev.py decide 1 gate_1 approved
 python3 orchestrator/scripts/eupadev.py decide 1 gate_1 correction --comment-file comment.txt
@@ -308,13 +313,13 @@ each sweep also checks the connection. **Deploying = stopping the old engine, th
 two at the same time): the lock is given back last, once DBOS has stopped. One lock per role: at most one pilot and one
 executor (the all-in-one takes both).
 
-### Pilot and executor (note `docs/reflexions/2026-10-15-note-lanceur-service.md`)
+### Pilot and executor
 
 Same image, role chosen by `EUPADEV_ROLE`:
 
 | Role | Where | DBOS queues listened to | Lock (D23) | API, watcher, monitoring |
 |---|---|---|---|---|
-| `all-in-one` (default) | a single VM (lab before the agents VM, tests) | `control` + `agent-tasks` | both | yes |
+| `all-in-one` (default) | a single machine (tests, development) | `control` + `agent-tasks` | both | yes |
 | `pilot` | orchestrator VM | `control` | engine | yes |
 | `executor` | agents VM (Docker, `engine=claude`) | `agent-tasks` | executor | no (none) |
 
@@ -429,8 +434,8 @@ count from the **first** entry into the state: going through the incident gate d
 ## Rules of the folder
 
 - The machine is described in one place only: `states.ts`. Never change by
-  hand `0002_state-machine.sql` or the generated block of `MACHINE.md`; `pnpm test`
-  fails if they are no longer up to date.
+  hand a generated migration (`NNNN_state-machine.sql`) or the generated block of
+  `MACHINE.md`; `pnpm test` fails if they are no longer up to date.
 - Every transition added to `states.ts` must have its scenario in `features/`
   (tag `@t:`), otherwise `pnpm test` fails; a tag that no longer matches
   a transition also makes the test fail. Same sentence = same step: reuse the
@@ -467,5 +472,4 @@ count from the **first** entry into the state: going through the incident gate d
   of a transaction, a right of the throwaway PostgreSQL's superuser only), never the code.
 - Tests: a checkable rule has its test, and `pnpm test:mutations` proves that the test fails when the rule is broken.
   Every new rule adds its mutation to `tests/mutations/mutations.ts`.
-- Not planned at this step, on purpose: real implementations of the outside world
-  (Claude Code, Gitea, real W4, mail), Conductor, W5–W7, dashboard.
+- Not built yet: Conductor, W5–W7, the dashboard and gate pages.

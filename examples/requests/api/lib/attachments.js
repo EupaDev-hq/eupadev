@@ -1,4 +1,4 @@
-// Who may change a request's attachment (note §3): the author while the request is a draft or submitted; a manager
+// Who may change a request's attachment: the author while the request is a draft or submitted; a manager
 // uploads on any request they see; an administrator uploads and removes on any request they see.
 
 /** Statuses in which the author still changes the attachment. */

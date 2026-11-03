@@ -2,8 +2,8 @@
 // (generated tools, template). NOT RUN YET: today Renovate only runs on
 // GitHub for this repository (.github/workflows/renovate.yml, renovate.json);
 // Renovate CLI on the forge is ROADMAP §8.14 C. Written now so that the
-// core's part (registry of the @eupadev scope, read access) is settled:
-// docs/reflexions/2026-10-22-note-socle-registry.md.
+// core's part (registry of the @eupadev scope, read access) is settled
+// (ADR-023).
 //
 // Secrets and installation values come from the environment only, never from
 // a repository file: FORGE_DOMAIN (e.g. git.example.com) and RENOVATE_TOKEN

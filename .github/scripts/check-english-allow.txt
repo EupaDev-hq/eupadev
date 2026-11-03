@@ -11,8 +11,9 @@ CONTRIBUTING.md | Lire en français | link to the French translation, written in
 docs/adr/016-read-only-npm-registry-for-agents.md | `MAL-` | prefix of the OpenSSF malicious-packages entries, a third-party name
 .github/workflows/adr-proposals.yml | ^ +OLD_TITLE: | title of the issue opened before the English switch, found once and retitled by the workflow (ADR-026)
 *.k6.js | \bvus: | k6's own option name (virtual users), a third-party API
-.github/workflows/engine.yml | orchestrateur/ | main keeps the engine's French path until step 10 merges the switch: the mutation ratchet reads main's reference there and fails if neither path exists (note §4.2)
 ROADMAP.md | Alpine\.js/Petite-Vue | third-party name (petite-vue), not French
 orchestrator/tests/a-r6.test.ts | jargon\('Le (schéma des données|SCHÉMA)'\) | deliberate French fixtures: the A-R6 jargon list of the French dictionary is checked, accents and case included
 orchestrator/tests/instructions.test.ts | accents é and « quotes » | deliberate fixture: accented letters and French quotes are ordinary text, never refused as invisible characters
 orchestrator/tests/i18n.test.ts | 'Tableau de bord : https://d/cycles/1' | deliberate fixture: the rendering of the French dictionary (lang/fr.json) is checked
+orchestrator/web/app.js | est bon | French acceptance words: a requester may answer the mock-up in French
+orchestrator/tests/web.test.ts | Prêts de clés|prets-de-cles|c'est bon | deliberate French fixtures: accents stripped from the short name, French acceptance words

@@ -1,4 +1,4 @@
--- Database and PostgreSQL account of Keycloak (D9, docs/reflexions/2026-10-15-analyse-keycloak.md).
+-- Database and PostgreSQL account of Keycloak (D9).
 -- Idempotent, replayed on every pass by the image's superuser, in the PostgreSQL of the
 -- orchestrator; password as a psql variable (\set on standard input), never here.
 --   keycloak: owner of its own database only; neither superuser, nor creation of roles or databases.

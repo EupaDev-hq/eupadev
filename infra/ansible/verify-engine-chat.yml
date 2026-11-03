@@ -1,4 +1,4 @@
-# Real test of chat step 6 (docs/reflexions/2026-10-25-note-chat.md §6) — rerunnable.
+# Real test of chat step 6 (ADR-024) — rerunnable.
 #   ansible-playbook verify-engine-chat.yml
 # The requesters' page at https://<chat_domain>, second site block of
 # caddy-auth, reverse proxy to the engine. Checked from the CI VM, as by an

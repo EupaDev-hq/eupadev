@@ -308,7 +308,7 @@ export const MUTATIONS: Mutation[] = [
   { id: 'S6-weekly', fault: 'no more weekly reminder at a gate without a decision after its 3 reminders', file: 'src/workflows/toolCycle.ts',
     replacements: [['      } else await notifyAdmin(c, { key: \'mail.decision.weekly.subject\', values: { state: c.state, tool: c.name } }, reasonText, `cycle-${c.id}#weekly ${Math.round((deadline - last) / long)}#${c.state}#${c.visit}`);', '      }']],
     tests: [`${CUKE} features/delivery-gates.feature --name "^41\\. "`], expected: scenario('41\\. An admin gate') },
-  // ── E0: the engine in service (docs/reflexions/2026-10-13-note-moteur-en-vrai.md §3, ROADMAP §8.16) ───────────────────────
+  // ── E0: the engine in service (ROADMAP §8.16) ───────────────────────────────────────────────────
   { id: 'E0-secret-double', fault: 'NAME and NAME_FILE accepted together: the file silently wins', file: 'src/config.ts',
     replacements: [["  if (direct !== '' && path !== '') throw new Error(`${name} and ${name}_FILE both given: only one expected`);\n", '']],
     tests: ['node --test tests/config.test.ts'], expected: testNode('secret: clear refusal') },
@@ -580,7 +580,7 @@ export const MUTATIONS: Mutation[] = [
     replacements: [["const noProxy = [...(aiIp === undefined ? [] : [aiIp]), 'localhost', '127.0.0.1'].join(',');", "const noProxy = ['localhost', '127.0.0.1'].join(',');"]],
     tests: [CLAUDE('E4 claude: egress')], expected: testNode('E4 claude: egress proxy named by its IP') },
 
-  // ── E4 watcher: CI read from the runs, the jobs and the registry (docs/reflexions/2026-10-14-note-e4-guetteur.md) ────────────
+  // ── E4 watcher: CI read from the runs, the jobs and the registry ───────────────────────────────
   { id: 'CI-other-commit', fault: 'the watcher no longer filters the runs by commit: the last run of main (another squash) is taken for the round\'s', file: 'src/external/gitea-forge.ts',
     replacements: [['runs?branch=main&head_sha=${commit}&limit=50', 'runs?branch=main&limit=50'], ['r?.head_sha === commit && Number.isSafeInteger(r.id)', 'Number.isSafeInteger(r.id)']],
     tests: [FORGE('^E4 watcher: CI of the squash')], expected: testNode('E4 watcher: CI of the squash') },
@@ -628,7 +628,7 @@ export const MUTATIONS: Mutation[] = [
   { id: 'PURGE-retention', fault: 'the purge ignores the one-day retention (recent visits deleted)', file: 'src/orchestrator.ts',
     replacements: [['completedBefore: new Date(Date.now() - keepMs)', 'completedBefore: new Date(Date.now())']],
     tests: [MON('^DBOS history: monitoring')], expected: testNode('DBOS history: monitoring') },
-  // ── Separate pilot and executor (docs/reflexions/2026-10-15-note-lanceur-service.md) ────────────────────────
+  // ── Separate pilot and executor ─────────────────────────────────────────────────────────────────
   { id: 'L-control-w1', fault: 'W1 is no longer started in the control queue: resumed in the internal queue of DBOS, the executor can take it', file: 'src/orchestrator.ts',
     replacements: [['      await DBOS.startWorkflow(this.toolCycle, { workflowID: workflowId, queueName: CONTROL_QUEUE })(cycle_id);', '      await DBOS.startWorkflow(this.toolCycle, { workflowID: workflowId })(cycle_id);']],
     tests: [ROLES('pilot killed \\\\(W1')], expected: testNode('pilot killed \\(W1') },
@@ -648,7 +648,7 @@ export const MUTATIONS: Mutation[] = [
     replacements: [["...(config.role === 'executor' ? { executorID: EXECUTOR_VMID } : {})", '']],
     tests: [ROLES('separate: agent tasks')], expected: testNode('separate: agent tasks') },
 
-  // ── Agent instructions from the engine image (docs/reflexions/2026-10-15-note-consignes-agents.md) ─────────────────────────
+  // ── Agent instructions from the engine image (ADR-018) ──────────────────────────────────────────
   { id: 'INSTR-sentence', fault: 'W1 passes on the sentence "instructions of the template (agents/<role>.md)" instead of the assembled instructions', file: 'src/workflows/toolCycle.ts',
     replacements: [['instructions: instructions[role], context: contexts(role) };', 'instructions: `Role ${role}: instructions of the template (agents/${role}.md).`, context: contexts(role) };']],
     tests: [`${CUKE} features/launcher.feature --name "^L0-1\\."`], expected: scenario('L0-1\\.') },
@@ -680,7 +680,7 @@ export const MUTATIONS: Mutation[] = [
   { id: 'OV-clone', fault: 'overlap clones the tool\'s repository anyway (which does not exist yet)', file: M_CLAUDE,
     replacements: [["export const ROLES_WITHOUT_REPO: readonly Role[] = ['overlap'];", 'export const ROLES_WITHOUT_REPO: readonly Role[] = [];']],
     tests: [CLAUDE('E4 claude: overlap')], expected: testNode('E4 claude: overlap without a repository') },
-  // ── Restricted Claude Code harness (instructions analysis §3.1) and checked pushed content (§3.3) ──────────────────
+  // ── Restricted Claude Code harness and checked pushed content ───────────────────────────────────
   { id: 'E4-restricted', fault: 'Claude Code started without --restricted: the settings of the clone (env block, ANTHROPIC_BASE_URL) apply', file: M_CLAUDE,
     replacements: [['claude --bare --restricted -p "$FA_PROMPT"', 'claude --bare -p "$FA_PROMPT"']],
     tests: [CLAUDE('E4 claude: successful')], expected: testNode('E4 claude: successful task —') },
@@ -757,7 +757,7 @@ export const MUTATIONS: Mutation[] = [
     replacements: [["  if (/^(api|db|web|tests\\/unit)\\//.test(file)) return 'builder';\n  if (/^tests\\/acceptance\\//.test(file)) return 'tests';",
       "  if (/^(api|db|tests\\/unit)\\//.test(file)) return 'builder';\n  if (/^(web|tests\\/acceptance)\\//.test(file)) return 'tests';"]],
     tests: [`${CUKE} features/hardening-review.feature --name "^25\\\\. "`], expected: scenario('25\\. The agents') },
-  { id: 'AR1-tests-unit-to-tests', fault: 'tests/unit/ is again assigned to the tests role, which may not write there (latent bug of the note, §9)', file: 'src/external/contracts.ts',
+  { id: 'AR1-tests-unit-to-tests', fault: 'tests/unit/ is again assigned to the tests role, which may not write there (an earlier latent bug)', file: 'src/external/contracts.ts',
     replacements: [["  if (/^(api|db|web|tests\\/unit)\\//.test(file)) return 'builder';\n  if (/^tests\\/acceptance\\//.test(file)) return 'tests';",
       "  if (/^(api|db|web)\\//.test(file)) return 'builder';\n  if (/^tests\\/(acceptance|unit)\\//.test(file)) return 'tests';"]],
     tests: [PATHS('scope per role')], expected: testNode('scope per role') },
@@ -802,7 +802,7 @@ export const MUTATIONS: Mutation[] = [
     replacements: [["const refusal = contentRefused(e.role, await git(repo, ['diff-tree', '-r', '--no-renames', '--raw', '-z', base, head], 'task content'));", 'const refusal: string | null = null;']],
     tests: [CLAUDE('E4 claude: content')], expected: testNode('E4 claude: content refused before') },
   { id: 'E4-forbidden-path', fault: 'no path is forbidden (Claude Code settings, .npmrc… pushed)', file: 'src/agent-engine/forbidden-paths.ts',
-    replacements: [['  return dossiers.some((d) =>', '  return false && dossiers.some((d) =>']],
+    replacements: [['  return dirs.some((d) =>', '  return false && dirs.some((d) =>']],
     tests: [OUTPUT('content')], expected: testNode('E4 claude content:') },
   { id: 'E4-scope', fault: 'the builder can write anywhere, tests/acceptance/ included (role scope ignored)', file: 'src/external/contracts.ts',
     replacements: [["case 'builder': return ownerRole(file) === 'builder' || CODE_COMMONS.test(file);", "case 'builder': return true;"]],
@@ -822,7 +822,7 @@ export const MUTATIONS: Mutation[] = [
   { id: 'E4-gitea-list', fault: 'Gitea\'s list of protected files no longer covers the forbidden files (drift between the launcher and the forge)', file: 'src/agent-engine/forbidden-paths.ts',
     replacements: [['    ...FORBIDDEN_FILES.flatMap((f) => [f, `**/${f}`]),\n', '']],
     tests: [PATHS('the same list')], expected: testNode('the same list everywhere:') },
-  // ── I0: identity of people (ADR-017; Keycloak analysis D1, D2, D4, D7) ─────────────────────────
+  // ── I0: identity of people (ADR-017) ────────────────────────────────────────────────────────────
   { id: 'ID-typ', fault: 'a token without typ at+jwt (ID token, refresh token) is accepted as an access token', file: 'src/auth.ts',
     replacements: [[", algorithms: ALGORITHMS, typ: 'at+jwt' })", ', algorithms: ALGORITHMS })']],
     tests: [AUTH('typ JWT')], expected: testNode('identity: typ JWT, alg') },
@@ -884,7 +884,7 @@ export const MUTATIONS: Mutation[] = [
   { id: 'ID-db-contact', fault: 'the engine can change every column of an actor (type included), not only the contact', file: 'migrations/0008_actors.sql',
     replacements: [['GRANT UPDATE (mail, display_name, directory_id, last_sign_in) ON actors TO orch_engine;', 'GRANT UPDATE ON actors TO orch_engine;']],
     tests: [DB('append-only')], expected: testNode('step 6: the engine can neither modify nor empty the append-only tables') },
-  // ── Measurement per cycle (migrations/0009, docs/reflexions/2026-10-16-note-mesure-cycle.md) ────────────────
+  // ── Measurement per cycle (migrations/0009) ─────────────────────────────────────────────────────
   { id: 'MEAS-cost-cap', fault: 'unknown cost counted as 0: the cap of a failed task leaves the scoping sum', file: 'migrations/0009_cycle-measures.sql',
     replacements: [['sum(x.cost_usd) FILTER (WHERE x.scoping)', "sum(x.cost_usd) FILTER (WHERE x.scoping AND x.status = 'done')"]],
     tests: [DB('measure: unknown =')], expected: testNode('measure: unknown =') },
@@ -894,7 +894,7 @@ export const MUTATIONS: Mutation[] = [
   { id: 'MEAS-failed', fault: 'a failed task without a cost (never started) is not counted among the failures', file: 'migrations/0009_cycle-measures.sql',
     replacements: [["count(*) FILTER (WHERE x.status = 'failed')", "count(*) FILTER (WHERE x.status = 'failed' AND x.cost_usd > 0)"]],
     tests: [DB('measure: values of a finished')], expected: testNode('measure: values of a finished') },
-  // ── FU: actor merge (migration 0010, docs/reflexions/2026-10-16-note-fusion-acteurs.md) ───────────────────────
+  // ── FU: actor merge (migration 0010) ────────────────────────────────────────────────────────────
   { id: 'FU-resolve-canonical', fault: 'the principal is no longer resolved to the canonical actor: an absorbed subject stays another actor (idempotency keys, audit)', file: 'src/db.ts',
     replacements: [["      const known = (await c.query<{ actor_id: string }>('SELECT canonical_actor(actor_id) AS actor_id FROM actor_identities", "      const known = (await c.query<{ actor_id: string }>('SELECT actor_id FROM actor_identities"]],
     tests: [SERV('E0: local API — actor')], expected: testNode('E0: local API — actor merge \\(0010\\):') },
@@ -926,7 +926,7 @@ export const MUTATIONS: Mutation[] = [
     replacements: [['  IF NEW.decided_by = NEW.absorbed_actor OR canonical_actor(NEW.decided_by) = canonical_actor(NEW.target_actor) THEN', '  IF false THEN']],
     tests: [DB('0010: actor merge')], expected: testNode('0010: actor merge —') },
 
-  // ── A-R0: the platform's fixed Dockerfile (docs/reflexions/2026-10-17-note-dockerfile-fixe.md) ────────────────
+  // ── A-R0: the platform's fixed Dockerfile ──────────────────────────────────────────────────────
   // The template files are mutated in the copy (launch.ts copies tool-template/.gitea and package.json into it).
   { id: 'A0-dockerfile-forbidden', fault: 'an agent\'s Dockerfile is no longer refused: a RUN rewrites the delivered image, green CI', file: 'src/agent-engine/forbidden-paths.ts',
     replacements: [["  'Dockerfile', '.dockerignore',\n", "  '.dockerignore',\n"]],
@@ -974,7 +974,7 @@ export const MUTATIONS: Mutation[] = [
     replacements: [['  node .gitea/checks/package.mjs package.json || red=1\n', '  node .gitea/checks/package.mjs package.json || :\n']],
     tests: [IMAGE('guard-rails 4')], expected: testNode('guard-rails 4') },
 
-  // ── G4: core reference (note docs/reflexions/2026-10-20-note-socle-step-9.md, 3rd agent review M1) ─────
+  // ── G4: core reference ─────────────────────────────────────────────────────────────────────────
   { id: 'G4-vendor-forbidden', fault: 'an agent may write vendor/ (a local copy of the core)', file: 'src/agent-engine/forbidden-paths.ts',
     replacements: [["'.devcontainer', 'vendor', 'node_modules'] as const;", "'.devcontainer', 'node_modules'] as const;"]],
     tests: [PATHS('G4')], expected: testNode('G4: vendor/ and node_modules/') },
@@ -1031,7 +1031,7 @@ export const MUTATIONS: Mutation[] = [
   { id: 'E5f-fake-sends', fault: 'with a real forge, the fake watcher still sends a green Preview pipeline', file: 'src/external/fakes.ts',
     replacements: [[" || (realPreview && m.type === 'preview_pipeline_finished')", '']],
     tests: [MON('E5f watcher: W1')], expected: testNode('E5f watcher: W1') },
-  // CORE-…: core store filled before the agent by a separate fetch container (ADR-023, decision 1(b)).
+  // CORE-…: core store filled before the agent by a separate fetch container (ADR-023, "Agents' access").
   { id: 'CORE-no-fetch', fault: 'the agent starts without the core store (fetch container never run)', file: 'src/external/claude-engine.ts',
     replacements: [['      if (core !== null) await this.#loadCore(e, container, volume, label, dir, core);\n', '']],
     tests: [CORE('runs before the agent')], expected: testNode('core store: the fetch container runs before the agent') },
@@ -1050,7 +1050,7 @@ export const MUTATIONS: Mutation[] = [
   { id: 'CORE-tarball-elsewhere', fault: 'a lockfile tarball outside the forge registry reaches the fetch container (badge and requests sent elsewhere)', file: 'src/external/claude-engine.ts',
     replacements: [['if (tarball !== undefined && !tarball.startsWith(registry))', 'if (false)']],
     tests: [CORE('outside the forge registry')], expected: testNode('core store: a lockfile with a tarball outside the forge registry') },
-  // ── A-R6 (note 2026-10-21-note-a-r6.md): C1, C2, D2 ──────────────────────────────────────────
+  // ── A-R6: C1, C2, D2 ───────────────────────────────────────────────────────────────────────────
   { id: 'AR6-C1-jargon', fault: 'a technical word in requester_message reaches the requester (C1 check skipped)', file: 'src/workflows/toolCycle.ts',
     replacements: [['if (word !== null) return scopingFailure(', 'if (word === "never") return scopingFailure(']],
     tests: [`${CUKE} features/scoping.feature --name "^16 ter"`], expected: scenario('16 ter\\.') },
@@ -1077,7 +1077,7 @@ export const MUTATIONS: Mutation[] = [
   { id: 'E7-base-no-main', fault: 'the launcher no longer merges main into the task branch (stale base at the next round)', file: M_CLAUDE,
     replacements: [["'common base with main')).trim() !== main) {", "'common base with main')).trim() !== main && false) {"]],
     tests: [CLAUDE('E7 claude')], expected: testNode('E7 claude') },
-  // ── Chat step 2 (note 2026-10-25-note-chat.md, decision 2; ADR-024): web sign-in and sessions ──────
+  // ── Chat step 2 (ADR-024): web sign-in and sessions ────────────────────────────────────────────
   { id: 'WEB-state', fault: 'the callback no longer checks `state`: a forged authorization response (CSRF login) is accepted', file: 'src/web-session.ts',
     replacements: [['expectedState: tx.s, expectedNonce', 'expectedState: oidc.skipStateCheck, expectedNonce']],
     tests: [SERV('Chat step 2')], expected: testNode('Chat step 2') },
@@ -1097,7 +1097,7 @@ export const MUTATIONS: Mutation[] = [
   { id: 'WEB-html-messages', fault: 'the page renders chat messages with deep-chat\'s `html` type: an agent\'s text becomes markup (XSS)', file: 'web/app.js',
     replacements: [["const toMessage = (m) => ({ role: m.author_type === 'requester' ? 'user' : m.author_type, text: m.content });", "const toMessage = (m) => ({ role: m.author_type === 'requester' ? 'user' : m.author_type, html: m.content });"]],
     tests: [WEB('XSS payloads')], expected: testNode('XSS payloads') },
-  // ── Acceptance on the Preview, S4 (note 2026-10-26-note-acceptance-on-preview.md §3.7): failure excerpt of a red suite ──
+  // ── Acceptance on the Preview, S4: failure excerpt of a red suite ──────────────────────────────
   { id: 'S4-acceptance-log-unread', fault: 'the log of a red acceptance job is no longer read: the hardening round gets the job name only', file: 'src/external/gitea-forge.ts',
     replacements: [["if (k.check === 'acceptance' && k.result === 'red'", "if (k.check === 'acceptance-' && k.result === 'red'"]],
     tests: [FORGE('3.7 red acceptance')], expected: testNode('3.7 red acceptance') },
@@ -1107,7 +1107,7 @@ export const MUTATIONS: Mutation[] = [
   { id: 'S4-deviations-per-test', fault: 'a red check with failing tests gives one generic deviation instead of one per failing test', file: 'src/workflows/toolCycle.ts',
     replacements: [['else if (Array.isArray(failures) && failures.length > 0)', 'else if (false)']],
     tests: [ROB('3\\\\.7: a red acceptance job')], expected: testNode('3\\.7: a red acceptance job') },
-  // ── Acceptance on the Preview, S5 (same note, §3.5): the Preview controls run before the requester is told ──
+  // ── Acceptance on the Preview, S5: the Preview controls run before the requester is told ───────
   { id: 'S5-link-at-deployment', fault: 'the requester gets the Preview link at deploy time, before its checks ran (a build that fails its own acceptance is shown)', file: 'src/workflows/toolCycle.ts',
     replacements: [["if (await DBOS.patch(PATCH_CHECKS_BEFORE_FEEDBACK)) return void (await transition(c, memory, 'task:done', 'preview_pipeline'));", "if (await DBOS.patch(PATCH_CHECKS_BEFORE_FEEDBACK)) { await notifyRequester(c, { key: 'chat.previewAvailable', values: { url: r.url, digest } }); return void (await transition(c, memory, 'task:done', 'preview_pipeline')); }"]],
     tests: [`${CUKE} features/delivery-gates.feature --name "36 bis"`], expected: scenario('36 bis\\.') },

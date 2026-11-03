@@ -1,4 +1,4 @@
-// Ajv 2020-12 of the core (§2.1.4 "common settings"): strict, allErrors:false ("Do NOT use allErrors in
+// Ajv 2020-12 of the core: strict, allErrors:false ("Do NOT use allErrors in
 // production"), removeAdditional:false (an unknown key = 400, never removed), useDefaults, ajv-formats.
 // Two instances: type coercion for the path and the query string (everything there is text), none for the body
 // and the responses. The schemas come from the contract only (Ajv compiles with `new Function()`).

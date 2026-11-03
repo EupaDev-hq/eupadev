@@ -16,16 +16,18 @@ Current machines:
 
 | VM | Address (lab) | Content |
 |---|---|---|
-| `eupadev-forge` | `10.42.0.10` | Gitea + PostgreSQL + Caddy; organisation `eupadev` (template, 4 robot accounts) |
-| `eupadev-ci` | `10.42.0.11` | Mock-ups and Previews of the tools (generic Caddy, account `deployment`, ADR-014); two CI runners (Gitea Runner 5), registered with the organisation `eupadev`: `ci-standard` (secrets, tests, analysis — runs the agents' code, **without access to Docker**) and `ci-image` (build, scan, publication of the images — the only one with Docker) |
-| `eupadev-orch` | `10.42.0.12` | Orchestrator: its dedicated PostgreSQL database, never exposed, and the DBOS engine (signed image, pulled by digest; local API on `127.0.0.1:8080` only; fake outside world at step E0); Keycloak (identity, `https://auth.<domain>`) — see "Keycloak" below |
+| `eupadev-forge` | `10.42.0.10` | Gitea + PostgreSQL + Caddy; organisation `eupadev` (template, robot accounts) and `eupadev-core` (npm registry of the core) |
+| `eupadev-ci` | `10.42.0.11` | Mock-ups and Previews of the tools (generic Caddy, account `deployment`, ADR-022); two CI runners (Gitea Runner 5), registered with the organisation `eupadev`: `ci-standard` (secrets, tests, analysis — runs the agents' code, **without access to Docker**) and `ci-image` (build, scan, publication of the images — the only one with Docker) |
+| `eupadev-orch` | `10.42.0.12` | Orchestrator: its dedicated PostgreSQL database, never exposed, and the DBOS engine (signed image, pulled by digest; local API on `127.0.0.1:8080` only; fake forge and deployer by default, the real ones with `-e orchestrator_real_world=true`); Keycloak (identity, `https://auth.<domain>`) — see "Keycloak" below |
 | `eupadev-agents` | `10.42.0.13` | Containers of the AI agents: Docker with the gVisor runtime (`runsc`), Smokescreen egress proxy, AI proxy (Caddy, adds the Anthropic key), one internal Docker network per task — see "Agents VM" below |
 | `eupadev-tools` | `10.42.0.14` | Prod of the generated tools: generic Caddy `*.<domain>`, account `deployment` — see "Deployment targets" below |
 
 ## Rebuild everything from scratch (local lab)
 
-Prerequisites on the host machine: LXD (snap), Terraform, Ansible, collection
-`community.general`.
+Prerequisites on the host machine: LXD (snap), Terraform (OpenTofu reads the
+same files, untested here), Ansible and the
+collections of `ansible/requirements.yml` (from `infra/ansible`:
+`ansible-galaxy collection install -r requirements.yml -p .ansible/collections`).
 
 ```sh
 # 1. Dedicated SSH key (once) — Ansible enters the VMs with it.
@@ -49,6 +51,8 @@ cd ../ansible && ansible-playbook lab-host.yml --ask-become-pass --skip-tags for
 ./init-vault.sh
 
 # 5. Configure every VM (forge, organisation, robot accounts, template).
+#    Without OVH credentials, set caddy_tls: internal and caddy_image: ""
+#    in group_vars/all/vars.yml first (section "Public certificates").
 ansible-playbook site.yml
 
 # 6. Host machine: address and certificate of the forge, authorities of the
@@ -101,8 +105,7 @@ ansible-playbook verify-image-agent.yml  # agents image (`agent` repository): gr
 Check that a second run changes nothing (`changed=0`): it proves that the
 recipe really describes the actual state.
 
-**Automatic review of the recipes**: `ansible-lint` (profile "production")
-runs on GitHub on every change of `infra/`
+**Automatic review of the recipes**: `ansible-lint` runs on GitHub on every change of `infra/`
 (`.github/workflows/infra-lint.yml`). Locally, from `infra/ansible`:
 `ansible-galaxy collection install -r requirements.yml -p .ansible/collections`
 then `ANSIBLE_COLLECTIONS_PATH=$PWD/.ansible/collections ansible-lint`.
@@ -138,8 +141,8 @@ Role `base`, on every VM:
 `eupadev-maintenance.timer` of each VM restarts the VM **if and only if**
 that file exists, at an hour specific to the VM (`maintenance_hour`,
 inventory `inventory/lab.yml`): forge 03:15, CI 03:30, orchestrator 03:45,
-agents 04:00 UTC — after the backup (02:30), before the golden images (Monday
-04:00), never two VMs at the same time (checked by `verify-system.yml`). The
+agents 04:00, tools 04:15 UTC — after the backup (02:30), the forge and the CI
+before the golden images (Monday 04:00), never two VMs at the same time (checked by `verify-system.yml`). The
 containers come back on their own (`restart: unless-stopped`). A CI pipeline
 running during the slot fails: run it again. Next runs:
 `systemctl list-timers eupadev-maintenance.timer`; log:
@@ -165,8 +168,8 @@ one, the recipe waits until the containers that were running are back (and
 
 Role (ROADMAP §8.16 L1-L4): run the code written by the agents far from
 everything valuable (token that writes to `main`, databases, images being
-built). Ansible roles: `base`, `docker_disk`, `gvisor`, `docker`,
-`agent_proxies`; Compose: `compose/agents/`.
+built). Ansible roles: `base`, `docker_disk`, `gvisor`, `docker`, `lab_ca`,
+`executor`, `agent_proxies`; Compose: `compose/agents/`.
 
 - **gVisor** (`runsc` 20261005.0, official APT repository, systrap platform:
   no hardware virtualisation needed in the VM). Declared to Docker under the
@@ -193,8 +196,7 @@ built). Ansible roles: `base`, `docker_disk`, `gvisor`, `docker`,
   `CANONICAL-PROXY-DECISION` lines).
 - Firewall: 22 only inbound (Docker publishes nothing).
 
-**Size**: 2 vCPU / 4 GiB in the lab (the host machine has 29 GiB, ≈ 13 of
-them free before this VM); 4 vCPU / 8 GiB targeted once two agents run at the
+**Size**: 2 vCPU / 4 GiB in the lab; 4 vCPU / 8 GiB targeted once two agents run at the
 same time with Playwright. Before `terraform apply`, check `free -g` on the
 host: 4 more GiB must be free.
 
@@ -210,7 +212,7 @@ ansible-playbook verify-agents.yml
 Nothing to back up on this VM: everything there is disposable and recreated
 by the recipe (no data; the AI key comes from the vault).
 
-## Deployment targets: CI VM and tools VM (ADR-014)
+## Deployment targets: CI VM and tools VM (ADR-022)
 
 The engine deploys the generated tools over SSH, with its own key, to the
 script `eupadev-deployer` (role `deployer`): mock-ups and Previews on the
@@ -220,7 +222,7 @@ CI VM, Prod on the tools VM (2 vCPU / 3 GiB in the lab).
   `terraform/main.tf`) answers `*.<domain>` → tools VM,
   `*.preview.<domain>` and `mockup.<domain>` → CI VM, `git.<domain>` →
   forge, `auth.<domain>` and `chat.<domain>` (requesters' page,
-  `chat_domain`) → orchestrator VM. Ilan's machine: `lab-host.yml` sends the
+  `chat_domain`) → orchestrator VM. The host machine: `lab-host.yml` sends the
   domain to this dnsmasq (service `eupadev-lxd-dns`, `resolvectl`), the rest
   of the DNS does not change; the bare domain then answers with the tools VM
   on that machine too.
@@ -231,16 +233,16 @@ CI VM, Prod on the tools VM (2 vCPU / 3 GiB in the lab).
   container. Let's Encrypt certificates by DNS-01 (section "Public
   certificates"); with `caddy_tls: internal`, an internal authority specific
   to each Caddy, installed by `lab_ca` (`lab_ca_targets`) on the CI VM, the
-  orchestrator, the tools VM and Ilan's machine. Firewall: 22 and 443.
+  orchestrator, the tools VM and the host machine. Firewall: 22 and 443.
 - **Engine access**: account `deployment` (outside `docker`, directory and
   keys owned by root), key of the vault `group_vars/all/vault-deployer.yml` as
   `restrict,from="<orchestrator>",command="sudo -n /usr/local/sbin/eupadev-deployer"`,
   a single sudo rule (the script, without argument; the request goes through
   `SSH_ORIGINAL_COMMAND`). Configuration: `/etc/eupadev/deployer.json`.
   Log: `journalctl -t eupadev-deployer`.
-- **Step E5b**: the script then knew only `served`, `stop`, `remove` (and
-  validated `deploy`, which it refused). Tests of its validation, without a
-  VM: `python3 ansible/roles/deployer/files/test_deployer.py`.
+- **Commands of the script**: `served`, `deploy`, `stop`, `remove`, `purge`.
+  Tests of its validation, without a VM:
+  `python3 ansible/roles/deployer/files/test_deployer.py`.
 - **Rotation of the engine's SSH key**: delete the vault
   `vault-deployer.yml`, `./init-vault.sh`, then `site.yml`.
 - **Core tools (d5, ADR-022)**: each target VM also runs `tools-db`
@@ -257,7 +259,7 @@ CI VM, Prod on the tools VM (2 vCPU / 3 GiB in the lab).
   (`tools-<slug>-*.dump`). Purge: `eupadev-purge.timer` (03:30 UTC,
   tools VM only).
 
-From Ilan's machine, after `lab-host.yml`: `curl -sS -o /dev/null -w
+From the host machine, after `lab-host.yml`: `curl -sS -o /dev/null -w
 '%{http_code}\n' https://trial.preview.<domain>/` must answer `502`
 (valid certificate, no tool of that name).
 
@@ -288,6 +290,7 @@ Every night at 02:30 UTC (systemd timer `eupadev-backup.timer`, role
 |---|---|---|---|
 | forge | `gitea dump` | Git repositories, image registry (packages), Gitea database, `app.ini`, data | `gitea-<date>.tar.gz` |
 | orchestrator | `pg_dump --format=custom` | orchestrator database; `keycloak` database (private keys signing the tokens and the clients' secrets: protect it like the vault) | `orchestrator-<date>.dump`, `keycloak-<date>.dump` |
+| tools | `pg_dump --format=custom` | one dump per core tool database (Production) | `tools-<slug>-<date>.dump` |
 
 - Directory `/var/lib/docker/backups` (separate Docker disk), root only (the
   files contain `app.ini`, hence secrets); the **7 most recent** are kept
@@ -302,7 +305,7 @@ Every night at 02:30 UTC (systemd timer `eupadev-backup.timer`, role
   cache, CI runners.
 - **No copy outside the VM yet** (off-site copy planned, restic): in the lab,
   `terraform destroy` of a VM also destroys its backups. The vaults
-  (`group_vars/*/vault.yml`) and `~/.eupadev-vault-pass` are essential to a
+  (`group_vars/*/vault*.yml`) and `~/.eupadev-vault-pass` are essential to a
   restore (Gitea's `SECRET_KEY` encrypts the organisation's secrets): keep
   them somewhere else than on the lab machine.
 
@@ -317,8 +320,7 @@ rows of the orchestrator database.
 Each backup of the forge copies the whole registry: old images are deleted
 every **Sunday at 01:30 UTC** by a systemd timer of the forge (role
 `registry_cleanup`), and on demand by `registry-cleanup.yml`; same script,
-same kept images (note `docs/reflexions/2026-10-18-note-nettoyage-registre.md`).
-Only Gitea's official API is used.
+same kept images. Only Gitea's official API is used.
 
 ```sh
 cd infra/ansible
@@ -412,7 +414,8 @@ signed with cosign by the forge CI, never on the VM. The organisation's
 `images/engine/` at its root and the build context of
 `orchestrator/Dockerfile`. Signing key: vault
 `group_vars/forge/vault-cosign.yml` (created by `init-vault.sh`), stored in
-the secrets **of the repository** `engine` (no tool repository sees it);
+the secrets **of the platform repositories** (`engine`, `agent`, `keycloak`,
+`caddy`; no tool repository sees it);
 public key committed as `images/engine/cosign.pub`. Signature without a
 public transparency log (nothing leaves the forge).
 
@@ -447,8 +450,8 @@ configuration only. List: `orchestrator_secrets`
 everything; a copy of the disk alone gives nothing if the key is in the TPM
 (otherwise the host key is on the same disk).
 
-- **Rotation**: change the value in the vault (Ilan, `ansible-vault edit` in
-  a separate terminal), then `site.yml`: the secret is encrypted again, the
+- **Rotation**: change the value in the vault (the administrator,
+  `ansible-vault edit` in a separate terminal), then `site.yml`: the secret is encrypted again, the
   service restarted, the containers recreated (they read their secrets only
   at start).
 - **Rotation of the cosign key**: delete the `COSIGN_*` secrets of the
@@ -457,14 +460,13 @@ everything; a copy of the disk alone gives nothing if the key is in the TPM
   again, new digest in `orchestrator_image`.
 
 **Local API**: `127.0.0.1:8080` of the VM only, through an SSH tunnel from
-Ilan's machine (headers `X-EupaDev: 1` and, for a POST,
+the administrator's workstation (headers `X-EupaDev: 1` and, for a POST,
 `Idempotency-Key`). Log: `docker compose logs engine` in
 `/opt/eupadev/orchestrator`; the real trace is in the database.
 
 ## Keycloak (identity of people)
 
-Decisions D1-D15: `docs/reflexions/2026-10-15-analyse-keycloak.md`; note of
-this step: `docs/reflexions/2026-10-15-note-keycloak-labo.md`.
+Decisions: ADR-017.
 
 - **Image**: `keycloak` repository of the forge (`images/keycloak/`), built
   for PostgreSQL, scanned, signed by the installation's cosign key; digest
@@ -473,13 +475,12 @@ this step: `docs/reflexions/2026-10-15-note-keycloak-labo.md`.
 - **On the orch VM** (role `keycloak`, Compose of the orchestrator): database
   `keycloak` on the orchestrator's PostgreSQL (account `keycloak` without
   privilege, verified TLS), `caddy-auth` on `https://auth.<domain>` (only
-  `/realms/eupadev/*` and `/resources/*`), read-only container, log in
+  `/realms/eupadev/*`, `/realms/tools/*` and `/resources/*`), read-only container, log in
   journald (`journalctl CONTAINER_NAME=orchestrator-keycloak-1`).
 - **Realm as code**: `group_vars/orchestrator/keycloak.yml` (clients, roles,
   groups, people) applied by the client `eupadev-config`; anything not
   declared there makes `verify-keycloak.yml` fail.
-- **Realm `tools`** (generated tools, R8; note
-  `docs/reflexions/2026-10-18-note-realm-outils.md`): described once in
+- **Realm `tools`** (generated tools): described once in
   `core/tests/keycloak/realm-test.json` (import of the core's CI), applied to
   the lab by its own configuration client `tools-config` (vault
   `vault-keycloak-tools.yml`), without the file's secrets: the client secret
@@ -489,8 +490,8 @@ this step: `docs/reflexions/2026-10-15-note-keycloak-labo.md`.
 - **First installation**: `./init-vault.sh` (vaults `vault-keycloak*.yml`),
   `site.yml` (the bootstrap creates temp-admin, each realm and its
   configuration client, then deletes temp-admin), `lab-host.yml` (authority
-  of `caddy-auth` on Ilan's machine), `verify-keycloak.yml`.
-- **Ilan's account**: `ilan`, groups requesters and admins; temporary
+  of `caddy-auth` on the host machine), `verify-keycloak.yml`.
+- **The administrator's account** (lab): `ilan`, groups requesters and admins; temporary
   password in the vault (`ansible-vault view
   group_vars/orchestrator/vault-keycloak.yml`, separate terminal), change
   required at the first sign-in.
@@ -500,7 +501,7 @@ this step: `docs/reflexions/2026-10-15-note-keycloak-labo.md`.
   permanent Ansible account in master: it is configured by an ephemeral
   temp-admin (Keycloak stopped ≈ 30 s), only when its declaration changes
   (`keycloak_master_admins`, `keycloak_master_otp`).
-  Ilan's first sign-in, one command at a time:
+  First sign-in of the named administrator, one command at a time:
   1. Read the temporary password, in a separate terminal, from
      `infra/ansible`:
      `ansible-vault view group_vars/orchestrator/vault-keycloak-admin.yml`
@@ -539,7 +540,7 @@ database: everything resumes at restart (DBOS).
 **Back to normal**:
 
 ```sh
-# After a level 3 only: new tokens for the robots (once the engine uses them, step E2).
+# After a level 3 only: new tokens for the robots.
 ansible-playbook site.yml
 # After a level 1, 2 or 3: pause and stop lifted, engine restarted, /health checked.
 ansible-playbook emergency-stop.yml -e level=0 -e confirm=yes
@@ -549,12 +550,10 @@ ansible-playbook verify-engine.yml
 
 ## Secrets
 
-- The vaults `ansible/group_vars/all/vault.yml` (forge),
-  `ansible/group_vars/orchestrator/vault.yml` (superuser of the orchestrator
-  database) and `ansible/group_vars/orchestrator/vault-accounts.yml`
-  (accounts `orch_owner` and `orch_engine`), `ansible/group_vars/forge/vault-cosign.yml`
-  (signing key of the engine), `ansible/group_vars/forge/vault-cosign-tools.yml`
-  (signing key of the generated tools), and their password
+- The vaults `ansible/group_vars/*/vault*.yml` (forge, orchestrator database
+  and its accounts, signing keys of the platform and of the tools, deployer,
+  database authority, Keycloak, OVH, AI key: full list in `infra/CLAUDE.md`,
+  created by `ansible/init-vault.sh`), and their password
   `~/.eupadev-vault-pass` are specific to each installation and are
   **never committed**, not even encrypted. The only intended exception: the
   **public** key `images/engine/cosign.pub`, committed, and the tools' one,
@@ -563,7 +562,8 @@ ansible-playbook verify-engine.yml
   decrypted in memory at boot (section "Orchestrator engine").
 - Reading a secret (in a separate terminal, never in a tool that records the
   display): `ansible-vault view group_vars/all/vault.yml`.
-- Next planned step: replace the Ansible vault by OpenBao.
+- Planned: replace the Ansible vault by OpenBao (paused until the second real
+  tool).
 
 ## Public certificates: Let's Encrypt by DNS-01 at OVH
 
@@ -613,7 +613,8 @@ certificates (staging ones are trusted by nobody).
 
 ## Moving from the lab to a hosting provider
 
-Only `terraform/` changes (VM provider). `ansible/` and `compose/` stay
-identical; `caddy_tls` is already an email address (Let's Encrypt by DNS-01,
+`terraform/` changes (VM provider), and with it the inventory addresses and
+the data disk's device (`docker_disk_device`); the roles of `ansible/` and
+`compose/` stay identical; `caddy_tls` is already an email address (Let's Encrypt by DNS-01,
 previous section) and `lab-host.yml` is no longer needed (the domain then
 points to the VM through the DNS).

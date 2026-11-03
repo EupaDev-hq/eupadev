@@ -1,4 +1,4 @@
-// "Two users" helpers of the kit (§2.10) for the SEC-IDOR, SEC-URL, SEC-XSS specs the `tests` agent writes tool by
+// "Two users" helpers of the kit for the SEC-IDOR, SEC-URL, SEC-XSS specs the `tests` agent writes tool by
 // tool: one isolated Playwright context (cookies, storage) per person, signed in through the real Keycloak form; an
 // anonymous context; an API call from a context (its cookies, the static headers).
 import { REQUEST_HEADERS } from './index.js';

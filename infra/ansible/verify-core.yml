@@ -1,6 +1,5 @@
-# Real test of the core's publication to the forge's npm registry
-# (docs/reflexions/2026-10-22-note-socle-registry.md) — rerunnable, leaves
-# nothing behind (temporary badges deleted in `always`).
+# Real test of the core's publication to the forge's npm registry (ADR-023)
+# — rerunnable, leaves nothing behind (temporary badges deleted in `always`).
 #   ansible-playbook verify-core.yml </dev/null
 # Prerequisite: site.yml has synced the `core` platform repository.
 # Waits for the pipeline of the last commit of `core`, then checks:

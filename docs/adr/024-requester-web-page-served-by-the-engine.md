@@ -19,8 +19,7 @@ framework) is bound to `127.0.0.1:8080`, requires `Host` on localhost and the
 header `X-EupaDev: 1` (a browser cannot send it cross-origin: a CSRF
 control), and authenticates every call with a Keycloak access token checked
 by `jose` (ADR-017: `(iss, sub)` → actor, hats from the roles of the client
-`eupadev-api`). Facts gathered on 2026-10-25 (note
-`docs/reflexions/2026-10-25-note-chat.md`): RFC 10017 (OAuth 2.0 for
+`eupadev-api`). Facts gathered on 2026-10-25: RFC 10017 (OAuth 2.0 for
 Browser-Based Apps) names three architectures and recommends the
 backend-for-frontend for business applications handling personal data; a
 public client in the browser keeps a token in JavaScript memory, where any

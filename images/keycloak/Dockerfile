@@ -1,4 +1,4 @@
-# Keycloak image of the platform (note docs/reflexions/2026-10-15-note-keycloak-labo.md):
+# Keycloak image of the platform:
 # official image by digest, built for PostgreSQL (`kc.sh build`, docs
 # "Running Keycloak in a container"), started with `start --optimized`.
 # Built, scanned and signed by the forge's CI (repository `keycloak`), like

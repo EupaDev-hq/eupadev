@@ -16,7 +16,7 @@
 #    reads its table with the _app role over TLS, its OIDC client secret is
 #    accepted by Keycloak (invalid_grant on a made-up code) through
 #    Smokescreen, another host is refused; no secret in `docker inspect`;
-#    Preview database reset (note acceptance-on-preview §3.4): a row written,
+#    Preview database reset: a row written,
 #    v1 again (same digest) → kept, v3 (new digest) → gone;
 # 4. Preview v2 (migration fails) → failure with the reason, v3 still serves
 #    (its emptied schema rebuilt by its own migration);
@@ -214,7 +214,7 @@
           changed_when: false
           failed_when: check_nothing.stdout != ''
 
-        # ── 2. Registration (the real playbook, run by Ilan after Gate 1) ──
+        # ── 2. Registration (the real playbook, run by the admin after Gate 1) ──
         # The tool repository exists before Gate 1: PREVIEW_PERSONAS goes there.
         - name: Throwaway tool repository (a previous one removed)
           ansible.builtin.uri:

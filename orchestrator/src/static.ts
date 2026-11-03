@@ -1,11 +1,11 @@
 /**
- * The requester's web page (chat note 2026-10-25 §4, ADR-024): a handful of static files served by the engine process on
+ * The requester's web page (ADR-024): a handful of static files served by the engine process on
  * the API's origin. A fixed `Map` URL → file built once at startup (the core's `static.js` model): the request path is
  * only a key of that table, never a filesystem path (`..`, `%2F`… find nothing → not static). deep-chat's bundle is
  * vendored from `node_modules` (dev) or the image's `vendor/` and served under a path carrying its sha256: pinned by
  * content, cached for a year, never fetched elsewhere at run time; `index.html` receives that path at startup.
  *
- * Headers of the page: a CSP without Trusted Types (deep-chat's `innerHTML` sinks, note §2) — scripts and styles from
+ * Headers of the page: a CSP without Trusted Types (deep-chat's `innerHTML` sinks, ADR-024) — scripts and styles from
  * this origin only, `javascript:` links inert, nothing framed; the IdP's origin is allowed as a form action because the
  * sign-out form is redirected to Keycloak's end-session page (Chromium checks `form-action` on redirects too).
  */

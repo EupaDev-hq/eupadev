@@ -6,8 +6,8 @@
 # both (step 4), web protections (step 5: CSRF, rate limit across two
 # instances, in test and test:db), front modules in a real Chromium
 # (Playwright + axe-core, step 6), Squawk on the core's migrations (ADR-004),
-# package cap (85, Fastify arm) and size bound (≤ 3,000 lines outside tests
-# for 0.1.0, §5). Job `kit` (step 7): the kit's twelve SEC-* on the example
+# package cap (95, ADR-023) and size bound (≤ 3,000 lines outside tests).
+# Job `kit` (step 7): the kit's twelve SEC-* on the example
 # tool run by kit/compose.test.yml (two instances, Caddy, PostgreSQL,
 # Keycloak, Mailpit), deliberate mutations, two-user helpers, Schemathesis
 # and k6.
@@ -38,7 +38,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # Node ≥ 24 (§2.1.4 "common settings"); the golden image will follow (R3).
+      # Node ≥ 24, like the golden image (images/base-node).
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.22.1
@@ -93,7 +93,7 @@ jobs:
           chmod 0755 "$RUNNER_TEMP/squawk"
           "$RUNNER_TEMP/squawk" --exclude prefer-robust-stmts,require-concurrent-index-creation,require-concurrent-index-deletion migrations/*.sql tests/example/db/migrations/*.sql
 
-      # Supply chain (§2.11, D9): absolute cap of 85 packages on the web
+      # Supply chain (ADR-019): absolute cap on the packages of the web
       # image, empty allowBuilds, exact versions in package.json.
       - name: Package cap and pnpm settings
         run: |

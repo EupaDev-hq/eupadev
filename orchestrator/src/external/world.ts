@@ -1,5 +1,5 @@
 /**
- * Outside world chosen by `EUPADEV_EXTERNAL` ("engine for real" note §2: one real service at a time):
+ * Outside world chosen by `EUPADEV_EXTERNAL`, service by service:
  *   `fake-auto`  everything fake, "all is well" answers on their own (E0);
  *   `forge=gitea`   real forge (`FORGE_URL`, `FORGE_TOKEN` or `FORGE_TOKEN_FILE`), the rest automatic fake;
  *   `engine=pushing` pushing fake (E3): reports without AI, but files really pushed to the forge (`FORGE_URL`)

@@ -1,7 +1,7 @@
 # Real-conditions check of Keycloak (identity step B) — rerunnable.
 #   ansible-playbook verify-keycloak.yml
-# One check per decision D2, D4, D5, D7, D8, D9, D11, D12, D13, D14, D15 of
-# docs/reflexions/2026-10-15-analyse-keycloak.md, plus the inventory of the realm
+# One check per Keycloak decision D2, D4, D5, D7, D8, D9, D11, D12, D13, D14, D15
+# (cited by ADR-017), plus the inventory of the realm
 # compared with the declaration (group_vars/orchestrator/keycloak.yml).
 # The public flows (sign-in, tokens, redirects) are played from the CI VM,
 # like an outside client, by files/check-keycloak.py.
@@ -531,7 +531,7 @@
             state: absent
           delegate_to: "{{ client_ci }}"
 
-# Realm tools (R8, docs/reflexions/2026-10-18-note-realm-outils.md): the lab
+# Realm tools (R8): the lab
 # realm == the import file of the core's CI (settings, clients, roles, groups,
 # people, no IdP, no directory, no realm role), except secrets and addresses;
 # its configuration client is realm-admin of this realm only; sign-in of each
@@ -866,8 +866,8 @@
 
 # Master (D5): named administrators, OTP required, brute force. No
 # permanent account can read master: ephemeral temp-admin, like the
-# bootstrap (Keycloak stopped ≈ 1 min), deleted at the end. Ilan's account
-# is only read; the sign-ins are tried with a throwaway user.
+# bootstrap (Keycloak stopped ≈ 1 min), deleted at the end. The named
+# administrator's account is only read; the sign-ins are tried with a throwaway user.
 - name: Check the realm master
   hosts: orchestrator
   become: true

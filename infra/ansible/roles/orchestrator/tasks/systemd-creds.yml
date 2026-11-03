@@ -1,4 +1,4 @@
-# Secrets of the orchestrator (ROADMAP §8.16 M1, "engine for real" note §3.3):
+# Secrets of the orchestrator (ROADMAP §8.16 M1):
 # never in clear on disk.
 #   1. Ansible encrypts each secret of the vault ON the VM with systemd-creds
 #      (--with-key=auto: host key /var/lib/systemd/credential.secret, plus the

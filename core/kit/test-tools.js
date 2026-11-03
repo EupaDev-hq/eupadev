@@ -1,4 +1,4 @@
-// External tools of the kit (§2.10) run in containers, images pinned by digest (ADR-005), with the static headers
+// External tools of the kit run in containers, images pinned by digest (ADR-005), with the static headers
 // (`REQUEST_HEADERS`) and the session of a signed-in person (`Cookie`): without them, every `/api/**` request gets
 // 403 `CSRF_BLOCKED` and the tool only tests the refusal. Each function returns the arguments of `docker`.
 // Host network: the tool is reached at the address published by the test Compose (`base`).

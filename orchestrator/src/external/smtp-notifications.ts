@@ -1,5 +1,5 @@
 /**
- * Real notifications (E1, "engine for real" note §1.4, ROADMAP §8.16 M7): one text mail per notification, over SMTP
+ * Real notifications (E1, ROADMAP §8.16 M7): one text mail per notification, over SMTP
  * (nodemailer, MIT-0) — Mailpit in the lab, the customer's SMTP relay in production. Retries: those of the DBOS step that
  * calls `notify` (`step` of `deps.ts`), not here.
  *

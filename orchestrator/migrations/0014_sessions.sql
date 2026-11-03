@@ -1,5 +1,5 @@
 -- Up Migration
--- Browser sessions of the requester's web page (chat note 2026-10-25 §3 option 1, decision 2; ADR-024 proposed): the
+-- Browser sessions of the requester's web page (ADR-024): the
 -- engine signs the person in with Keycloak (client `eupadev-web`, code + PKCE, server side) and gives the browser a
 -- `__Host-session` cookie holding a 32-byte random token. Only SHA-256(token) is stored: a database read never yields a
 -- usable cookie. No OIDC token is kept: the identity is already resolved to `actor_id` (ADR-017), the hats are frozen for

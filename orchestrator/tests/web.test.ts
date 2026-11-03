@@ -1,5 +1,5 @@
 /**
- * Chat step 3 (note 2026-10-25 §6, ADR-024): the requester's page in a real Chromium (Playwright), served by the engine
+ * Chat step 3 (ADR-024): the requester's page in a real Chromium (Playwright), served by the engine
  * with the fake IdP (sign-in through the browser, the `__Host-session` cookie) and a disposable PostgreSQL, the automatic
  * fakes driving the cycle up to "your opinion on the mock-up is expected". Checked: the static files and their headers,
  * the vendored deep-chat pinned by content hash, zero `securitypolicyviolation`, XSS payloads in messages inert, axe-core
@@ -20,7 +20,7 @@ import { createApi } from '../src/api.ts';
 import { automaticFakes, launchFakeWatcher } from '../src/external/fakes.ts';
 import { Orchestrator } from '../src/orchestrator.ts';
 import { startPostgres, type ThrowawayPostgres } from './helpers/throwaway-postgres.ts';
-import { REQUESTER, REQUESTER_MAIL, ENV_TEST, insertTestActors, SUBJECTS } from './helpers/bench.ts';
+import { ADMIN, ADMIN_MAIL, REQUESTER, REQUESTER_MAIL, ENV_TEST, insertTestActors, SUBJECTS } from './helpers/bench.ts';
 import { CLIENT_WEB_TEST, startFakeOidc, TEST_ISSUER, WEB_TEST_PASSWORD, type Account, type FakeOidc } from './helpers/fake-oidc.ts';
 
 // Browser globals used inside `page.evaluate` callbacks (the engine's tsconfig has no DOM lib): declared for this module only.
@@ -29,11 +29,13 @@ declare const document: { documentElement: { lang: string } };
 declare const localStorage: { getItem(k: string): string | null };
 declare function addEventListener(type: 'securitypolicyviolation', cb: (e: { violatedDirective: string; blockedURI: string; sourceFile: string; lineNumber: number }) => void): void;
 
-/** deep-chat 2.5.1, `dist/deepChat.bundle.js` (note §2): the only hash the page may serve. */
+/** deep-chat 2.5.1, `dist/deepChat.bundle.js` (ADR-024): the only hash the page may serve. */
 const SHA256_DEEP_CHAT = '6844eaf354e19d50dcdd8ee78968d6ae32ccd4b9f15a883902d60e93d69caf84';
 const SCREENSHOTS_DIR = process.env['WEB_SCREENSHOTS'] ?? '';
 const A: Account = { subject: SUBJECTS[REQUESTER.id]!, mail: REQUESTER_MAIL, name: REQUESTER_MAIL, roles: ['requester'] };
 const B: Account = { subject: 'web-b', mail: 'b@example.test', roles: ['requester'] };
+/** The IT admin, another person than A: the four-eyes rule of Gate 2 lets them approve A's tool. */
+const ADM: Account = { subject: SUBJECTS[ADMIN.id]!, mail: ADMIN_MAIL, name: ADMIN_MAIL, roles: ['admin'] };
 
 let postgres: ThrowawayPostgres;
 let oidc: FakeOidc;
@@ -179,6 +181,11 @@ test('sign-in from the page, the list, a new request opens its conversation; zer
   await capture(page, 'list-empty-light');
 
   await page.getByLabel('Tool name').fill('Key loans');
+  // The short name follows the tool name (accents and spaces folded) until the requester edits it.
+  assert.equal(await page.getByLabel('Short name', { exact: false }).inputValue(), 'key-loans');
+  await page.getByLabel('Tool name').fill('Prêts de clés !');
+  assert.equal(await page.getByLabel('Short name', { exact: false }).inputValue(), 'prets-de-cles');
+  await page.getByLabel('Tool name').fill('Key loans');
   await page.getByLabel('Short name', { exact: false }).fill('key-loans');
   await page.getByLabel('Owning service').fill('Facilities');
   await page.getByLabel('What you need').fill('Track the department’s key loans by site');
@@ -222,45 +229,195 @@ test('XSS payloads written in the chat are shown as text: no element, no script,
   assert.deepEqual(pageErrors, []);
 });
 
-test('a text typed in deep-chat lands in messages (as the correction it is); a double click on an opinion = one request', { timeout: 150_000 }, async () => {
+/** Types `text` in deep-chat and presses Enter. */
+async function type(p: Page, text: string): Promise<void> {
+  const input = p.locator('deep-chat #text-input');
+  await input.click();
+  await input.fill(text);
+  await input.press('Enter');
+}
+/** The cycle is back at `s` in another passage than `visit`, and the page (polling every 10 s) has seen it. Returns the new visit. */
+async function newVisit(s: string, visit: number, timeoutMs = 60_000): Promise<number> {
+  const c = await until(async () => { const c = await orch.base.readCycle(cycle); return c.state === s && c.visit !== visit && c; }, timeoutMs, `${s} again`);
+  await page.locator(`#main[data-state="${s}"][data-visit="${c.visit}"]`).waitFor({ timeout: 20_000 });
+  return c.visit;
+}
+
+test('just chat: a text typed is the correction; an acceptance word is confirmed first, only the confirmation POSTs; a double click = one request', { timeout: 200_000 }, async () => {
   // The automatic fakes (scoping, mock-up) bring the cycle to the requester's first wait.
   await openCycle();
   await until(async () => (await state(cycle)) === 'waiting_scoping_feedback', 60_000, 'waiting_scoping_feedback (1)');
-  const firstPass = (await orch.base.readCycle(cycle)).visit;
-  const ok = page.getByRole('button', { name: 'Mock-up OK' });
-  await ok.waitFor({ timeout: 15_000 });
+  let visit = (await orch.base.readCycle(cycle)).visit;
+  const abandon = page.getByRole('button', { name: 'Abandon the request' });
+  await abandon.waitFor({ timeout: 15_000 });
   await page.locator('.conv-head').getByText('Your opinion on the mock-up is expected').waitFor({ timeout: 5_000 });
-  // deep-chat's own strings come from the dictionary (placeholder per state, names, button label).
-  assert.equal(await page.locator('deep-chat #text-input').getAttribute('deep-chat-placeholder-text'), 'Not satisfied with the mock-up? Describe the correction here');
+  // deep-chat's own strings come from the dictionary (placeholder per state, names, button label); no opinion buttons any more.
+  assert.equal(await page.locator('deep-chat #text-input').getAttribute('deep-chat-placeholder-text'), 'Mock-up fine? Say so. Something to change? Describe it here');
   assert.equal(await page.locator('deep-chat .input-button').first().getAttribute('aria-label'), 'Send');
+  assert.equal(await page.locator('.opinions button').count(), 1);
   await collect(page);
   await axe(page, 'conversation');
   await capture(page, 'conversation-light');
 
+  // Ordinary text: the correction, sent at once.
   const text = 'The site filter is missing';
-  const input = page.locator('deep-chat #text-input');
-  await input.click();
-  await input.fill(text);
-  await input.press('Enter');
+  await type(page, text);
   const line = await until(async () => (await orch.base.pool.query<{ author_type: string }>('SELECT author_type FROM messages WHERE cycle_id = $1 AND content = $2', [cycle, text])).rows[0], 20_000, 'typed text in messages');
   assert.equal(line.author_type, 'requester');
   assert.equal(posts.length, 1);
   assert.deepEqual(JSON.parse(posts[0]!), { cycle_id: cycle, message: { type: 'scoping_feedback', outcome: 'correction', text: text } });
+  await page.locator('deep-chat').getByText('Sent. The agents are on it.').first().waitFor({ timeout: 5_000 });
   // Shown once: deep-chat's own bubble, not a second one from the poll.
   await sleep(11_000);
   assert.equal(await page.locator('deep-chat').getByText(text, { exact: true }).count(), 1);
 
-  // The correction relaunches the scoping; the fakes bring the cycle back to the same wait (a new passage): fresh buttons.
-  await until(async () => { const c = await orch.base.readCycle(cycle); return c.state === 'waiting_scoping_feedback' && c.visit !== firstPass; }, 60_000, 'waiting_scoping_feedback (2)');
-  await until(async () => await ok.isEnabled().catch(() => false), 20_000, 'buttons re-rendered for visit 2');
+  // The correction relaunches the scoping; the fakes bring the cycle back to the same wait (a new passage).
+  visit = await newVisit('waiting_scoping_feedback', visit);
   posts.length = 0;
+  // An acceptance word is not a correction: the page asks, nothing is sent; "No, it was a change" sends it as the correction.
+  await type(page, 'Fine');
+  const confirmBox = page.getByRole('group', { name: 'Did you mean to approve? Confirm below.' });
+  await confirmBox.getByRole('button', { name: 'Approve this mock-up' }).waitFor({ timeout: 5_000 });
+  await sleep(500);
+  assert.equal(posts.length, 0);
+  await collect(page);
+  await axe(page, 'acceptance confirmation');
+  await capture(page, 'accept-confirm');
+  await confirmBox.getByRole('button', { name: 'No, it was a change' }).click();
+  await until(async () => posts.length === 1, 5_000, 'the change POSTed');
+  assert.deepEqual(JSON.parse(posts[0]!), { cycle_id: cycle, message: { type: 'scoping_feedback', outcome: 'correction', text: 'Fine' } });
+  await until(async () => (await page.getByRole('group').count()) === 0, 5_000, 'the question answered');
+
+  await newVisit('waiting_scoping_feedback', visit);
+  posts.length = 0;
+  await type(page, 'ok');
+  const ok = page.getByRole('button', { name: 'Approve this mock-up' });
+  await ok.waitFor({ timeout: 5_000 });
   await ok.dblclick();
   await sleep(1_500);
   assert.equal(posts.length, 1, `one POST /messages for a double click: ${JSON.stringify(posts)}`);
+  assert.deepEqual(JSON.parse(posts[0]!), { cycle_id: cycle, message: { type: 'scoping_feedback', outcome: 'satisfied' } });
   await until(async () => (await state(cycle)) !== 'waiting_scoping_feedback', 30_000, 'the opinion moved the cycle on');
   await collect(page);
   assert.deepEqual(violations, []);
   assert.deepEqual(pageErrors, []);
+});
+
+test('the admin decides from the page: "Waiting for you", the decision card, a correction needs a comment, the approval moves the cycle on; axe clean', { timeout: 200_000 }, async () => {
+  await openCycle();
+  // Contract, hardening, merge, CI (fake watcher), candidate image: Gate 1.
+  await until(async () => (await state(cycle)) === 'gate_1', 150_000, 'gate_1');
+  account = ADM;
+  const other = await newContext();
+  const p = await other.newPage();
+  const sent: string[] = [];
+  p.on('request', (r) => { if (r.method() === 'POST' && new URL(r.url()).pathname === '/messages') sent.push(r.postData() ?? ''); });
+  const errors: string[] = [];
+  p.on('pageerror', (e) => errors.push(e.message));
+  try {
+    await p.goto('/');
+    await p.getByRole('link', { name: 'Sign in' }).click();
+    await p.getByRole('heading', { name: 'Waiting for you' }).waitFor({ timeout: 15_000 });
+    await p.locator('#requests a', { hasText: 'Key loans' }).first().click();
+    const card = p.getByRole('region', { name: 'Your decision' });
+    await card.getByRole('heading', { name: 'Gate 1: name and domain of the tool' }).waitFor({ timeout: 15_000 });
+    await card.getByRole('button', { name: 'Refuse' }).waitFor({ timeout: 5_000 });
+    assert.equal(await p.locator('.opinions button').count(), 4, 'approve, correction, scope change, refuse; no abandon for the admin');
+    await collect(p);
+    await axe(p, 'decision card');
+    await capture(p, 'admin-gate');
+    // A correction without its comment is refused by the page (the engine would refuse it too).
+    await card.getByRole('button', { name: 'Ask for a correction' }).click();
+    await card.getByRole('alert').getByText('Write a comment, then click again.').waitFor({ timeout: 5_000 });
+    assert.deepEqual(sent, []);
+    // The approval's comment is the tool's catalogue description.
+    await card.getByLabel('Short description of the tool for the catalogue', { exact: false }).fill('Key loans per site');
+    await card.getByRole('button', { name: 'Approve' }).click();
+    await until(async () => sent.length === 1, 5_000, 'the decision POSTed');
+    assert.deepEqual(JSON.parse(sent[0]!), { cycle_id: cycle, message: { type: 'decision', gate: 'gate_1', outcome: 'approved', comment: 'Key loans per site' } });
+    await until(async () => (await state(cycle)) !== 'gate_1', 30_000, 'the decision moved the cycle on');
+    // The side list follows the state: nothing waits for the admin any more.
+    await p.getByText('Nothing waiting.').waitFor({ timeout: 15_000 });
+    assert.equal((await orch.base.pool.query<{ comment: string }>(`SELECT comment FROM approvals WHERE cycle_id = $1 AND gate = 'gate_1'`, [cycle])).rows[0]?.comment, 'Key loans per site');
+    await collect(p);
+    assert.deepEqual(violations, []);
+    assert.deepEqual(errors, []);
+  } finally {
+    account = A;
+    await other.close();
+  }
+});
+
+test('Preview: a text asks "wrong or new?", an acceptance word confirms; Gate 2 cites the candidate digest', { timeout: 200_000 }, async () => {
+  await openCycle();
+  await until(async () => (await state(cycle)) === 'waiting_preview_feedback', 120_000, 'waiting_preview_feedback');
+  await page.locator('.conv-head').getByText('Your opinion on the Preview is expected').waitFor({ timeout: 15_000 });
+  const visit = (await orch.base.readCycle(cycle)).visit;
+  posts.length = 0;
+  await type(page, 'The export button does nothing');
+  const kind = page.getByRole('group', { name: 'Is it something wrong, or something new? Choose below.' });
+  await kind.getByRole('button', { name: 'Something new (new capability)' }).waitFor({ timeout: 5_000 });
+  assert.equal(posts.length, 0);
+  await kind.getByRole('button', { name: 'Something is wrong (fix)' }).click();
+  await until(async () => posts.length === 1, 5_000, 'the bug POSTed');
+  assert.deepEqual(JSON.parse(posts[0]!), { cycle_id: cycle, message: { type: 'preview_feedback', outcome: 'bug', text: 'The export button does nothing' } });
+  // A bug goes back to the hardening; the fakes bring a new digest to the Preview again.
+  await until(async () => (await page.getByRole('group').count()) === 0, 5_000, 'the question answered');
+  await newVisit('waiting_preview_feedback', visit, 150_000);
+  posts.length = 0;
+  await type(page, "c'est bon");
+  await page.getByRole('button', { name: 'Approve this Preview' }).click();
+  await until(async () => (await state(cycle)) === 'gate_2', 30_000, 'gate_2');
+  assert.deepEqual(JSON.parse(posts[0]!), { cycle_id: cycle, message: { type: 'preview_feedback', outcome: 'satisfied' } });
+
+  const digest = await orch.base.candidateDigest(cycle);
+  assert.ok(digest);
+  account = ADM;
+  const other = await newContext();
+  const p = await other.newPage();
+  const sent: string[] = [];
+  p.on('request', (r) => { if (r.method() === 'POST' && new URL(r.url()).pathname === '/messages') sent.push(r.postData() ?? ''); });
+  try {
+    await p.goto(`/cycles/${cycle}`);
+    await p.getByRole('link', { name: 'Sign in' }).click();
+    const card = p.getByRole('region', { name: 'Your decision' });
+    await card.getByRole('heading', { name: 'Gate 2: go to production' }).waitFor({ timeout: 15_000 });
+    // The short digest is shown, the full one sent.
+    await card.locator('code', { hasText: digest!.slice(0, 12) }).waitFor({ timeout: 5_000 });
+    await card.getByRole('button', { name: 'Approve' }).click();
+    await until(async () => sent.length === 1, 5_000, 'the decision POSTed');
+    assert.deepEqual(JSON.parse(sent[0]!), { cycle_id: cycle, message: { type: 'decision', gate: 'gate_2', outcome: 'approved', digest } });
+    await until(async () => (await state(cycle)) !== 'gate_2', 30_000, 'Gate 2 passed');
+    await collect(p);
+    assert.deepEqual(violations, []);
+  } finally {
+    account = A;
+    await other.close();
+  }
+  assert.deepEqual(pageErrors, []);
+});
+
+test('an expired session says so, with a sign-in link, and keeps the page', { timeout: 60_000 }, async () => {
+  account = B;
+  const other = await newContext();
+  const p = await other.newPage();
+  try {
+    await p.goto('/');
+    await p.getByRole('link', { name: 'Sign in' }).click();
+    await p.getByRole('heading', { name: 'My requests' }).waitFor({ timeout: 15_000 });
+    await other.clearCookies();
+    await p.getByLabel('Tool name').fill('Badges');
+    await p.getByLabel('Owning service').fill('Facilities');
+    await p.getByLabel('What you need').fill('Lend visitor badges');
+    await p.getByRole('button', { name: 'Submit the request' }).click();
+    const banner = p.locator('#expired');
+    await banner.getByText('Your session has expired').waitFor({ timeout: 10_000 });
+    await banner.getByRole('link', { name: 'Sign in' }).waitFor({ timeout: 5_000 });
+    assert.equal(await p.getByLabel('What you need').inputValue(), 'Lend visitor badges');
+  } finally {
+    account = A;
+    await other.close();
+  }
 });
 
 test('requester B cannot open A’s cycle: 403 shown nicely; axe clean', { timeout: 60_000 }, async () => {

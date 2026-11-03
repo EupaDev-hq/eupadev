@@ -20,8 +20,6 @@ have to be kept forever or rewritten.
 PostgreSQL 18 provides `uuidv7()`: prefixed by the time to the
 millisecond, strictly increasing within a connection, with no guaranteed
 order between two.
-Sources: `docs/reflexions/recherche-2026-10-11/06-modelisation-et-adr-fable.md`,
-`docs/reflexions/2026-10-13-adr-details.md` (PostgreSQL, GDPR, Civil Code).
 
 ## Decision
 Model the database of each generated tool by the following rules.
@@ -48,8 +46,7 @@ Model the database of each generated tool by the following rules.
   to 12 months proposed, CNIL recommendation on logging) and the **business
   history** `<entity>_history` (successive states; 5 years proposed,
   ordinary limitation period): mandatory questions of Gate 1, parameters
-  without a default value (Ilan's decision of 2026-10-19, R12 of the
-  research on the core).
+  without a default value (Ilan's decision of 2026-10-19).
 - **Dedicated purge account**: deletes rows, never modifies the audit.
 
 ## Rejected alternatives

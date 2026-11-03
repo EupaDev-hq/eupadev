@@ -1,4 +1,4 @@
-// I0 (ADR-017, Keycloak analysis D2, D4, D7): access token verification, without a database — local fake JWKS.
+// I0 (ADR-017): access token verification, without a database — local fake JWKS.
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { SignJWT } from 'jose';

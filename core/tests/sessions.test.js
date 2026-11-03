@@ -1,4 +1,4 @@
-// Sessions in the database (§2.3): cases of Lucia's reference file (malformed token, wrong secret, expiry,
+// Sessions in the database: cases of Lucia's reference file (malformed token, wrong secret, expiry,
 // extension), `token_version`, destruction by id / sid / actor, CVE-2024-35220 (a destroyed token never reopens
 // a session). Real PostgreSQL in a container: Docker is required. The time is passed explicitly.
 import assert from 'node:assert/strict';
