@@ -63,6 +63,27 @@ en pratique jamais appliquée.
 2. Garder des commentaires qui expliquent *pourquoi*, pas *quoi* — le
    code montre déjà ce qu'il fait.
 
+## Lancer les contrôles en local
+
+Le labo (cinq VM) n'est pas nécessaire pour travailler sur le code : les
+tests unitaires, les tests contre un PostgreSQL jetable et la suite Gherkin
+tournent sur une seule machine avec Node, pnpm (`corepack enable`) et Docker.
+
+- Moteur : `orchestrator/README.md`, section « Commands » (`pnpm test`,
+  `pnpm test:db`, `pnpm test:bdd`…). Avec `EUPADEV_EXTERNAL=fake-auto`, le
+  moteur démarre avec tous les services extérieurs simulés, sans clé d'IA.
+- Socle et outil d'exemple : `core/README.md`, `examples/requests/README.md`.
+- Contrôles de tout le dépôt que la CI lance : `.github/scripts/check-english.py
+  --base origin/main` (anglais seulement), `python3 .github/scripts/verify-digests.py`
+  (images épinglées par digest), `ansible-lint` depuis `infra/ansible` (voir
+  `infra/README.md`).
+
+Un changement dans `infra/` est testé en vrai sur les VM du labo par le
+mainteneur (`infra/ansible/verify-*.yml`) ; dites dans la pull request quel
+contrôle couvre votre changement. Il n'existe pas encore d'installation de
+toute la plateforme sur une seule machine (l'ADR-028, proposée, décrit celle
+qui est prévue).
+
 ## Messages de commit
 
 Aucun format strict requis, mais un message de commit doit expliquer

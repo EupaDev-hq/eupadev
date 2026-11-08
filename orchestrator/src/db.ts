@@ -68,12 +68,14 @@ export interface Memory {
    * entering the round, read by integration and review, cleared on leaving review. null = full round.
    */
   reviewOnly: { round: number; roles: ('security-reviewer' | 'quality-reviewer')[] } | null;
+  /** Gate 1 (D-E5): names of the tool's roles and retention periods read from main, shown with the entry to paste; null without a forge able to read them. */
+  registration: { roles: string[]; retentions: string[] } | null;
 }
 
 export const emptyMemory = (): Memory => ({
   scoping: { attempts: 0, sameError: 0, lastError: null },
   instruction: null, adminClarification: null, pendingMessage: null, candidateDigest: null, previousError: null,
-  gateReason: '', reasonBeforeIncident: '', reviewOnly: null,
+  gateReason: '', reasonBeforeIncident: '', reviewOnly: null, registration: null,
 });
 
 export interface Task {
@@ -340,10 +342,14 @@ export class Database {
     return r.rows[0]!.n;
   }
 
-  /** Cumulative cost of an envelope (D2, D16): sum of the actual costs of `tasks`, never a total kept separately. */
+  /**
+   * Cumulative cost of an envelope (D2, D16): sum of the actual costs of `tasks`, never a total kept separately.
+   * ADR-027: the diagnosis run at the hardening-blocked gate is spent by the cycle (`cycle_measures`, dashboard) but
+   * never counted by the hardening check, so that it cannot be what reopens the budget gate it serves.
+   */
   async cumulativeCost(cycleId: number, envelope: 'scoping' | 'hardening'): Promise<number> {
     const r = await this.pool.query<{ total: number }>(
-      `SELECT coalesce(sum(cost_usd), 0)::float8 AS total FROM tasks WHERE cycle_id = $1 AND ${envelope === 'scoping' ? 'role = ANY($2)' : 'NOT (role = ANY($2))'}`,
+      `SELECT coalesce(sum(cost_usd), 0)::float8 AS total FROM tasks WHERE cycle_id = $1 AND ${envelope === 'scoping' ? 'role = ANY($2)' : "NOT (role = ANY($2)) AND role <> 'diagnosis'"}`,
       [cycleId, SCOPING_ROLES],
     );
     return r.rows[0]!.total;
@@ -356,10 +362,11 @@ export class Database {
    */
   async workDurationMin(cycleId: number, loop: 'scoping' | 'hardening'): Promise<number> {
     const since = loop === 'hardening' ? await this.lastReset(cycleId) : await this.lastScopingReset(cycleId);
-    // B2: same envelopes as the cost (D16) — scoping = overlap + scoping, hardening = everything else (contract included).
+    // B2: same envelopes as the cost (D16) — scoping = overlap + scoping, hardening = everything else (contract included);
+    // like the cost, the diagnosis run at the gate (ADR-027) is outside the guard-rail it serves.
     const r = await this.pool.query<{ s: number }>(
       `SELECT coalesce(sum(duration_s), 0)::float8 AS s FROM tasks WHERE cycle_id = $1 AND ($2::timestamptz IS NULL OR created_at > $2)
-       AND ${loop === 'scoping' ? 'role = ANY($3)' : 'NOT (role = ANY($3))'}`,
+       AND ${loop === 'scoping' ? 'role = ANY($3)' : "NOT (role = ANY($3)) AND role <> 'diagnosis'"}`,
       [cycleId, since, SCOPING_ROLES],
     );
     return r.rows[0]!.s / 60;
@@ -376,13 +383,15 @@ export class Database {
 
   /**
    * E15 / D21: the cycle's still-open tasks (or only `ids`) are set to failed. Cost: budget cap OF THE task's ROLE
-   * (A-R5) per uncounted engine execution (M4, B7: none returned its cost; at least one for a
-   * started task — unknown cost, never 0); 0 for a task never started, left in the queue (B3).
+   * (A-R5) per container launched and never accounted for (M4, B7: `executions`, counted right before each container
+   * starts; none returned its cost, so it is unknown and the record says so); 0 for a task whose container never
+   * started — left in the queue (B3), or stopped while the launcher was still preparing (nothing spent).
    */
   async failOpenTasks(cycleId: number, caps: Readonly<Record<Role, { budget_usd: number }>>, reason: string, ids?: readonly string[]): Promise<string[]> {
     const r = await this.pool.query<{ id: string }>(
-      `UPDATE tasks SET status = 'failed', cost_usd = CASE WHEN status = 'in_progress' THEN ($2::jsonb -> role ->> 'budget_usd')::numeric * greatest(executions, 1) ELSE 0 END, ended_at = now(),
-              report = coalesce(report, jsonb_build_object('status', 'failed', 'reason', $3::text))
+      `UPDATE tasks SET status = 'failed', cost_usd = ($2::jsonb -> role ->> 'budget_usd')::numeric * executions, ended_at = now(),
+              report = coalesce(report, jsonb_build_object('status', 'failed', 'reason', $3::text || CASE WHEN executions > 0
+                THEN format(' (cost unknown: %s execution(s) cut short without a reported cost, each charged the role''s cap of $%s)', executions, $2::jsonb -> role ->> 'budget_usd') ELSE '' END))
        WHERE cycle_id = $1 AND status IN ('queued', 'in_progress') AND ($4::text[] IS NULL OR id = ANY($4)) RETURNING id`,
       [cycleId, JSON.stringify(caps), reason, ids ?? null],
     );
@@ -391,10 +400,16 @@ export class Database {
 
   // ── Hardening: rounds, deviations, counters (D15, D20) ──────────────────────────────────────────
 
-  /** Date of the last reset of the counters: "continue" or "clarify" at the hardening-blocked gate. */
+  /**
+   * Date of the last reset of the counters: "continue" or "clarify" at the hardening-blocked gate, or a new scope — every
+   * entry into `contract` ("scope change" at Gate 1 or at the hardening-blocked gate, the requester's "new capability")
+   * except the resume after an incident, which is not a new scope. Paid cycle 9: the new contract started with the
+   * counters of the old scope, already at their limits.
+   */
   async lastReset(cycleId: number): Promise<Date | null> {
     const r = await this.pool.query<{ d: Date | null }>(
-      `SELECT max(created_at) AS d FROM tool_history WHERE cycle_id = $1 AND previous_state = 'gate_hardening_blocked' AND state = 'hardening_execution'`,
+      `SELECT max(created_at) AS d FROM tool_history WHERE cycle_id = $1
+         AND ((previous_state = 'gate_hardening_blocked' AND state = 'hardening_execution') OR (state = 'contract' AND previous_state <> 'gate_incident'))`,
       [cycleId],
     );
     return r.rows[0]!.d;
@@ -402,8 +417,8 @@ export class Database {
 
   /**
    * First round counted since the last reset: 1 + the last round played before "continue" /
-   * "clarify" at the hardening-blocked gate (1 if no reset). The counters (D20, cap)
-   * only look at the rounds from there on; "continue" resets the counters, never the cost.
+   * "clarify" at the hardening-blocked gate or before the new scope (1 if no reset). The counters (D20, cap)
+   * only look at the rounds from there on; a reset never touches the cost.
    */
   async resumeIteration(cycleId: number): Promise<number> {
     const since = await this.lastReset(cycleId);
@@ -472,6 +487,15 @@ export class Database {
     });
   }
 
+  /** Red checks of the cycle from round `since` on, with the watcher's details (log tail, failures, SARIF), for the diagnosis (ADR-027). */
+  async redChecksSince(cycleId: number, since: number): Promise<{ iteration: number; pipeline: string; check: string; details: unknown }[]> {
+    const r = await this.pool.query<{ iteration: number; pipeline: string; check: string; details: unknown }>(
+      `SELECT iteration, pipeline, check_name AS "check", details FROM pipeline_results WHERE cycle_id = $1 AND iteration >= $2 AND result = 'red' ORDER BY id`,
+      [cycleId, since],
+    );
+    return r.rows;
+  }
+
   async pipelineResults(cycleId: number, pipeline: 'ci' | 'preview', digest: string): Promise<{ check: string; result: string }[]> {
     const r = await this.pool.query<{ check: string; result: string }>(
       `SELECT check_name AS "check", result FROM pipeline_results WHERE cycle_id = $1 AND pipeline = $2 AND digest = $3 ORDER BY id`,
@@ -487,6 +511,18 @@ export class Database {
     await this.pool.query(
       `INSERT INTO messages (tool_id, cycle_id, author_type, actor_id, content, key) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (key) DO NOTHING`,
       [cycle.tool_id, cycle.id, author_type, actorId, content, key ?? null],
+    );
+  }
+
+  /** ADR-031: a sentence typed in the chat and its reading (table `intents`, append-only), whatever the answer. */
+  async writeIntent(r: {
+    cycle: Cycle; actorId: string; hat: Hat; allowed: readonly string[]; text: string; lang: string; pendingQuestion: string | null;
+    intent: string; amountUsd: number | null; reader: string; tokens: { input: number; output: number } | null; latencyMs: number; fallback: boolean;
+  }): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO intents (tool_id, cycle_id, actor_id, hat, state, allowed, text, lang, pending_question, intent, amount_usd, reader, input_tokens, output_tokens, latency_ms, fallback)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+      [r.cycle.tool_id, r.cycle.id, r.actorId, r.hat, r.cycle.state, r.allowed, r.text, r.lang, r.pendingQuestion, r.intent, r.amountUsd, r.reader, r.tokens?.input ?? null, r.tokens?.output ?? null, r.latencyMs, r.fallback],
     );
   }
 
@@ -620,6 +656,17 @@ export class Database {
   /** Tools and their archiving (monitoring of the environments still served). ponytail: all the tools at each sweep; filter by recent activity if the registry grows. */
   async tools(): Promise<{ id: number; slug: string; archived: boolean }[]> {
     return (await this.pool.query<{ id: number; slug: string; archived: boolean }>(`SELECT id::int AS id, slug, archived_at IS NOT NULL AS archived FROM tools ORDER BY id`)).rows;
+  }
+
+  /** Rename at Gate 1: a slug already used by a tool (archived or not: its repository and images keep that name). */
+  async slugTaken(slug: string, client: pg.Pool | pg.PoolClient = this.pool): Promise<boolean> {
+    return ((await client.query('SELECT 1 FROM tools WHERE slug = $1', [slug])).rowCount ?? 0) > 0;
+  }
+
+  /** Rename at Gate 1, in the decision's transaction: the unique index on `slug` refuses a slug taken in the meantime. */
+  static async renameTool(client: pg.PoolClient, toolId: number, name: string, slug: string): Promise<void> {
+    const r = await client.query('UPDATE tools SET name = $2, slug = $3 WHERE id = $1', [toolId, name, slug]);
+    if (r.rowCount !== 1) throw new PermanentError(`unknown tool ${toolId}`);
   }
 
   // ── Entry: tools and cycles ─────────────────────────────────────────────────────────────────────

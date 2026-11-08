@@ -4,7 +4,7 @@ import { PermanentError, type Database } from '../db.ts';
 import type { Config, Retries } from '../config.ts';
 import type { External } from '../external/contracts.ts';
 import type { ReportValidator } from '../agent-engine/report.ts';
-import type { InstructionsByRole } from '../agent-engine/instructions.ts';
+import type { Capabilities, InstructionsByRole } from '../agent-engine/instructions.ts';
 
 export interface Deps {
   base: Database;
@@ -13,6 +13,8 @@ export interface Deps {
   validator: ReportValidator;
   /** Instructions of each role, read from the engine image at startup (never from the cloned repository). */
   instructions: InstructionsByRole;
+  /** What the platform offers and does not (`agents/capabilities.json` of the engine image): data of the scoping task. */
+  capabilities: Capabilities;
 }
 
 export const TASK_QUEUE = 'agent-tasks';

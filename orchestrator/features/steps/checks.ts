@@ -30,6 +30,11 @@ Then('the cycle is in state {string}', async function (this: World, e: string) {
   const end = e.startsWith('end_'); // an ended workflow no longer reads its mailbox
   await this.wait(`state ${e}, workflow mailbox empty`, async () => ((await this.pilot.state(this.cycleId)) === e && (end || (await this.pilot.mailboxEmpty(this.cycleId))) ? true : undefined), 3_000);
 });
+// D-E5: the names the Gate 1 page shows for the core-tools.yml entry, as the engine read them from main on entering the gate.
+Then('the Gate 1 page lists roles {string} and retention periods {string} for the core-tools.yml entry', async function (this: World, roles: string, retentions: string) {
+  const split = (s: string) => s.split(',').map((x) => x.trim());
+  assert.deepEqual((await this.base.readMemory(this.cycleId)).registration, { roles: split(roles), retentions: split(retentions) });
+});
 Then('the cycle is not in state {string}', async function (this: World, e: string) {
   await this.letThrough();
   assert.notEqual(await this.pilot.state(this.cycleId), e);
@@ -104,6 +109,10 @@ Then('task {string} of iteration {int} has a cost of {int} $', async function (t
   const t = await this.base.readTask(await this.taskId(role, iteration));
   assert.ok(close(t.cost_usd, cost), `cost ${t.cost_usd}`);
 });
+Then('the recorded reason of task {string} of iteration {int} is {string}', async function (this: World, role: string, iteration: number, reason: string) {
+  const t = await this.base.readTask(await this.taskId(role, iteration));
+  assert.equal((t.report as { reason?: unknown } | null)?.reason, reason);
+});
 Then('task {string} of iteration {int} has a tree hash', async function (this: World, role: string, iteration: number) {
   const id = await this.taskId(role, iteration);
   await this.wait(`tree digest of ${id}`, async () => ((await this.base.readTask(id)).tree_hash !== null ? true : undefined));
@@ -136,7 +145,8 @@ Then('no agent container of the cycle is running', async function (this: World) 
 });
 Then('every still open task of the cycle has status {string}, a cost equal to its role\'s budget cap if it had started and 0 $ otherwise', async function (this: World, status: string) {
   const r = await this.base.pool.query<{ id: string; status: string; role: Role; cost_usd: number; started: boolean; reason: string | null }>(
-    `SELECT id, role, status, cost_usd::float8 AS cost_usd, started_at IS NOT NULL AS started, report ->> 'reason' AS reason FROM tasks WHERE cycle_id = $1`, [this.cycleId]);
+    // Started = its container was launched (`executions`); a task closed while still preparing has spent nothing.
+    `SELECT id, role, status, cost_usd::float8 AS cost_usd, executions > 0 AS started, split_part(report ->> 'reason', ' (cost unknown', 1) AS reason FROM tasks WHERE cycle_id = $1`, [this.cycleId]);
   assert.ok(!r.rows.some((x) => x.status === 'queued' || x.status === 'in_progress'), 'a task is still open');
   // Each task open BEFORE the cancellation (noted by the setup step) is closed by it (D2: never empty).
   for (const id of this.openTasks) {
@@ -158,6 +168,17 @@ async function contextOf(this: World, role: string, iteration: number) {
 Then('task {string} of iteration {int} has {string} in its context', async function (this: World, role: string, iteration: number, text: string) {
   const e = await contextOf.call(this, role, iteration);
   assert.ok(JSON.stringify(e.context).includes(text), `context: ${JSON.stringify(e.context)}`);
+});
+Then('task {string} of iteration {int} works on branch {string}', async function (this: World, role: string, iteration: number, branch: string) {
+  const e = await contextOf.call(this, role, iteration);
+  assert.equal(e.branch, branch);
+});
+Then('the tool is named {string} with address {string}', async function (this: World, name: string, slug: string) {
+  const c = await this.cycle();
+  assert.deepEqual([c.name, c.slug], [name, slug]);
+});
+Then('the forge renamed repository {string} to {string}', function (this: World, from: string, to: string) {
+  assert.deepEqual(this.bench.forge.renames, [{ from, to }]);
 });
 Then('the next agent task launched has {string} in its context', async function (this: World, text: string) {
   const c = await this.cycle();
@@ -261,9 +282,10 @@ Then('the cycle\'s budget overrun is at most {int} $', async function (this: Wor
   const c = await this.cycle();
   assert.ok((await this.base.cumulativeCost(this.cycleId, 'hardening')) - c.hardening_budget_usd <= max + 0.005);
 });
-Then('the cycle\'s scoping budget check is on {int} $ spent for a cap of {int} $', async function (this: World, cost: number, cap: number) {
-  const trace = `check:budget:scoping:ok:${cost.toFixed(2)}/${cap.toFixed(2)}`;
-  await this.wait(`trace ${trace}`, async () => ((await this.pilot.history(this.cycleId)).some((h) => h.trigger === trace) ? true : undefined));
+Then('the cycle\'s {word} budget check is on {float} $ spent for a cap of {int} $', async function (this: World, envelope: string, cost: number, cap: number) {
+  const trace = `check:budget:${envelope}:ok:${cost.toFixed(2)}/${cap.toFixed(2)}`;
+  await this.wait(`trace ${trace}`, async () => ((await this.pilot.history(this.cycleId)).some((h) => h.trigger === trace) ? true : undefined))
+    .catch(async () => assert.fail(`budget checks traced: ${(await this.pilot.history(this.cycleId)).map((h) => h.trigger).filter((t) => t.startsWith('check:budget:')).join(', ')}`));
 });
 Then('the cycle\'s scoping budget cap is {int} $', async function (this: World, n: number) {
   await this.wait(`scoping cap ${n}`, async () => (close((await this.cycle()).scoping_budget_usd, n) ? true : undefined), 3_000);

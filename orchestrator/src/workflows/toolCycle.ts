@@ -26,7 +26,8 @@ import { DBOS, type WorkflowStatus } from '@dbos-inc/dbos-sdk';
 import type pg from 'pg';
 import { STATES, topUpEnvelope, gateOutcomes, type StateId, type GateOutcome } from '../machine/states.ts';
 import { opengrepDeviations, evaluate, SARIF_CHECK, type Counters as DeviationCounters, type Deviation } from '../hardening/stagnation.ts';
-import { FORGE_ACTOR, ORCHESTRATOR_ACTOR, PermanentError, type Database, type Cycle, type DeviationRow, type Memory, type Task } from '../db.ts';
+import { diagnosisContext, diagnosisMessage, earlyDiagnosisDue, readDiagnosis } from '../hardening/diagnosis.ts';
+import { FORGE_ACTOR, ORCHESTRATOR_ACTOR, PermanentError, Database, type Cycle, type DeviationRow, type Memory, type Task } from '../db.ts';
 import { CODE_ROLES, REVIEW_ROLES, ownerRole, type Environment, type CoreUpdate, type Role, type RoleCode, type PublishedRole } from '../external/contracts.ts';
 import { transmissibleEvidence, type Finding, type Report } from '../agent-engine/report.ts';
 import { jargon } from '../agent-engine/jargon.ts';
@@ -85,15 +86,18 @@ export function deviationRoles(l: DeviationRow): RoleCode[] {
 
 /**
  * M4 (D20): tree digests judged at `round` — only the code roles that ran in that round with at least one real deviation
- * to address (`givenDeviations` = deviations of the previous round, as routed by `deviationRoles`; `code:unchanged:*` excluded).
+ * to address (`givenDeviations` = deviations of the previous round, as routed by `deviationRoles`; `code:unchanged:*` excluded)
+ * AND still targeted by a real deviation of this round (`roundDeviations`: red check, reviewer finding, missing report).
  * A role relaunched with nothing real to fix that changes nothing is not stagnating: otherwise `code:unchanged:<role>`
- * would route itself back to the role and feed itself, and a clean review could never reach `guard:compliant`.
+ * would route itself back to the role and feed itself, and a clean review could never reach `guard:compliant`. A role that
+ * rightly changed nothing while the round found nothing more on its side is not stagnating either (paid cycle 9: the
+ * deviation alone made the round non-compliant and paid one more round for nothing).
  */
-async function judgedTrees(base: Database, cycleId: number, round: number, givenDeviations: readonly DeviationRow[]): Promise<Partial<Record<RoleCode, string[]>>> {
+async function judgedTrees(base: Database, cycleId: number, round: number, givenDeviations: readonly DeviationRow[], roundDeviations: readonly DeviationRow[]): Promise<Partial<Record<RoleCode, string[]>>> {
   const trees = await base.treesByRole(cycleId);
   const ran = new Set((await base.roundTasks(cycleId, round, CODE_ROLES)).map((t) => t.role));
-  const real = givenDeviations.filter((l) => !l.rule.startsWith('code:unchanged:'));
-  for (const role of Object.keys(trees) as RoleCode[]) if (!ran.has(role) || !real.some((l) => deviationRoles(l).includes(role))) delete trees[role];
+  const targeted = (lines: readonly DeviationRow[], role: RoleCode) => lines.some((l) => !l.rule.startsWith('code:unchanged:') && deviationRoles(l).includes(role));
+  for (const role of Object.keys(trees) as RoleCode[]) if (!ran.has(role) || !targeted(givenDeviations, role) || !targeted(roundDeviations, role)) delete trees[role];
   return trees;
 }
 
@@ -144,7 +148,7 @@ export async function hardeningCounters(base: Database, thresholds: Config['thre
   let counters: DeviationCounters[] = [];
   const last = turns[turns.length - 1] ?? [];
   if (turns.length > 0) {
-    const ev = evaluate(turns.slice(0, -1).map((t) => t.map(toDeviation)), last.map(toDeviation), await judgedTrees(base, cycleId, lastRound, turns[turns.length - 2] ?? []), { stagnation: thresholds.hardening.stagnation, patience: thresholds.hardening.patience });
+    const ev = evaluate(turns.slice(0, -1).map((t) => t.map(toDeviation)), last.map(toDeviation), await judgedTrees(base, cycleId, lastRound, turns[turns.length - 2] ?? [], last), { stagnation: thresholds.hardening.stagnation, patience: thresholds.hardening.patience });
     deviationCount = ev.deviations.length;
     counters = ev.counters;
     // B8: the same deviation is announced only once; a red CI / pipeline check or an invalid report
@@ -164,7 +168,7 @@ export async function hardeningCounters(base: Database, thresholds: Config['thre
 }
 
 export function createToolCycle(deps: Deps, agentTask: AgentTask) {
-  const { base, external: ext, config, instructions } = deps;
+  const { base, external: ext, config, instructions, capabilities } = deps;
   const thresholds = config.thresholds;
   const polling = { pollingIntervalMs: config.timeouts.polling_ms };
   const generation = currentGeneration();
@@ -533,12 +537,26 @@ export function createToolCycle(deps: Deps, agentTask: AgentTask) {
     // I0: the hat is set by `Orchestrator.send` after authorisation; without it, the decision has not gone
     // through access control: refused (incident), never written.
     if (d.hat === undefined) throw new PermanentError(`decision at gate ${c.state} without a hat: message not authorised`);
+    // Rename at Gate 1 (correction): slug free, forge renamed (idempotent step), then `tools` updated with the decision
+    // (same transaction); the builder is told so that the visible names of the application follow.
+    let rename: { name: string; slug: string } | null = null;
+    if (d.name !== undefined || d.slug !== undefined) {
+      if (c.state !== 'gate_1' || d.outcome !== 'correction') throw new PermanentError(`rename refused: only with a correction at gate_1, not ${d.outcome} at ${c.state}`);
+      rename = { name: d.name ?? c.name, slug: d.slug ?? c.slug };
+      if (rename.name === c.name && rename.slug === c.slug) throw new PermanentError(`rename refused: the tool is already named "${c.name}" with slug ${c.slug}`);
+      if (rename.slug !== c.slug) {
+        if (await step('slug free', () => base.slugTaken(rename!.slug))) throw new PermanentError(`rename refused: slug ${rename.slug} is already used by another tool`);
+        await singleStep(`rename repository ${c.slug} to ${rename.slug}`, () => ext.forge.renameTool(c.slug, rename!.slug)); // the forge retries its transient faults itself
+      }
+      memory.instruction = `${memory.instruction ?? ''}\n${tr('gate.renamed', { name: rename.name, domain: `${rename.slug}.${config.toolDomain}` })}`.trim();
+    }
     before?.(memory);
     await transition(c, memory, trigger, to, d.actor_id, async (client) => {
       await client.query(
         `INSERT INTO approvals (tool_id, cycle_id, gate, digest, decision, budget_top_up_usd, actor_id, role, four_eyes_exemption, comment) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
         [c.tool_id, c.id, c.state, digest, d.outcome, d.budget_top_up_usd ?? null, d.actor_id, d.hat, d.four_eyes_exemption === true, d.comment ?? null],
       );
+      if (rename !== null) await Database.renameTool(client, c.tool_id, rename.name, rename.slug);
     });
     return d.outcome;
   }
@@ -619,6 +637,81 @@ export function createToolCycle(deps: Deps, agentTask: AgentTask) {
       await base.trace(c, `check:budget:${envelope}:${exceeded ? 'exceeded' : 'ok'}:${cost.toFixed(2)}/${cap.toFixed(2)}`);
       return { exceeded, cost, cap };
     });
+  }
+
+  /**
+   * ADR-027: before the hardening-blocked gate opens, one read-only `diagnosis` task names the cause (slow progress,
+   * unclear request, platform defect or impossible request) and what to do, for an admin who is not a developer. Its data:
+   * the cycle's tasks, the deviations per round, the escalation reason, the budget, the commits of each code role's branch
+   * on the forge, and the deterministic pre-check (`hardening/diagnosis.ts`); the contract is read in its clone (main).
+   * Never a dead end: a failed, blocked or unreadable diagnosis gives a "diagnosis unavailable" line and the gate opens
+   * with the reason alone. One diagnosis per situation: the last one is reused while no hardening task has run since (a
+   * gate reopened by the same budget overrun), so the gate never pays a diagnosis per visit; its cost is the cycle's but
+   * never counted by the budget check (`cumulativeCost`). `DBOS.patch`: steps added before the transition.
+   */
+  async function diagnosedReason(c: Cycle, reason: string): Promise<Cancellation | string> {
+    if (!(await DBOS.patch('hardening-diagnosis'))) return reason;
+    const t = await diagnosis(c, reason);
+    if (isCancellation(t)) return t;
+    return `${reason}\n\n${render(diagnosisMessage(t.status, t.report))}`;
+  }
+
+  /** The diagnosis of the situation: the last one while no hardening task ran since, otherwise a new task (ADR-027). */
+  async function diagnosis(c: Cycle, reason: string): Promise<Cancellation | Task> {
+    let t = await step('previous diagnosis', async () => {
+      const all = await base.cycleTasks(c.id);
+      const i = all.map((x) => x.role).lastIndexOf('diagnosis');
+      return i >= 0 && !all.slice(i + 1).some((x) => HARDENING_ROLES.includes(x.role)) ? all[i]! : null;
+    });
+    if (t === null) {
+      const iteration = (await step('diagnosis iteration', () => base.lastIteration(c.id, ['diagnosis']))) + 1;
+      // `DBOS.patch`: a read added to the context step (first failed round); an older cycle replays its old context.
+      const withRedChecks = await DBOS.patch('early-diagnosis');
+      const ctx = await step('diagnosis context', async () => {
+        const ask = ext.forge.roleBranchCommits;
+        // The forge may be unreachable: the diagnosis then runs without the branches, it never waits for an incident.
+        const branches = ask === undefined ? null : await ask.call(ext.forge, c.slug, c.id).catch((e: unknown) => { DBOS.logger.warn(`cycle ${c.id}: role branches not read for the diagnosis (${errorText(e)})`); return null; });
+        return {
+          cycle: { id: c.id, type: c.type, tool: c.slug, name: c.name },
+          chat: await base.cycleMessages(c.id),
+          ...diagnosisContext({
+            reason, budget: { cost_usd: await base.cumulativeCost(c.id, 'hardening'), cap_usd: c.hardening_budget_usd }, tasks: await base.cycleTasks(c.id), deviations: await base.deviationsSince(c.id, 1),
+            redChecks: withRedChecks ? await base.redChecksSince(c.id, await base.resumeIteration(c.id)) : [], branches,
+          }),
+        };
+      });
+      const r = await singleTask(c, 'diagnosis', iteration, ctx);
+      if (isCancellation(r)) return r;
+      t = r;
+    }
+    return t;
+  }
+
+  /**
+   * ADR-027, first failed round (paid cycle 9: five rounds paid on a Preview check the platform itself failed): when the
+   * round that just ended holds a failure the agents did not produce (red CI or Preview check, task failed without being
+   * capped or refused, task blocked), the diagnosis runs BEFORE the next paid round, once per situation
+   * (`earlyDiagnosisDue`). A platform or unclear-request verdict stops the cycle: the gate opens at once, with the
+   * verdict (the gate reuses this diagnosis, nothing is paid twice). Slow progress, or no usable verdict (failed, blocked,
+   * unreadable diagnosis): the round starts as before — never a dead end. Returns the reason that opens the gate, or null.
+   */
+  async function earlyStop(c: Cycle, k: HardeningCounters): Promise<Cancellation | string | null> {
+    if (k.lastRound === 0 || !(await DBOS.patch('early-diagnosis'))) return null;
+    const due = await step('early diagnosis due', async () => earlyDiagnosisDue(await base.cycleTasks(c.id), k.since, k.lastRound, k.lastRoundDeviations));
+    if (!due) return null;
+    const t = await diagnosis(c, tr('reason.firstFailedRound', { round: k.lastRound }));
+    if (isCancellation(t)) return t;
+    const d = t.status === 'done' ? readDiagnosis((t.report as Record<string, unknown> | null)?.['diagnosis']) : null;
+    if (d === null || d.cause === 'slow_progress') return null;
+    return tr('gate.stoppedAfterFirstFailedRound', { round: k.lastRound });
+  }
+
+  /** The hardening-blocked gate, its reason completed by the diagnosis (ADR-027). */
+  async function hardeningBlocked(c: Cycle, memory: Memory, trigger: string, reason: string): Promise<void> {
+    const r = await diagnosedReason(c, reason);
+    if (isCancellation(r)) return cancel(c, memory, r);
+    memory.gateReason = r;
+    await transition(c, memory, trigger, 'gate_hardening_blocked');
   }
 
   const deviationText = (l: DeviationRow): string => {
@@ -710,7 +803,9 @@ export function createToolCycle(deps: Deps, agentTask: AgentTask) {
     }
     const iteration = (await step('scoping iteration', () => base.lastIteration(c.id, ['scoping']))) + 1;
     const error = memory.previousError;
-    const ctx = await context(c, memory, 'scoping context', async () => (error === null ? {} : { previous_error: error }));
+    // What the platform offers is DATA of the task (never in the instructions): the agent checks each promised capability
+    // against it and reports `capabilities_used` (closed list of the report schema) and `capabilities_missing`.
+    const ctx = await context(c, memory, 'scoping context', async () => ({ platform_capabilities: capabilities, ...(error === null ? {} : { previous_error: error }) }));
     memory.previousError = null;
     const t = await singleTask(c, 'scoping', iteration, ctx);
     if (isCancellation(t)) return cancel(c, memory, t);
@@ -848,7 +943,12 @@ export function createToolCycle(deps: Deps, agentTask: AgentTask) {
     const a = await publish(c, 'scoping');
     if (a !== null) return cancel(c, memory, a);
     const iteration = (await step('contract iteration', () => base.lastIteration(c.id, ['contract']))) + 1;
-    const t = await singleTask(c, 'contract', iteration, await context(c, memory, 'contract context'));
+    const t = await singleTask(c, 'contract', iteration, await context(c, memory, 'contract context', async () => {
+      // The previous attempt's exact reason (a contract the core's linter refused, a stop, a question) goes with the
+      // new one, which starts from the branch that attempt left: what to fix first, without waiting for the CI.
+      const previous = (await base.cycleTasks(c.id, { roles: ['contract'] })).at(-1);
+      return previous === undefined || previous.status === 'done' ? {} : { previous_attempt: { iteration: previous.iteration, status: previous.status, reason: reasonOf(previous) } };
+    }));
     if (isCancellation(t)) return cancel(c, memory, t);
     if (t.status === 'done') return void (await transition(c, memory, 'task:done', 'hardening_execution'));
     memory.gateReason = tr('gate.contractFailed', { reason: reasonOf(t) });
@@ -857,16 +957,14 @@ export function createToolCycle(deps: Deps, agentTask: AgentTask) {
 
   async function hardeningExecution(c: Cycle, memory: Memory): Promise<void> {
     const budget = await budgetExceeded(c, 'hardening');
-    if (budget.exceeded) {
-      memory.gateReason = tr('gate.hardeningBudget', { cost: budget.cost.toFixed(2), cap: budget.cap.toFixed(2) });
-      return void (await transition(c, memory, 'guard:budget_exceeded', 'gate_hardening_blocked'));
-    }
+    if (budget.exceeded) return hardeningBlocked(c, memory, 'guard:budget_exceeded', tr('gate.hardeningBudget', { cost: budget.cost.toFixed(2), cap: budget.cap.toFixed(2) }));
     // D15: counters checked on entering the round (repeated red pipeline, red CI, out-of-scope diff).
     const k = await step('counters at round entry', () => hardeningCounters(base, thresholds, c.id, null, config.language));
-    if (k.reasons.length > 0) {
-      memory.gateReason = k.reasons.join(tr('reason.separator'));
-      return void (await transition(c, memory, 'guard:escalation', 'gate_hardening_blocked'));
-    }
+    if (k.reasons.length > 0) return hardeningBlocked(c, memory, 'guard:escalation', k.reasons.join(tr('reason.separator')));
+    // ADR-027, first failed round: a failure the agents did not produce is diagnosed before the next paid round.
+    const stop = await earlyStop(c, k);
+    if (isCancellation(stop)) return cancel(c, memory, stop);
+    if (stop !== null) return hardeningBlocked(c, memory, 'guard:escalation', stop);
     const round = k.lastRound + 1;
     // C: only a reviewer's report was invalid (no deviation targets the code) → that reviewer alone is run again; the
     // round has no code task, integration has nothing to do.
@@ -929,10 +1027,14 @@ export function createToolCycle(deps: Deps, agentTask: AgentTask) {
     const ctx = await context(c, memory, 'review context', async () => {
       const precedents = await base.roundTasks(c.id, round - 1, REVIEW_ROLES);
       const previousDeviations = round > 1 ? (await base.deviationsSince(c.id, round - 1)).filter((l) => l.iteration === round - 1) : [];
+      // A previous round from before the last reset of the counters (new scope, or the admin's decision) is kept, marked:
+      // a gap in code still there stays a gap; one about code the new scope removed is the reviewer's to drop.
+      const beforeReset = round > 1 && round - 1 < (await base.resumeIteration(c.id));
       return {
         iteration: round,
         previous_reports: precedents.filter((t) => t.status === 'done').map((t) => ({ role: t.role, iteration: t.iteration, report: t.report })),
         previous_deviations: previousDeviations.map((l) => ({ rule: l.rule, file: l.file, category: l.category, id: l.finding_id })),
+        ...(beforeReset ? { previous_before_reset: true } : {}),
       };
     });
     const ids = await launchTasks(c, round, roles, () => ctx);
@@ -964,10 +1066,11 @@ export function createToolCycle(deps: Deps, agentTask: AgentTask) {
       // Reviewers first: on the same (rule, file), their row (routed by file, with previous_id) prevails.
       await base.writeDeviations(c, round, [...deviations, ...fromBuilder]);
       // M4a: tree of a code role unchanged after ITS round → deviation code:unchanged:<role> (only the roles that ran
-      // with a real deviation to address, `judgedTrees`).
+      // with a real deviation to address and still have one this round, `judgedTrees`).
       const since = await base.resumeIteration(c.id);
       const lines = await base.deviationsSince(c.id, since);
-      const ev = evaluate([], lines.filter((l) => l.iteration === round).map(toDeviation), await judgedTrees(base, c.id, round, lines.filter((l) => l.iteration === round - 1)));
+      const current = lines.filter((l) => l.iteration === round);
+      const ev = evaluate([], current.map(toDeviation), await judgedTrees(base, c.id, round, lines.filter((l) => l.iteration === round - 1), current));
       await base.writeDeviations(c, round, ev.deviations.filter((e) => e.rule.startsWith('code:unchanged:')).map((e) => ({ rule: e.rule, file: e.file, category: null, finding_id: null, previous_id: null, source: 'orchestrator' })));
     });
     const k = await step('evaluate the round', () => hardeningCounters(base, thresholds, c.id, round, config.language));
@@ -975,10 +1078,7 @@ export function createToolCycle(deps: Deps, agentTask: AgentTask) {
     if (k.deviationCount === 0) return void (await transition(c, memory, 'guard:compliant', 'merge'));
     const reasons = [...k.reasons];
     if (budget.exceeded) reasons.push(tr('reason.hardeningBudget', { cost: budget.cost.toFixed(2), cap: budget.cap.toFixed(2) }));
-    if (reasons.length > 0) {
-      memory.gateReason = tr('gate.roundNonCompliant', { round, count: k.deviationCount, reasons: [...new Set(reasons)].join(tr('reason.separator')) });
-      return void (await transition(c, memory, 'guard:escalation', 'gate_hardening_blocked'));
-    }
+    if (reasons.length > 0) return hardeningBlocked(c, memory, 'guard:escalation', tr('gate.roundNonCompliant', { round, count: k.deviationCount, reasons: [...new Set(reasons)].join(tr('reason.separator')) }));
     await transition(c, memory, 'guard:non_compliant', 'hardening_execution');
   }
 
@@ -1036,6 +1136,11 @@ export function createToolCycle(deps: Deps, agentTask: AgentTask) {
 
   async function imageCandidate(c: Cycle, memory: Memory): Promise<void> {
     const granted = c.type === 'evolution' || (await step('Gate 1 already granted?', () => base.gate1Granted(c.tool_id)));
+    // D-E5: the admin registers a core tool by hand after Gate 1; the gate page shows them the entry to paste, built
+    // from the names read on main (roles of the contract, retention periods of the purge). `DBOS.patch`: step added.
+    if (!granted && ext.forge.registration !== undefined && (await DBOS.patch('gate1-registration'))) {
+      memory.registration = await step('registration names for Gate 1', () => ext.forge.registration!(c.slug));
+    }
     await transition(c, memory, granted ? 'guard:gate1_already_granted' : 'guard:gate1_required', granted ? 'preview_deployment' : 'gate_1');
   }
 
@@ -1147,7 +1252,7 @@ export function createToolCycle(deps: Deps, agentTask: AgentTask) {
       case 'hardening_integration': return hardeningIntegration(c, memory);
       case 'hardening_review': return hardeningReview(c, memory);
       case 'hardening_evaluation': return hardeningEvaluation(c, memory);
-      case 'gate_hardening_blocked': return void (await gate(c, memory, memory.gateReason, { approved: 'hardening_execution', correction: 'hardening_execution' }));
+      case 'gate_hardening_blocked': return void (await gate(c, memory, memory.gateReason, { approved: 'hardening_execution', correction: 'hardening_execution', scope_change: 'contract' }));
       case 'merge': return merge(c, memory);
       case 'waiting_ci': return waitingCi(c, memory);
       case 'candidate_image': return imageCandidate(c, memory);

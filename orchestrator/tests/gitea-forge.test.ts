@@ -8,13 +8,13 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile, execFileSync, spawn, spawnSync } from 'node:child_process';
 import { promisify } from 'node:util';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { CODE_ROLES, type TaskInput } from '../src/external/contracts.ts';
-import { ForgeError, GiteaForge, acceptanceFailures, opengrepSarif, SARIF_MARKER } from '../src/external/gitea-forge.ts';
+import { ForgeError, GiteaForge, acceptanceFailures, logTail, LOG_TAIL, opengrepSarif, SARIF_MARKER } from '../src/external/gitea-forge.ts';
 import { opengrepDeviations, SARIF_CHECK } from '../src/hardening/stagnation.ts';
 import { PushingEngine } from '../src/external/pushing-engine.ts';
 
@@ -50,6 +50,8 @@ type Response = { status: number; body?: unknown; raw?: string; headers?: Record
 /** Fake Gitea: minimal state + faults injectable per route (`faults['POST /repos/eupadev/tool-template/generate']`). */
 class FakeGitea {
   repos = new Map<string, FakeRepo>();
+  /** Renamed repositories (Gitea `repo_redirect`): the old name answers a redirect to the new one. */
+  redirects = new Map<string, string>();
   prs: FakePR[] = [];
   /** Forced responses, consumed one by one; `'silent'` = never answers. */
   faults = new Map<string, (Response | 'silent')[]>();
@@ -96,6 +98,16 @@ class FakeGitea {
   }
   head(slug: string, ref = 'main'): string {
     return git(this.bare(slug), ['rev-parse', `refs/heads/${ref}`]).trim();
+  }
+  branches(slug: string): string[] {
+    return git(this.bare(slug), ['for-each-ref', '--format=%(refname:strip=2)', 'refs/heads']).split('\n').filter((b) => b !== '').sort();
+  }
+  /** What a human does in Gitea's settings (the robot has no administration): repository renamed, redirect kept. */
+  renameRepo(from: string, to: string): void {
+    renameSync(this.bare(from), this.bare(to));
+    this.repos.set(to, this.repos.get(from)!);
+    this.repos.delete(from);
+    this.redirects.set(from, to);
   }
   /** Who pushed which branch (pre-receive hook). */
   pushes(slug: string): string[] {
@@ -253,9 +265,34 @@ class FakeGitea {
     if (!(m = path.match(/^\/repos\/eupadev\/([^/?]+)(.*)$/))) return notFound;
     const slug = m[1]!;
     const d = this.repos.get(slug);
+    // Like Gitea (context.RepoAssignment, RedirectToRepo): a renamed repository answers a redirect with an HTML body (seen in the lab), never followed by the adapter.
+    if (d === undefined && this.redirects.has(slug)) return { status: 301, raw: '<a href="/eupadev/new">Moved Permanently</a>.\n\n', headers: { Location: `/api/v1/repos/${ORG}/${this.redirects.get(slug)}${m[2]}` } };
     if (d === undefined) return notFound;
     const rest = m[2]!;
     if (method === 'GET' && rest === '') return { status: 200, body: { name: slug, private: d.private, template: d.template, archived: d.archived, permissions: { admin: d.collaborator || this.adminElsewhere, push: true, pull: true } } };
+    // Like Gitea (repo.GetRawFile): the file of `ref` as is, text/plain; 404 when absent.
+    if (method === 'GET' && (m = rest.match(/^\/raw\/([^?]+)\?ref=main$/))) {
+      const r = spawnSync('git', ['show', `refs/heads/main:${m[1]}`], { cwd: this.bare(slug), encoding: 'utf8' });
+      return r.status === 0 ? { status: 200, raw: r.stdout, headers: { 'Content-Type': 'text/plain; charset=utf-8' } } : notFound;
+    }
+    // Like Gitea (repo.Edit, reqAdmin): renaming needs the repository's administration.
+    if (method === 'PATCH' && rest === '') {
+      if (!(d.collaborator || this.adminElsewhere)) return { status: 403, body: { message: 'user should be an owner or a collaborator with admin write of a repository' } };
+      if (typeof body?.name !== 'string') return { status: 422, body: { message: 'name required' } };
+      if (body.name !== slug) {
+        if (this.repos.has(body.name)) return { status: 409, body: { message: 'The repository with the same name already exists.' } };
+        this.renameRepo(slug, body.name);
+      }
+      return { status: 200, body: { name: body.name, private: d.private } };
+    }
+    // Like Gitea (repo.RenameBranch, reqRepoWriter): 404 if the branch is missing, 422 if the target exists; then
+    // models/git RenameBranch refuses a branch matched by a glob rule (403), and every branch of a tool is (`**`).
+    if (method === 'PATCH' && (m = rest.match(/^\/branches\/(.+)$/))) {
+      const existing = this.branches(slug);
+      if (!existing.includes(m[1]!)) return { status: 404, body: { message: 'Branch doesn\'t exist.' } };
+      if (typeof body?.name !== 'string' || existing.includes(body.name)) return { status: 422, body: { message: 'Cannot rename a branch using the same name or rename to a branch that already exists.' } };
+      return { status: 403, body: { message: 'Failed to rename branch due to branch protection rules.' } };
+    }
     if (rest === '/collaborators/svc-orchestrator') {
       if (method === 'GET') return d.collaborator ? { status: 204 } : notFound;
       if (method === 'DELETE') {
@@ -352,6 +389,20 @@ test('E2 forge: creation — generated from the template (private, protections),
     await forge.createRepo('car-fleet');
     assert.equal(g.calls(/^(PUT|DELETE) /), 2, 'neither assignment nor removal done again');
     assert.ok(g.log.length > before);
+  });
+});
+
+test('Gate 1 registration names: x-roles of openapi.yaml and periods of db/purge.sql read from main (raw API); files absent → audit only, no role', async () => {
+  await withFake(async (g, forge) => {
+    await forge.createRepo('car-fleet');
+    assert.deepEqual(await forge.registration('car-fleet'), { roles: [], retentions: ['RETENTION_AUDIT'] }, 'template without contract nor purge');
+    g.commitsMain('car-fleet', {
+      'openapi.yaml': 'openapi: 3.1.0\npaths:\n  /api/cars:\n    get:\n      operationId: listCars\n      x-roles: [driver, fleet-manager]\n    post:\n      operationId: addCar\n      x-roles: [fleet-manager]\n',
+      'db/purge.sql': "DELETE FROM app.trips WHERE at < now() - current_setting('purge.retention_trips')::interval;\n",
+    });
+    assert.deepEqual(await forge.registration('car-fleet'), { roles: ['driver', 'fleet-manager'], retentions: ['RETENTION_AUDIT', 'RETENTION_TRIPS'] });
+    assert.ok(g.log.some((j) => j.path === `/repos/${ORG}/car-fleet/raw/openapi.yaml?ref=main` && j.auth === `token ${ORCHESTRATOR_PAT}`), 'read on main with the token in a header');
+    await refusal(forge.registration('Car Fleet'), /invalid slug/, false);
   });
 });
 
@@ -486,6 +537,7 @@ function input(tool: string, cycle: number, role: TaskInput['role'], round = 1):
   return {
     task_id: `t${cycle}-${round}-${role}`, tool, role, instructions: `Role ${role}`, context: {}, cap: { duration_min: 5, turns: 10, budget_usd: 1 },
     model: 'fake-model', effort: 'low', branch: `agent/${tool}/${cycle}/${role}`, signal: new AbortController().signal,
+    launched: async () => {},
   };
 }
 /** The code roles push their set (svc-agent token), in queue order: tests then builder. */
@@ -516,6 +568,9 @@ test('E3 forge: normal case — the roles push (svc-agent), integration by svc-o
     assert.deepEqual(outputs.map((s) => (s.report as { files_changed: string[] }).files_changed), expected);
     assert.ok(outputs.every((s) => /^[0-9a-f]{64}$/.test(s.tree_hash ?? '') && (s.report as { status: string }).status === 'done'));
     assert.ok(!g.files('fleet')!.includes(expected[0]![0]!), 'nothing in main before the merge');
+    // ADR-027: the diagnosis reads the commits of each code role's branch; an absent branch (another cycle) counts 0.
+    assert.deepEqual(await forge.roleBranchCommits('fleet', 3), { tests: 1, builder: 1 });
+    assert.deepEqual(await forge.roleBranchCommits('fleet', 4), { tests: 0, builder: 0 });
 
     assert.deepEqual(await forge.integrate('fleet', 3, 1), { result: 'ok' });
     assert.deepEqual(await forge.merge('fleet', 3, 1), { result: 'ok' });
@@ -660,6 +715,48 @@ test('E3 forge: faulty set — the eval() is integrated and merged into main (th
     assert.deepEqual(await forge.integrate('fleet-faulty', 1, 1), { result: 'ok' });
     assert.deepEqual(await forge.merge('fleet-faulty', 1, 1), { result: 'ok' });
     assert.match(content(g, 'fleet-faulty', 'api/lib/trial-t1-1-builder.js'), /^eval\(process\.argv\[2\]\);$/m);
+  });
+});
+
+const EXAMPLE = new URL('../../examples/requests/', import.meta.url).pathname;
+
+test('E3 forge: example set — contract pushes openapi.yaml (published), tests a sign-in suite per role of the contract, builder the reference tool; integrated and merged; an unchanged round is an empty commit; no example folder = refusal', async () => {
+  await withFake(async (g, forge) => {
+    const slug = 'fleet-example';
+    await forge.createRepo(slug);
+    const engine = new PushingEngine({ url: g.url, token: AGENT_PAT, example: EXAMPLE, ...FAST_GIT });
+    const changed = (s: { report: unknown }) => (s.report as { files_changed: string[] }).files_changed;
+
+    const contract = await engine.execute(input(slug, 1, 'contract'));
+    assert.deepEqual([changed(contract), contract.tree_hash, (contract.report as { status: string }).status], [['openapi.yaml'], null, 'done']);
+    await forge.publish(slug, 1, 'contract');
+    assert.equal(content(g, slug, 'openapi.yaml'), readFileSync(join(EXAMPLE, 'openapi.yaml'), 'utf8'), 'the contract role\'s branch stays in its scope and enters main');
+
+    const outputs = [];
+    for (const role of CODE_ROLES) outputs.push(await engine.execute(input(slug, 1, role)));
+    const [tests, builder] = outputs;
+    assert.deepEqual(changed(tests!).sort(), ['tests/acceptance/features/sign-in.feature', 'tests/acceptance/playwright.config.js', 'tests/acceptance/steps/sign-in.js']);
+    const feature = git(g.bare(slug), ['show', `refs/heads/agent/${slug}/1/tests:tests/acceptance/features/sign-in.feature`]);
+    for (const role of ['reader', 'manager', 'admin']) assert.match(feature, new RegExp(`Given a "${role}" signs in\\n    Then their roles are "${role}"`), `one scenario per role of the contract (${role})`);
+    assert.ok(!/"user"/.test(feature), 'no role outside the contract');
+    const files = changed(builder!);
+    for (const f of ['api/getMe.js', 'api/lib/requests.js', 'db/migrations/0001_requests.sql', 'web/app.js', 'web/styles/app.css', 'tests/unit/transitions.test.js', 'README.md']) assert.ok(files.includes(f), `builder pushes ${f}`);
+    assert.ok(!files.some((f) => f.startsWith('tests/acceptance/') || /^(openapi\.yaml|playwright\.config\.js|schemathesis\.toml|docs\/spec\.md|tests\/(stack|db\.test|kit\.test)\.js)$/.test(f)), 'nothing outside the builder\'s scope, nothing of the example\'s local stack');
+    assert.ok([tests, builder].every((s) => /^[0-9a-f]{64}$/.test(s!.tree_hash ?? '') && (s!.report as { status: string }).status === 'done'));
+
+    assert.deepEqual(await forge.integrate(slug, 1, 1), { result: 'ok' });
+    assert.deepEqual(await forge.merge(slug, 1, 1), { result: 'ok' });
+    assert.ok(!files.some((f) => /^(package\.json|pnpm-lock\.yaml)$/.test(f)), 'the tool keeps the template\'s package files');
+    assert.equal(content(g, slug, 'api/getMe.js'), readFileSync(join(EXAMPLE, 'api/getMe.js'), 'utf8'));
+
+    // Round 2 (the Preview check was red): the same files, already in main → an empty commit on the branch, no failure.
+    const before = g.head(slug, `agent/${slug}/1/builder`);
+    const again = await engine.execute(input(slug, 1, 'builder', 2));
+    assert.equal((again.report as { status: string }).status, 'done');
+    assert.notEqual(g.head(slug, `agent/${slug}/1/builder`), before, 'a commit was pushed');
+    assert.equal(git(g.bare(slug), ['diff', '--stat', before, `refs/heads/agent/${slug}/1/builder`]).trim(), '', 'without any change');
+
+    await refusal(new PushingEngine({ url: g.url, token: AGENT_PAT, ...FAST_GIT }).execute(input(slug, 2, 'builder')), /example set: no example folder/, false);
   });
 });
 
@@ -849,11 +946,22 @@ test('3.7 red acceptance job: its failing tests (Playwright headers, SEC-*) read
     g.logs.set(81, '  1) not an acceptance job');
     g.logs.set(82, LOG_ACCEPTANCE);
     const r = await forge.previewPipelineFinished('fleet', 7);
-    assert.deepEqual(r, { outcome: 'red', checks: [{ check: 'perf', result: 'red' },
-      { check: 'acceptance', result: 'red', details: { failures: acceptanceFailures(LOG_ACCEPTANCE) } }] });
+    // ADR-027: every red job carries the tail of its log as data for the diagnosis; the acceptance job its failing tests too.
+    assert.deepEqual(r, { outcome: 'red', checks: [{ check: 'perf', result: 'red', details: { log_tail: ['  1) not an acceptance job'] } },
+      { check: 'acceptance', result: 'red', details: { failures: acceptanceFailures(LOG_ACCEPTANCE), log_tail: logTail(LOG_ACCEPTANCE) } }] });
     g.logs.delete(82);
-    assert.deepEqual((await forge.previewPipelineFinished('fleet', 7))?.checks[1], { check: 'acceptance', result: 'red', details: { failures: [] } });
+    assert.deepEqual((await forge.previewPipelineFinished('fleet', 7))?.checks[1], { check: 'acceptance', result: 'red', details: { failures: [], log_tail: [] } });
   });
+});
+
+test('ADR-027 log tail: last 40 non-empty lines of a red job, timestamps, colours and control characters removed, each line cut at 300 characters', () => {
+  const log = ['2026-11-06T10:00:01.0000000Z \x1b[31mpa11y-ci: Error: Timed out\x1b[0m', '', '2026-11-06T10:00:02.0000000Z bell\x07 and tab\tkept', 'x'.repeat(400)].join('\n');
+  assert.deepEqual(logTail(log), ['pa11y-ci: Error: Timed out', 'bell and tab\tkept', 'x'.repeat(LOG_TAIL.line_chars)]);
+  const long = Array.from({ length: 100 }, (_, i) => `line ${i + 1}`).join('\n');
+  const tail = logTail(long);
+  assert.equal(tail.length, LOG_TAIL.lines);
+  assert.deepEqual([tail[0], tail.at(-1)], ['line 61', 'line 100']);
+  assert.deepEqual(logTail(''), []);
 });
 
 // Result line printed by the template's analysis job (check.yml), captured from Opengrep 1.30.0 on the template's rules.
@@ -879,10 +987,57 @@ test('M5 red analysis job: the Opengrep SARIF results read in its log after the 
       { id: 31, name: 'tests', conclusion: 'failure' }, { id: 32, name: SARIF_CHECK, conclusion: 'failure' }] });
     g.logs.set(31, LOG_ANALYSIS);
     g.logs.set(32, LOG_ANALYSIS);
-    assert.deepEqual(await forge.ciFinished('fleet', 2, 1), { outcome: 'red', checks: [{ check: 'tests', result: 'red' },
-      { check: SARIF_CHECK, result: 'red', details: { runs: [{ results: [SARIF_RESULT] }] } }] });
+    assert.deepEqual(await forge.ciFinished('fleet', 2, 1), { outcome: 'red', checks: [{ check: 'tests', result: 'red', details: { log_tail: logTail(LOG_ANALYSIS) } },
+      { check: SARIF_CHECK, result: 'red', details: { runs: [{ results: [SARIF_RESULT] }], log_tail: logTail(LOG_ANALYSIS) } }] });
     g.logs.delete(32);
-    assert.deepEqual((await forge.ciFinished('fleet', 2, 1))?.checks[1], { check: SARIF_CHECK, result: 'red' });
+    assert.deepEqual((await forge.ciFinished('fleet', 2, 1))?.checks[1], { check: SARIF_CHECK, result: 'red', details: { log_tail: [] } });
   });
 });
 
+
+test('Gate 1 rename: refused without the repository\'s administration; with it, repository renamed then agent branches carried over (Gitea refuses to rename them); replay and a human rename leave nothing to do twice', async () => {
+  await withFake(async (g, forge) => {
+    await forge.createRepo('equipment-managment');
+    g.commits('equipment-managment', 'agent/equipment-managment/9/scoping', { 'web/index.html': '<h1>Equipment managment</h1>\n' });
+    g.commits('equipment-managment', 'agent/equipment-managment/9/builder', { 'api/lib/x.js': 'export {};\n' });
+    assert.deepEqual(await forge.integrate('equipment-managment', 9, 1), { result: 'ok' }); // integration/9/1: no slug, untouched
+    const heads = { builder: g.head('equipment-managment', 'agent/equipment-managment/9/builder'), scoping: g.head('equipment-managment', 'agent/equipment-managment/9/scoping') };
+    // svc-orchestrator gave up its administration at the creation (M5): Gitea refuses the rename, nothing changes.
+    await refusal(forge.renameTool('equipment-managment', 'equipment-management'), /PATCH \/repos\/eupadev\/equipment-managment: refusal 403/, false);
+    assert.ok(g.repos.has('equipment-managment') && !g.repos.has('equipment-management'));
+    // With the administration: repository, then every agent/<old>/… head pushed as agent/<new>/… (same commit; the old
+    // branch stays: Gitea neither renames nor deletes a branch under a rule); the integration branch is untouched.
+    g.adminElsewhere = true;
+    await forge.renameTool('equipment-managment', 'equipment-management');
+    assert.ok(!g.repos.has('equipment-managment') && g.repos.has('equipment-management'));
+    assert.deepEqual(g.branches('equipment-management'), ['agent/equipment-management/9/builder', 'agent/equipment-management/9/scoping', 'agent/equipment-managment/9/builder', 'agent/equipment-managment/9/scoping', 'integration/9/1', 'main']);
+    assert.equal(g.head('equipment-management', 'agent/equipment-management/9/builder'), heads.builder);
+    assert.equal(g.head('equipment-management', 'agent/equipment-management/9/scoping'), heads.scoping);
+    assert.deepEqual(g.log.filter((j) => j.method === 'PATCH').map((j) => `${j.path} ${JSON.stringify(j.body)}`), [
+      `/repos/${ORG}/equipment-managment {"name":"equipment-management"}`,
+      `/repos/${ORG}/equipment-managment {"name":"equipment-management"}`,
+    ], 'no branch asked of the API');
+    assert.deepEqual(g.pushes('equipment-management').filter((l) => l.includes(' agent/equipment-management/')), ['svc-orchestrator agent/equipment-management/9/builder', 'svc-orchestrator agent/equipment-management/9/scoping']);
+    assert.ok(g.log.every((j) => j.auth === `token ${ORCHESTRATOR_PAT}` && !j.path.includes(ORCHESTRATOR_PAT)), 'token in a header only');
+    // Replay of the step (old name answers a redirect, new one present, branches carried over): no PATCH, no push again.
+    const before = { patches: g.calls(/^PATCH /), pushes: g.pushes('equipment-management').length };
+    await forge.renameTool('equipment-managment', 'equipment-management');
+    assert.equal(g.calls(/^PATCH /), before.patches);
+    assert.equal(g.pushes('equipment-management').length, before.pushes);
+    // A human renamed the repository in Gitea (after the 403) but not the branches: the replay carries the branches only.
+    g.adminElsewhere = false;
+    await forge.createRepo('old-fleet');
+    g.commits('old-fleet', 'agent/old-fleet/3/builder', { 'api/lib/y.js': 'export {};\n' });
+    g.renameRepo('old-fleet', 'new-fleet');
+    await forge.renameTool('old-fleet', 'new-fleet');
+    assert.deepEqual(g.branches('new-fleet'), ['agent/new-fleet/3/builder', 'agent/old-fleet/3/builder', 'main']);
+    assert.equal(g.head('new-fleet', 'agent/new-fleet/3/builder'), g.head('new-fleet', 'agent/old-fleet/3/builder'));
+    assert.equal(g.calls(/^PATCH \/repos\/eupadev\/old-fleet$/), 0, 'repository already renamed: not asked again');
+    // Neither the old nor the new repository: refused; same slug or bad slug: refused before any call.
+    await refusal(forge.renameTool('nothing', 'nowhere'), /nothing not found, nor eupadev\/nowhere/, false);
+    await refusal(forge.renameTool('new-fleet', 'Bad Slug'), /invalid slug/, false);
+    const calls = g.log.length;
+    await forge.renameTool('new-fleet', 'new-fleet');
+    assert.equal(g.log.length, calls, 'same slug: nothing asked');
+  });
+});

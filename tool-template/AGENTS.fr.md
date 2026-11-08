@@ -22,7 +22,7 @@ Tu fais l'étape de ton rôle et rien après.
 
 | Rôle | Peut écrire dans |
 |---|---|
-| overlap, security-reviewer, quality-reviewer | rien d'autre que le rapport |
+| overlap, security-reviewer, quality-reviewer, diagnosis | rien d'autre que le rapport |
 | scoping | tout sauf les fichiers protégés |
 | contract | `openapi.yaml`, `tests/acceptance/features/` |
 | tests | `tests/acceptance/` |

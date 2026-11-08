@@ -59,6 +59,26 @@ effectively unenforced.
 2. Keep comments explaining *why*, not *what* — the code already shows
    what it does.
 
+## Running the checks locally
+
+You do not need the lab (five VMs) to work on the code: the unit tests, the
+tests against a throwaway PostgreSQL and the Gherkin suite run on one machine
+with Node, pnpm (`corepack enable`) and Docker.
+
+- Engine: `orchestrator/README.md`, section "Commands" (`pnpm test`,
+  `pnpm test:db`, `pnpm test:bdd`…). With `EUPADEV_EXTERNAL=fake-auto` the
+  engine starts with every outside service faked, no AI key needed.
+- Core and example tool: `core/README.md`, `examples/requests/README.md`.
+- Repository-wide checks the CI runs: `.github/scripts/check-english.py
+  --base origin/main` (English only), `python3 .github/scripts/verify-digests.py`
+  (images pinned by digest), `ansible-lint` from `infra/ansible` (see
+  `infra/README.md`).
+
+A change to `infra/` is tested for real on the lab VMs by the maintainer
+(`infra/ansible/verify-*.yml`); say in the pull request which check covers
+your change. There is no one-machine installation of the whole platform yet
+(ADR-028, proposed, describes the planned one).
+
 ## Commit messages
 
 No strict format required, but a commit message should explain why a
@@ -115,6 +135,17 @@ EupaDev has one maintainer, who reviews and merges every change and
 decides the roadmap; the decisions and their reasons are the ADRs of
 [`docs/adr/`](docs/adr/). The [Code of Conduct](CODE_OF_CONDUCT.md)
 applies everywhere. Help and support: [SUPPORT.md](SUPPORT.md).
+
+## How the public repository is synced
+
+EupaDev is developed in a private repository; this public one mirrors its
+`main`, minus the maintainer's private notes (`docs/reflexions/`, which
+some ADRs cite as "private note"). `scripts/sync-public.sh` exports that
+tree into the public checkout, runs a privacy guard (a deny list of
+private words, gitleaks, `check-english.py`) and, when clean, makes one
+signed-off commit `Sync with the development repository (<date>)`; the
+maintainer reviews it and pushes by hand. `--dry-run` runs the export and
+the guard in a temporary directory only.
 
 ## Reporting a security issue
 

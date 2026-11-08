@@ -63,7 +63,7 @@ after(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-/** Throwaway forge: `<dir>/eupadev/trial-tool.git` with a main (README, api/, web/). */
+/** Throwaway forge: `<dir>/eupadev/trial-tool.git` with a main (README, api/, web/, the template's contract). */
 function forge(): { url: string; repo: string; git: (...a: string[]) => string; main: string } {
   const dir = join(root, `forge-${++n}`);
   const repo = join(dir, 'eupadev', 'trial-tool.git');
@@ -75,6 +75,7 @@ function forge(): { url: string; repo: string; git: (...a: string[]) => string; 
   mkdirSync(join(work, 'web'));
   writeFileSync(join(work, 'README.md'), 'tool\n');
   writeFileSync(join(work, 'AGENTS.md'), '# charter (copy for humans)\n');
+  writeFileSync(join(work, 'openapi.yaml'), readFileSync(join(HERE, '..', '..', 'tool-template', 'openapi.yaml')));
   writeFileSync(join(work, 'api', 'existing.js'), 'export {};\n');
   writeFileSync(join(work, 'web', 'index.html'), '<p>tool</p>\n');
   git(work, 'init', '-q', '-b', 'main');
@@ -109,7 +110,7 @@ function input(scenario: string, o: Partial<TaskInput> & { role?: Role } = {}): 
   return {
     task_id: `trial-tool-${process.pid}-${role}-${++n}`, tool: 'trial-tool', role, instructions: `Instructions of the ${role} role: add api/ping.js.`,
     context: { scenario }, cap: { duration_min: 15, turns: 40, budget_usd: 3 }, model: 'claude-opus-5-5', effort: 'medium',
-    branch: (REVIEW_ROLES as readonly Role[]).includes(role) ? 'integration/1/1' : `agent/trial-tool/1/${role}`, signal: new AbortController().signal, ...o,
+    branch: (REVIEW_ROLES as readonly Role[]).includes(role) ? 'integration/1/1' : `agent/trial-tool/1/${role}`, signal: new AbortController().signal, launched: async () => {}, ...o,
   };
 }
 
@@ -122,9 +123,11 @@ const branchExists = (f: ReturnType<typeof forge>, b: string) => f.git('for-each
 
 test('E4 claude: successful task — documented options, hardened container, report, cost, tokens, commit pushed to the branch, tree', async () => {
   const f = forge();
-  const e = input('success');
+  let launches = 0;
+  const e = input('success', { launched: async () => { launches += 1; } });
   const s = await engine(f.url).execute(e);
   assert.ok(s.report !== null, s.error);
+  assert.equal(launches, 1, 'the launch is counted once, before the container (B7)');
   const fake = (s.report as { fake: { argv: string; state: string; instructions: string } }).fake;
   const argv = Buffer.from(fake.argv, 'base64').toString('utf8').split('\n').filter((l) => l !== '');
   assert.deepEqual(argv, [
@@ -302,6 +305,31 @@ test('E4 claude: Claude Code capped (turns, budget) — its commits are checked 
   assert.equal(leftovers(e.task_id), '');
 });
 
+test('contract check: an openapi.yaml the core\'s linter refuses (or missing) fails the contract task with the linter\'s message, its commits kept on the branch; a blocked report passes through; a valid contract is done', async () => {
+  for (const [scenario, commit, error] of [
+    ['contract_refused', 'writes openapi.yaml', /^contract refused: openapi\.yaml: contract refused \(1\):\n- no operation in paths; its commits are kept on agent\/trial-tool\/1\/contract$/],
+    ['contract_unparsable', 'writes openapi.yaml', /^contract refused: openapi\.yaml does not parse: .* at line \d+, column \d+.*; its commits are kept on agent\/trial-tool\/1\/contract$/s],
+    ['contract_removed', 'no contract', /^contract refused: openapi\.yaml missing at the root; its commits are kept on agent\/trial-tool\/1\/contract$/],
+  ] as const) {
+    const f = forge();
+    const e = input(scenario, { role: 'contract' });
+    const s = await engine(f.url).execute(e);
+    assert.equal(s.report, null, scenario);
+    assert.match(s.error ?? '', error, `${scenario}: ${s.error}`);
+    assert.equal(s.cost_usd, 0.42, scenario);
+    assert.equal(f.git('log', '-1', '--format=%s', e.branch), commit, `${scenario}: the work is kept for the next attempt`);
+    assert.equal(leftovers(e.task_id), '', scenario);
+  }
+  // Blocked: the agent's question comes back as it is, the contract it left is not judged (W2 validates the report).
+  const f = forge();
+  const blocked = await engine(f.url).execute(input('contract_blocked', { role: 'contract' }));
+  assert.equal((blocked.report as { status: string } | null)?.status, 'blocked', blocked.error);
+  // Valid contract (main's, the template's), features added: done. A fresh forge: the next attempt on `f` would start
+  // from the branch of the blocked one, whose openapi.yaml does not parse (E7), and be refused — as it should.
+  const done = await engine(forge().url).execute(input('contract_valid', { role: 'contract' }));
+  assert.equal((done.report as { status: string } | null)?.status, 'done', done.error);
+});
+
 test('E4 claude: Claude Code stops (unreadable output, no report) — reason read, cost kept or unknown, nothing pushed', async () => {
   const f = forge();
   const m = engine(f.url);
@@ -476,8 +504,10 @@ test('E4 claude: signature — image unsigned or signed by another key refused, 
     ['other key', { publicKey: otherKey }, /failed to verify signature/],
   ];
   for (const [what, o, reason] of cases) {
-    const e = input('success');
+    let launches = 0;
+    const e = input('success', { launched: async () => { launches += 1; } });
     await assert.rejects(engine(f.url, o).execute(e), (err: Error) => /agents' image refused, cosign signature not verified/.test(err.message) && reason.test(err.message), what);
+    assert.equal(launches, 0, `${what}: refused before the container, no launch counted (nothing to charge)`);
     // The `success` scenario pushes a commit: nothing pushed = the agent did not run.
     assert.equal(branchExists(f, e.branch), false, what);
     assert.equal(leftovers(e.task_id), '', what);

@@ -17,7 +17,7 @@ left to do.
 | C1 | A person reports a need, with a photo or a PDF if they wish | Their request appears in "My requests" with the title, location, category, urgency and attachment they gave. |
 | C2 | The requester follows their requests and sees no others | They see the state and the history of each of their own; the address of someone else's request answers "not found". |
 | C3 | The manager handles the requests: taking on, resolving, rejecting with a reason | Each state change appears in the history with who and when; an impossible change (resolving a cancelled request) is refused. |
-| C4 | The requester is told by mail | Taking on, resolving and rejecting send a mail to the requester with the link of the request; a submission sends one to the managers' mailbox. |
+| C4 | The requester and the managers see where a request stands | The status badge and the history (who, what, when) show every change in the tool: a submitted request appears in the managers' list, a change made by a manager in the requester's request. |
 | C5 | The manager exports the requests as CSV | The downloaded file holds the requests of the filter shown, one per line. |
 | C6 | The administrator keeps the list of categories | An added category is offered when creating a request; a deactivated category no longer is, older requests keep it. |
 | C7 | The administrator deletes a request and can restore it | A deleted request disappears from the lists; restored, it comes back unchanged. |
@@ -35,14 +35,13 @@ left to do.
 
 - Assigning a request to a given person, deadlines and reminders.
 - Several attachments, comments and messaging in the request.
-- Notifications other than mail.
+- Notifications (mail or other): the platform offers no mail relay to the tools.
 - Dashboard (optional, at the end of the build if time is left).
 
 ## Assumptions
 
 - A1: the requester is the role `reader` of the test realm (decision E2 of `docs/DECISIONS.md`).
-- A2: the managers receive the submission mails in a shared mailbox (the tool does not know the list of managers).
-- A3: a failed mail never prevents the state change.
+- A2: the managers find the submitted requests in their list (the tool does not know the list of managers).
 
 ## Open questions
 
@@ -72,9 +71,9 @@ Must not change: a single attachment per request.
 
 As a manager, I move the submitted requests forward.
 
-- Given a submitted request of alice's, When bruno takes it on, Then it becomes "in progress" and alice receives a mail.
-- Given a request in progress, When bruno resolves it with a note, Then it becomes "resolved", the note is visible to alice, alice receives a mail.
-- Given a submitted request, When bruno rejects it without a reason, Then the rejection is refused; with a reason, it becomes "rejected" and alice receives the reason by mail.
+- Given a submitted request of alice's, When bruno takes it on, Then it becomes "in progress" and alice sees it in the history.
+- Given a request in progress, When bruno resolves it with a note, Then it becomes "resolved", the note and the change are visible to alice.
+- Given a submitted request, When bruno rejects it without a reason, Then the rejection is refused; with a reason, it becomes "rejected" and alice sees the reason.
 
 Must not change: a resolved, rejected or cancelled request no longer changes state.
 

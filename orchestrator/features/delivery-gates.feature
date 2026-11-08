@@ -24,6 +24,7 @@ Feature: Gates and delivery
     Then the cycle moves from "waiting_ci" to "candidate_image" by "event:ci_finished:green"
     And the cycle moves from "candidate_image" to "gate_1" by "guard:gate1_required"
     And the notification sent to the admin contains "inventory.example.test"
+    And the Gate 1 page lists roles "reader, admin" and retention periods "RETENTION_AUDIT, RETENTION_REQUESTS" for the core-tools.yml entry
     When the admin decides "approved" at gate "gate_1"
     Then the cycle moves from "gate_1" to "preview_deployment" by "gate:approved"
     And table "approvals" contains a "approved" decision for gate "gate_1"
@@ -56,6 +57,22 @@ Feature: Gates and delivery
     Then the cycle moves from "gate_1" to "contract" by "gate:scope_change"
     And task "contract" of iteration 2 has "Add the management of the vehicle keys" in its context
     And table "tasks" contains no "scoping" task for iteration 2
+
+  Scenario: 34 bis bis. Gate 1 correction with a new name and address: the tool and its repository are renamed, its branches carried over under the new address, the builder is told
+    Given a creation cycle in state "gate_1" for tool "equipment-managment"
+    When the admin decides "correction" at gate "gate_1" with text "Typo in the name", new name "Equipment Management" and new address "equipment-management"
+    Then the cycle moves from "gate_1" to "hardening_execution" by "gate:correction"
+    And the tool is named "Equipment Management" with address "equipment-management"
+    And the forge renamed repository "equipment-managment" to "equipment-management"
+    And table "approvals" contains a "correction" decision for gate "gate_1" with comment "Typo in the name"
+    And task "builder" of iteration 2 has "Typo in the name" in its context
+    And task "builder" of iteration 2 has "at equipment-management.example.test. Update every name visible in the application" in its context
+    And task "builder" of iteration 2 works on branch "agent/equipment-management/1/builder"
+    Given a creation cycle in state "gate_1" for tool "car-fleet"
+    When the admin tries to decide "correction" at gate "gate_1" with text "Same address" and new address "equipment-management"
+    Then the decision is refused with message "slug equipment-management is already used by another tool"
+    And the cycle is in state "gate_1"
+    And table "approvals" contains no decision for gate "gate_1"
 
   Scenario: 34 ter. A "scope change" without a comment is refused on entry: the admin says what changes
     Given a creation cycle in state "gate_1"
@@ -350,6 +367,20 @@ Feature: Gates and delivery
       | gate_hardening_blocked | hardening_execution |
       | gate_delivery_blocked  | hardening_execution |
       | gate_prod_blocked      | hardening_execution |
+
+  # A contract the core's linter refuses fails the contract task at once (launcher, `contractRefused`), with the
+  # linter's message: the admin reads it at the gate, and the next attempt gets it with its data (`previous_attempt`),
+  # starting from the branch the failed attempt left.
+  @t:contract--task:failed-->gate_contract_blocked
+  @t:gate_contract_blocked--gate:approved-->contract
+  Scenario: 41 ter ter. A failed contract attempt hands its exact reason to the admin and to the next attempt
+    Given a creation cycle in state "contract"
+    When the fake engine returns a failure for "contract" with reason "contract refused: openapi.yaml: contract refused (1): GET /api/items: x-roles required"
+    Then the cycle moves from "contract" to "gate_contract_blocked" by "task:failed"
+    And the notification sent to the admin contains "GET /api/items: x-roles required"
+    When the admin decides "approved" at gate "gate_contract_blocked"
+    Then the cycle moves from "gate_contract_blocked" to "contract" by "gate:approved"
+    And task "contract" of iteration 2 has "GET /api/items: x-roles required" in its context
 
   # D12: when the budget is what opened the gate, a "correction" without a top-up sends back to scoping, whose budget
   # check reopens the gate at once; the instruction is kept and goes with the first scoping the budget allows.

@@ -3,7 +3,7 @@
  * the mermaid diagram of MACHINE.md and the "no dead end" tests are derived from it; nothing is hand-written elsewhere.
  *
  * Kinds: `active` (task or technical step), `waiting` (human or forge), `gate` (admin decision with three mandatory
- * outcomes, Gate 1 has a fourth one), `end` (no exit: notifies the requester, cleans up, deletes nothing).
+ * outcomes, Gate 1 and the hardening escalation have a fourth one), `end` (no exit: notifies the requester, cleans up, deletes nothing).
  * Triggers: `task`, `guard`, `event`, `gate`, `timeout_exceeded`, `cancellation`, `incident`, `resume:<state>`.
  * A `from === to` transition is a bounded repeat (`bound`) that does not change the state in the database.
  *
@@ -78,7 +78,7 @@ export const STATES = [
   { id: 'merge', phase: 'delivery', kind: 'active', description: 'Diff check per role (out of scope = round deviation, back to hardening), then squash into main by the orchestrator account' },
   { id: 'waiting_ci', phase: 'delivery', kind: 'waiting', description: 'The CI builds the image once and publishes its digest' },
   { id: 'candidate_image', phase: 'delivery', kind: 'active', description: 'Digest recorded; Gate 1 required only once per tool' },
-  { id: 'gate_1', phase: 'delivery', kind: 'gate', description: 'Gate 1: name and domain of the tool (once per tool, skipped for an evolution); two correction buttons: "correction" or "scope change"' },
+  { id: 'gate_1', phase: 'delivery', kind: 'gate', description: 'Gate 1: name and domain of the tool (once per tool, skipped for an evolution); two correction buttons: "correction" (which may rename the tool: new name and/or slug, repository and branches renamed in the forge) or "scope change"' },
   { id: 'preview_deployment', phase: 'delivery', kind: 'active', description: 'W4: deployment of the digest to Preview' },
   { id: 'preview_pipeline', phase: 'delivery', kind: 'waiting', description: 'Pipeline 2 against the Preview (perf, accessibility, DAST, acceptance suite), before any feedback from the requester; results recorded against the digest (pipeline_results); red → hardening, green → link sent to the requester' },
   { id: 'waiting_preview_feedback', phase: 'delivery', kind: 'waiting', description: 'The requester tries a Preview whose checks are green: validated → Gate 2 without running the pipeline again, or two correction buttons: bug or new capability' },
@@ -112,6 +112,8 @@ const MEASUREMENT_NET: TaskCap = { duration_min: 60, turns: 150, budget_usd: 10 
  * cost = cap) would exhaust it (Ilan's decision of 2026-10-18); duration and turns stay wide.
  */
 const SCOPING: TaskCap = { ...MEASUREMENT_NET, budget_usd: 4 };
+/** Diagnosis (ADR-027): one short read-only pass over data the orchestrator assembled; never a second envelope. */
+const DIAGNOSIS: TaskCap = { duration_min: 15, turns: 25, budget_usd: 2 };
 
 /** Default thresholds (ROADMAP §8.13), adjustable per installation. */
 export const DEFAULT_THRESHOLDS = {
@@ -149,6 +151,7 @@ export const DEFAULT_THRESHOLDS = {
     builder: MEASUREMENT_NET,
     'security-reviewer': MEASUREMENT_NET,
     'quality-reviewer': MEASUREMENT_NET,
+    diagnosis: DIAGNOSIS,
   } satisfies Readonly<Record<Role, TaskCap>> as Readonly<Record<Role, TaskCap>>,
   reminders: {
     /** Interval between two reminders to a human. */
@@ -277,6 +280,7 @@ const EXPLICIT_TRANSITIONS: readonly Transition[] = [
   ...gateExits('gate_hardening_blocked', 'hardening_execution', 'hardening_execution',
     'Continue: counters at zero (never the cost), top-up = approved + amount; without a top-up when the budget is what blocks, the gate triggers again',
     'The admin\'s text becomes the instruction of the next round'),
+  { from: 'gate_hardening_blocked', to: 'contract', trigger: gate('scope_change'), note: '"Scope change" button: a defect of the frozen contract (found by a red CI) goes back to the contract with the admin\'s text, like Gate 1' },
 
   // ── Delivery ──────────────────────────────────────────────────────────────
   { from: 'merge', to: 'waiting_ci', trigger: task('done'), note: 'Squash into main; the CI starts' },

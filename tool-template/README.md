@@ -50,7 +50,7 @@ Gate 1. Add every variable of the tool's own to this section, mirrored in
 | `tests/perf/` | k6 scenario run against the deployed Preview | adapt the example |
 | `docs/spec.md`, `docs/DECISIONS.md` | scope and decisions specific to this tool | scoping; `docs/DECISIONS.md` also the builder |
 | `design/` | shared design system, copied unchanged into `web/styles/` | protected |
-| `AGENTS.md`, `agents/`, `.claude/`, `.opengrep/`, `.gitea/`, `pnpm-workspace.yaml` | agent charter, role prompts, analysis rules, CI, pnpm settings | protected |
+| `AGENTS.md`, `agents/`, `.claude/`, `.opengrep/`, `.gitea/`, `pnpm-workspace.yaml` | agent charter, role prompts, report schema, platform capabilities (`agents/capabilities.json`, what the scoping may promise), analysis rules, CI, pnpm settings | protected |
 | `docs/fr/` | French translations for human readers (English is authoritative) | — |
 
 Who may write where, and which files are protected: `AGENTS.md`.

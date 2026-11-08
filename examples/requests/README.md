@@ -39,8 +39,9 @@ agent builds a new one in.
 
 ### 1. `package.json`, `pnpm-workspace.yaml`
 
-One runtime dependency, the core (`file:../../core`, E12), plus
-`nodemailer` for mail (the ADR-019 exception, below). No `index.js`: the entry
+One runtime dependency, the core (`file:../../core`, E12), nothing else: the
+platform offers no mail relay to the tools, so the tool sends none (what
+changed is seen in the tool, status badge and history). No `index.js`: the entry
 point is the core's `bin/start.js`, which reads the contract, loads one
 handler per operation from `api/`, connects to the database and serves
 `web/` (migrations run before, with the owner account: `bin/migrate.js`). The workspace file copies the core's supply-chain settings (exact
@@ -151,23 +152,14 @@ before the handler, which gets `ctx.body = { type, body }`. The handler only
 decides who and when. Removing is idempotent (204 when there is none). The
 download is always `Content-Disposition: attachment`, never shown inline.
 
-### 10. `api/lib/mail.js` — mail
-
-`nodemailer` in the tool (E9): a submission goes to the managers' shared
-mailbox (`MAIL_MANAGERS`), a status change made by someone else to the
-requester, with the reason of a rejection and a link built from `APP_URL`,
-never from the request. The subject stays on one line whatever the title
-holds. Sent after the commit, without delaying the answer; a failure is logged
-as `mail_failed` with an `error_id` and never undoes or fails the change.
-
-### 11. `db/purge.sql` — retention
+### 10. `db/purge.sql` — retention
 
 What the purge erases and after how long (`RETENTION_REQUESTS`,
 `RETENTION_DRAFTS`, `RETENTION_DELETED`, `RETENTION_HISTORY`, read by the core's `bin/purge.js` with the purge
 account, which refuses to run without them). The purge's own deletions are
 not journaled, so the audit log stays identical byte for byte (ADR-003).
 
-### 12. `web/` — the screens
+### 11. `web/` — the screens
 
 `index.html` holds the layout (`.app-shell`, `.sidebar` of the design
 system) and one `<template>` per block; `app.js` is a hash router with one
@@ -182,13 +174,13 @@ template; `styles/app.css` only adds classes (one lesson: the design system's
 `display: flex` overrides `[hidden]`, so `app.css` restores it). Screens are
 in English; the French translation comes with i18n.
 
-### 13. `tests/` — five layers
+### 12. `tests/` — five layers
 
 | Layer | Files | What it proves |
 |---|---|---|
-| Unit | `tests/unit/` | the rules (transitions, attachments, mail recipients, CSV cell), no database |
+| Unit | `tests/unit/` | the rules (transitions, attachments, CSV cell), no database |
 | Database | `tests/db.test.js` | catalogue, rights of the three accounts, legal and illegal transitions, audit, purge |
-| Kit | `tests/kit.test.js`, `tests/stack.js`, `tests/stack.vars` | the core's stack (two instances behind Caddy, PostgreSQL, Keycloak, Mailpit): the API on the real database, two-user specs (SEC-IDOR, SEC-URL), mail and SMTP down, the twelve SEC-* generated from the contract, k6, Schemathesis |
+| Kit | `tests/kit.test.js`, `tests/stack.js`, `tests/stack.vars` | the core's stack (two instances behind Caddy, PostgreSQL, Keycloak): the API on the real database, two-user specs (SEC-IDOR, SEC-URL) |
 | Load | `tests/perf/load.k6.js` | the list and the read, one VU per person, p(95) under 300 ms |
 | Acceptance | `playwright.config.js`, `tests/acceptance/` | one Gherkin feature per story (`features/`, steps in `steps/`), axe on every page, page errors, CSP violations and unexpected dialogs fail a scenario; `security/xss.spec.js` SEC-XSS |
 
@@ -210,6 +202,5 @@ signs in through the real Keycloak form: no test bypass exists.
 - Office and OpenDocument attachments (`.docx`, `.xlsx`, `.odt`, `.ods`):
   deferred; they need a check of the archive's content, not only its first
   bytes.
-- A French translation of the screens (i18n), and a check at start that the
-  mail settings are present.
+- A French translation of the screens (i18n).
 - The dashboard (`getStats`): optional, not built.

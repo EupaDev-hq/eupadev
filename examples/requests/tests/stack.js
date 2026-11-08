@@ -36,9 +36,6 @@ export function startStack() {
 /** PostgreSQL admin URL of the running stack (test harness only: rate limits reset, never the tool's code). */
 export const adminUrl = () => `postgres://postgres:test-admin@127.0.0.1:${compose(['port', 'postgres', '5432']).split(':').pop()}/requests`;
 
-/** Mailpit's API on the running stack (what the tool sent). */
-export const mailpitUrl = () => `http://127.0.0.1:${compose(['port', 'mailpit', '8025']).split(':').pop()}`;
-
 /** Stops and removes the stack, unless KIT_KEEP=1. */
 export function stopStack() {
   if (process.env.KIT_KEEP !== '1') compose(['down', '-v', '--remove-orphans']);

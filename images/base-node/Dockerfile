@@ -31,10 +31,10 @@ FROM common AS build
 ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0 \
     COREPACK_HOME=/usr/local/share/corepack \
     COREPACK_DEFAULT_TO_LATEST=0
-# Up-to-date corepack: an old version cannot install pnpm 12.
-# npm and yarn are then removed: they are no longer used (pnpm is enough) and
-# npm ships dependencies regularly flagged by Trivy.
-RUN npm install -g corepack@0.36.0 && corepack enable && corepack install -g pnpm@12.16.1 \
+# The corepack shipped with Node (0.36.0 in 24.22.1) installs pnpm 12; an
+# older one could not. npm and yarn are then removed: they are no longer
+# used (pnpm is enough) and npm ships dependencies regularly flagged by Trivy.
+RUN corepack enable && corepack install -g pnpm@12.16.1 \
     && chmod -R a+rX "$COREPACK_HOME" \
     && pnpm --version \
     && rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx \

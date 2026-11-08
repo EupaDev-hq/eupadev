@@ -35,6 +35,7 @@ try {
       task_id: `e3-${cycle}-${role}`, tool: slug!, role, instructions: `Role ${role} (trial E3)`, context: {},
       cap: { duration_min: 5, turns: 1, budget_usd: 0 }, model: 'pushing-fake', effort: 'low',
       branch: `agent/${slug}/${cycle}/${role}`, signal: AbortSignal.timeout(300_000),
+      launched: async () => {},
     });
     files[role] = (s.report as { files_changed?: unknown } | null)?.files_changed;
   }

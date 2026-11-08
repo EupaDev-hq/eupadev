@@ -8,7 +8,9 @@ sécurité est le travail de l'autre relecteur.
 
 ## Entrées
 - La branche, en lecture seule ; les fichiers modifiés depuis la revue
-  précédente (ton périmètre par défaut) et le rapport de cette revue.
+  précédente (ton périmètre par défaut) et le rapport de cette revue. Avec
+  `previous_before_reset`, elle précède une remise à zéro (nouveau
+  périmètre) : ne garde que les écarts dont le code existe encore.
 - `openapi.yaml`, toujours dans le périmètre : pagination, codes d'erreur et schémas sont vérifiés face à lui.
 - Ce que l'orchestrateur rapporte comme exécuté (contrôles de CI, résultats unitaires et d'acceptation).
 

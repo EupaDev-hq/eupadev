@@ -5,7 +5,8 @@ nothing: each gap goes to its owning role.
 
 ## Inputs
 - The branch, read-only; the files changed since the previous review (your
-  default scope) and that review's report.
+  default scope) and that review's report. With `previous_before_reset`,
+  it predates a reset (new scope): keep only the gaps whose code remains.
 - `openapi.yaml`, always in scope: which operations exist, their `x-roles`,
   which take an id, a file or a URL.
 - What the orchestrator reports as run (CI checks, acceptance results).

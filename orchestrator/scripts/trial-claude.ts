@@ -29,6 +29,7 @@ try {
     context: { request: 'Create the file api/hello.txt holding exactly the line "hello", then make a local commit with the message "hello".' },
     cap: { duration_min: 15, turns: 30, budget_usd: 1 }, model: model!, effort: 'low',
     branch: `agent/${tool}/1/builder`, signal: AbortSignal.timeout(15 * 60_000),
+    launched: async () => console.error(`[${new Date().toISOString()}] container started`),
   });
   const status = (s.report as { status?: unknown } | null)?.status ?? null;
   console.log(JSON.stringify({ status: status, error: s.error ?? null, cost_usd: s.cost_usd, tokens: s.tokens ?? null, duration_s: s.duration_s, tree_hash: s.tree_hash }));

@@ -590,6 +590,33 @@ test('2nd round B6: cancellation during the Prod deployment of a creation → Pr
   });
 });
 
+test('real cost: a failed task is charged the cost its engine reported; nothing before its container started; the cap only for a launch cut short, said in the record', { timeout: 120_000 }, async () => {
+  await withBench(async (b, p) => {
+    const execute = b.engine.execute.bind(b.engine);
+    const contractTask = async (slug: string, patch?: (i: TaskInput) => Promise<never>) => {
+      b.engine.execute = async (i) => (i.role === 'contract' && patch !== undefined ? patch(i) : execute(i));
+      const cycle = await p.createCycle(slug);
+      await p.driveUntil(cycle, patch === undefined ? 'contract' : 'gate_contract_blocked');
+      if (patch === undefined) {
+        b.engine.answer('contract', { type: 'failed', reason: 'Claude Code stopped: budget cap reached', cost_usd: 1.25 });
+        await p.waitForState(cycle, 'gate_contract_blocked');
+      }
+      const c = await b.orch.base.readCycle(cycle);
+      const t = (await b.orch.base.pool.query<{ status: string; cost: number; executions: number; reason: string }>(
+        `SELECT status, cost_usd::float8 AS cost, executions, report ->> 'reason' AS reason FROM tasks WHERE id = $1`, [`${c.tool_id}-${c.id}-1-contract`])).rows[0];
+      return t;
+    };
+    // Known cost (the engine read it in Claude Code's result): charged as is, no forfeit.
+    assert.deepEqual(await contractTask('cost-known'), { status: 'failed', cost: 1.25, executions: 1, reason: 'Claude Code stopped: budget cap reached' });
+    // Infrastructure failure before the container (clone, signature…): no model ran, nothing charged.
+    assert.deepEqual(await contractTask('cost-before-launch', async () => { throw new Error('clone: forge unreachable'); }),
+      { status: 'failed', cost: 0, executions: 0, reason: 'clone: forge unreachable' });
+    // Container started then lost without a result: the cost is unknown, the cap stands in for it and the record says so.
+    assert.deepEqual(await contractTask('cost-cut-short', async (i) => { await i.launched(); throw new Error('container stopped before the end (code 137)'); }),
+      { status: 'failed', cost: 10, executions: 1, reason: 'container stopped before the end (code 137) (cost unknown: 1 execution(s) cut short without a reported cost, each charged the role\'s cap of $10)' });
+  });
+});
+
 test('2nd round B7: an undeclared cost (null) counts the task\'s cap', { timeout: 60_000 }, async () => {
   await withBench(async (b, p) => {
     const cycle = await p.createCycle('r2-b7');

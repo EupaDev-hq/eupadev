@@ -1,7 +1,8 @@
 // The platform's SEC-* against the Preview: generated from the
 // tool's contract by the core's kit (pinned by the tool's lockfile), written by nobody per tool. Run by acceptance.sh
 // under node --test; protected (.gitea/**). The Preview database is not reachable from the job (no rate-limit reset)
-// and every check spends the same per-minute windows: SEC-RATE checks run last, each at the start of a new minute.
+// and every check spends the same per-minute windows: SEC-RATE checks run last, each at the start of a new minute;
+// a check refused by the limit (429 instead of the expected status) runs once more at the start of the next minute.
 // SEC-ERR's forced failures need a test double of the tool: only its unknown-route case runs.
 import { test } from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -19,10 +20,21 @@ const cases = generateCases({
   people: readRealm(process.env.KIT_REALM_FILE).people,
   idpOrigin: new URL(idp).origin,
 });
-for (const c of cases.filter((x) => x.sec !== 'SEC-RATE')) test(c.name, c.verify);
+const nextMinute = () => sleep(60_200 - (Date.now() % 60_000));
+for (const c of cases.filter((x) => x.sec !== 'SEC-RATE')) {
+  test(c.name, async () => {
+    try {
+      await c.verify();
+    } catch (e) {
+      if (!/: 429 instead of /.test(String(/** @type {Error} */ (e).message))) throw e;
+      await nextMinute();
+      await c.verify();
+    }
+  });
+}
 for (const c of cases.filter((x) => x.sec === 'SEC-RATE')) {
   test(c.name, async () => {
-    await sleep(60_200 - (Date.now() % 60_000));
+    await nextMinute();
     await c.verify();
   });
 }

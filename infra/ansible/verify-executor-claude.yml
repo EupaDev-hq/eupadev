@@ -29,11 +29,14 @@
       ansible.builtin.set_fact:
         trial_slug: "check-exec-{{ lookup('ansible.builtin.pipe', 'date -u +%Y%m%d%H%M%S') }}"
 
+    # A single capped task, not a cycle: the role's free-cycle gate is skipped
+    # here, and says so in the output.
     - name: Switch the executor to engine=claude
       ansible.builtin.include_role:
         name: executor
       vars:
         executor_claude_engine: true
+        executor_free_cycle_skip: true
 
 - name: A task of the pilot, run by the executor with the real Claude Code
   hosts: orchestrator

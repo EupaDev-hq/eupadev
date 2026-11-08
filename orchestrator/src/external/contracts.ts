@@ -6,7 +6,9 @@
 
 export type Role =
   | 'overlap' | 'scoping' | 'contract' | 'tests' | 'builder'
-  | 'security-reviewer' | 'quality-reviewer';
+  | 'security-reviewer' | 'quality-reviewer'
+  /** Read-only, run once before the hardening-blocked gate opens: names the cause of the block for the admin (ADR-027). */
+  | 'diagnosis';
 /** Code roles, in queueing order (at N = 1, execution order): the acceptance suite first, the builder next (ADR-021). */
 export const CODE_ROLES = ['tests', 'builder'] as const;
 export type RoleCode = (typeof CODE_ROLES)[number];
@@ -50,6 +52,8 @@ export function inScope(role: Role, file: string): boolean {
  * scoping (spec, decisions, mock-up) before the contract; contract (OpenAPI, features) before tests and builder.
  */
 export type PublishedRole = 'scoping' | 'contract';
+export type { Registration } from '../registration.ts';
+import type { Registration } from '../registration.ts';
 
 /** Roles whose tasks count against the scoping envelope; all the others against the hardening one (D16). */
 export const SCOPING_ROLES: readonly Role[] = ['overlap', 'scoping'];
@@ -76,6 +80,13 @@ export interface TaskInput {
   branch: string;
   /** Fired by the task's timeout or by cancellation: the engine must stop the container. */
   signal: AbortSignal;
+  /**
+   * Called by the engine right before anything that can spend money (the agent's container starts), never after. W2 counts
+   * the launch (`tasks.executions`): an execution cut short AFTER this call with no reported cost is charged the role's cap
+   * (the cost is unknown), one cut short BEFORE it costs nothing (no model ran). Throws if the task is already closed
+   * (cancellation, incident): the engine must not start the container.
+   */
+  launched: () => Promise<void>;
 }
 
 export interface TaskOutput {
@@ -134,6 +145,13 @@ export interface Forge {
   /** Idempotent: resumes a repository it already created. Throws if the forge refuses or does not answer. `signal`: cycle cancellation. */
   createRepo(slug: string, signal?: AbortSignal): Promise<void>;
   /**
+   * Rename at Gate 1 (correction): the repository `from` becomes `to` (hence the image path and the web address), then
+   * the head of every branch `agent/<from>/…` is carried over as `agent/<to>/…`; the old branches stay (the forge
+   * neither renames nor deletes a branch under a rule: M5). Idempotent (a DBOS step can replay): `from` gone and `to`
+   * present → continue; a branch already carried over → skipped.
+   */
+  renameTool(from: string, to: string, signal?: AbortSignal): Promise<void>;
+  /**
    * Validated work of `role` (its branch `agent/<slug>/<cycle>/<role>`) merged into main by the orchestrator account,
    * diff checked against the role's perimeter. Idempotent: a branch already in main, or absent, changes nothing.
    */
@@ -160,6 +178,17 @@ export interface Forge {
   launchPreviewPipeline?(slug: string, url: string, signal?: AbortSignal): Promise<number>;
   /** E5f: result of the first Preview pipeline run above `since`, or null while there is none or it runs. */
   previewPipelineFinished?(slug: string, since: number, signal?: AbortSignal): Promise<{ outcome: 'green' | 'red'; checks: CiResult['checks'] } | null>;
+  /**
+   * Diagnosis (ADR-027): commits ahead of main on each code role's branch of the cycle (`agent/<slug>/<cycle>/<role>`);
+   * 0 when the branch does not exist. Optional: without it, the diagnosis does not know the branches.
+   */
+  roleBranchCommits?(slug: string, cycleId: number, signal?: AbortSignal): Promise<Record<RoleCode, number>>;
+  /**
+   * Gate 1 (D-E5): names the admin needs to write the tool's `core-tools.yml` entry, read from `main` (`openapi.yaml`
+   * `x-roles`, `db/purge.sql` periods; `src/registration.ts`). A missing file gives the names it can. Optional: without
+   * it, the Gate 1 page shows no entry to paste.
+   */
+  registration?(slug: string, signal?: AbortSignal): Promise<Registration>;
 }
 
 // ── Deployment (W4) ───────────────────────────────────────────────────────────────────────────────

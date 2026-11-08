@@ -213,7 +213,7 @@ test('decisions 1 and 9: creation not completed → tool archived (final, nothin
   await createCycle(tool, 'evolution'); // a new cycle remains possible
 });
 
-test('decision 2: "scope change" exists only at Gate 1, commented, and leads to the contract', async () => {
+test('decision 2: "scope change" exists only at Gate 1 and the hardening escalation, commented, and leads to the contract', async () => {
   const tool = await createTool();
   const cycle = await createCycle(tool);
   await forceState(cycle, 'gate_1');
@@ -224,7 +224,7 @@ test('decision 2: "scope change" exists only at Gate 1, commented, and leads to 
   await forceState(cycle, 'gate_overlap');
   await assert.rejects(
     pool.query(`INSERT INTO approvals (tool_id, cycle_id, gate, decision, actor_id, role, comment) VALUES ($1, $2, 'gate_overlap', 'scope_change', 'a0000000-0000-4000-8000-000000000001', 'admin', 'x')`, [tool, cycle]),
-    /approvals_gate1_scope/);
+    /approvals_scope_change/);
   await forceState(cycle, 'gate_1');
   await assert.rejects(transition(cycle, 'scoping', 'gate:scope_change', ADMIN.id), /transition not allowed/);
   await transition(cycle, 'contract', 'gate:scope_change', ADMIN.id);
@@ -383,14 +383,17 @@ test('B7: deployments, pipeline results and messages are append-only', async () 
   await pool.query(`INSERT INTO deployments (tool_id, cycle_id, environment, digest, health, visit, operation) VALUES ($1, $2, 'preview', $3, 'ok', $4, 'op-1-b')`, [tool, cycle, digest, v]);
   await pool.query(`INSERT INTO pipeline_results (tool_id, cycle_id, iteration, pipeline, digest, check_name, result, visit) VALUES ($1, $2, 1, 'preview', $3, 'dast', 'green', $4)`, [tool, cycle, digest, v]);
   await pool.query(`INSERT INTO messages (tool_id, cycle_id, author_type, actor_id, content) VALUES ($1, $2, 'requester', 'd0000000-0000-4000-8000-000000000001', 'hello')`, [tool, cycle]);
-  for (const table of ['deployments', 'pipeline_results', 'messages']) {
+  // ADR-031: a sentence and its reading; an amount only with a top-up.
+  await pool.query(`INSERT INTO intents (tool_id, cycle_id, actor_id, hat, state, allowed, text, lang, intent, amount_usd, reader, latency_ms) VALUES ($1, $2, 'a0000000-0000-4000-8000-000000000001', 'admin', 'gate_hardening_blocked', '{approved,top_up}', 'ok 20', 'en', 'top_up', 20, 'words', 3)`, [tool, cycle]);
+  await assert.rejects(pool.query(`INSERT INTO intents (tool_id, cycle_id, actor_id, hat, state, allowed, text, lang, intent, amount_usd, reader, latency_ms) VALUES ($1, $2, 'a0000000-0000-4000-8000-000000000001', 'admin', 'gate_hardening_blocked', '{approved,top_up}', 'ok 20', 'en', 'approved', 20, 'words', 3)`, [tool, cycle]), /intents_amount_with_top_up/);
+  for (const table of ['deployments', 'pipeline_results', 'messages', 'intents']) {
     await assert.rejects(pool.query(`UPDATE ${table} SET cycle_id = cycle_id WHERE cycle_id = $1`, [cycle]), /append-only/, `${table}: UPDATE`);
     await assert.rejects(pool.query(`DELETE FROM ${table} WHERE cycle_id = $1`, [cycle]), /append-only/, `${table}: DELETE`);
   }
 });
 
 test('B9: TRUNCATE refused on the append-only tables, even cascading', async () => {
-  for (const table of ['tool_history', 'approvals', 'deviations', 'deployments', 'pipeline_results', 'messages']) {
+  for (const table of ['tool_history', 'approvals', 'deviations', 'deployments', 'pipeline_results', 'messages', 'intents']) {
     await assert.rejects(pool.query(`TRUNCATE ${table} CASCADE`), /TRUNCATE refused/, table);
   }
   await assert.rejects(pool.query('TRUNCATE tools CASCADE'), /TRUNCATE refused/);
@@ -751,6 +754,8 @@ test('measure: values of a finished cycle — cost per envelope (cap included), 
   await measuredTask(tool, cycle, 1, 'contract', { status: 'done', cost: 1, input: 2000, output: 300, duration: 120 });
   await measuredTask(tool, cycle, 1, 'builder', { status: 'blocked', cost: 2, input: 3000, output: 400, duration: 180 });
   await measuredTask(tool, cycle, 2, 'builder', { status: 'done', cost: 1.5, input: 2500, output: 350, duration: 150 });
+  // ADR-027: a diagnosis (its own counter, here 3) spends the cycle's money without making a third hardening round.
+  await measuredTask(tool, cycle, 3, 'diagnosis', { status: 'done', cost: 0.5, input: 200, output: 50, duration: 30 });
   // Never started, closed as failed at 0 (B3): a real zero, known measurement.
   await pool.query(`INSERT INTO tasks (id, tool_id, cycle_id, step, role, iteration) VALUES ($1, $2, $3, 'scoping', 'tests', 2)`, [`${tool}-${cycle}-2-tests`, tool, cycle]);
   await pool.query(`UPDATE tasks SET status = 'failed', ended_at = now() WHERE id = $1`, [`${tool}-${cycle}-2-tests`]);
@@ -768,8 +773,8 @@ test('measure: values of a finished cycle — cost per envelope (cap included), 
   await transition(cycle, 'end_success', 'task:done');
   assert.deepEqual(await measure(cycle), {
     tool: slug, type: 'creation', state: 'end_success', finished: true, exact_calendar_duration: true, null_calendar_duration: false,
-    total_cost_usd: '7.0000', scoping_cost_usd: '2.5000', hardening_cost_usd: '4.5000', input_tokens: 9800, output_tokens: 1500, work_duration_min: '10.50',
-    tasks: 7, failed_tasks: 2, blocked_tasks: 1, hardening_rounds: 2, first_ci_pass_green: false, deviations: 2,
+    total_cost_usd: '7.5000', scoping_cost_usd: '2.5000', hardening_cost_usd: '5.0000', input_tokens: 10000, output_tokens: 1550, work_duration_min: '11.00',
+    tasks: 8, failed_tasks: 2, blocked_tasks: 1, hardening_rounds: 2, first_ci_pass_green: false, deviations: 2,
     confirmed_blocking_deviations: null, debt_deviations: null, gate_decisions: 1,
   });
 });
@@ -796,19 +801,24 @@ test('measure: unknown = NULL, never 0 — task in progress, unknown cost counte
 const caps = (p: Partial<Record<keyof typeof DEFAULT_THRESHOLDS.task, number>>) =>
   Object.fromEntries(Object.keys(DEFAULT_THRESHOLDS.task).map((r) => [r, { budget_usd: p[r as keyof typeof p] ?? 99 }])) as Record<keyof typeof DEFAULT_THRESHOLDS.task, { budget_usd: number }>;
 
-test('A-R5: a task closed without a result counts at the budget cap of ITS role, per run; queued: 0', async () => {
+test('A-R5: a task closed without a result counts at the budget cap of ITS role, per container launched, said in the record; queued or still preparing: 0', async () => {
   const tool = await createTool();
   const cycle = await createCycle(tool);
   await measuredTask(tool, cycle, 1, 'overlap', null);
   await measuredTask(tool, cycle, 1, 'scoping', null);
   await pool.query(`UPDATE tasks SET executions = 2 WHERE cycle_id = $1 AND role = 'scoping'`, [cycle]);
   await pool.query(`INSERT INTO tasks (id, tool_id, cycle_id, step, role, iteration, attempt) VALUES ($1, $2, $3, 'scoping', 'scoping', 2, 1)`, [Database.taskId({ tool_id: tool, id: cycle }, 2, 'scoping', 1), tool, cycle]);
+  // In progress but no container yet (the launcher was still preparing: clone, signature…): nothing spent.
+  const preparing = Database.taskId({ tool_id: tool, id: cycle }, 2, 'overlap', 1);
+  await pool.query(`INSERT INTO tasks (id, tool_id, cycle_id, step, role, iteration, attempt) VALUES ($1, $2, $3, 'scoping', 'overlap', 2, 1)`, [preparing, tool, cycle]);
+  await pool.query(`UPDATE tasks SET status = 'in_progress' WHERE id = $1`, [preparing]);
   await new Database(engine).failOpenTasks(cycle, caps({ overlap: 3, scoping: 7 }), 'incident');
-  const costs = (await pool.query(`SELECT role, iteration, status, cost_usd::text AS c FROM tasks WHERE cycle_id = $1 ORDER BY role, iteration`, [cycle])).rows;
+  const costs = (await pool.query(`SELECT role, iteration, status, cost_usd::text AS c, report ->> 'reason' AS reason FROM tasks WHERE cycle_id = $1 ORDER BY role, iteration`, [cycle])).rows;
   assert.deepEqual(costs, [
-    { role: 'overlap', iteration: 1, status: 'failed', c: '3.0000' },
-    { role: 'scoping', iteration: 1, status: 'failed', c: '14.0000' },
-    { role: 'scoping', iteration: 2, status: 'failed', c: '0.0000' },
+    { role: 'overlap', iteration: 1, status: 'failed', c: '3.0000', reason: 'incident (cost unknown: 1 execution(s) cut short without a reported cost, each charged the role\'s cap of $3)' },
+    { role: 'overlap', iteration: 2, status: 'failed', c: '0.0000', reason: 'incident' },
+    { role: 'scoping', iteration: 1, status: 'failed', c: '14.0000', reason: 'incident (cost unknown: 2 execution(s) cut short without a reported cost, each charged the role\'s cap of $7)' },
+    { role: 'scoping', iteration: 2, status: 'failed', c: '0.0000', reason: 'incident' },
   ]);
 });
 
@@ -824,11 +834,13 @@ test('measure: the engine reads the view, does not write it; it undoes and repla
   try {
     await migrateTo(url, 'up');
     assert.equal(await seen(), 1);
-    // 0015 (machine, S5), 0014 (sessions), 0013 (target role), 0012 (machine), 0011 (builder role) and 0010 (actor merge)
-    // follow 0009: undo the last seven to remove the view.
-    await migrateTo(url, 'down', undefined, 7);
+    // 0021 (intents, ADR-031), 0020 (machine, Gate 1 rename wording), 0019 (scope change at the hardening gate), 0018
+    // (machine), 0017 (measures without the diagnosis, ADR-027), 0016 (diagnosis role), 0015 (machine, S5), 0014
+    // (sessions), 0013 (target role), 0012 (machine), 0011 (builder role) and 0010 (actor merge) follow 0009: undo the
+    // last thirteen to remove the view.
+    await migrateTo(url, 'down', undefined, 13);
     assert.equal(await seen(), 0, 'Down of 0009: view removed');
-    assert.equal((await other.query<{ n: number }>(`SELECT count(*)::int AS n FROM information_schema.tables WHERE table_name = 'tasks'`)).rows[0]!.n, 1, 'only 0014 to 0009 undone');
+    assert.equal((await other.query<{ n: number }>(`SELECT count(*)::int AS n FROM information_schema.tables WHERE table_name = 'tasks'`)).rows[0]!.n, 1, 'only 0020 to 0009 undone');
     await migrateTo(url, 'up');
     assert.equal(await seen(), 1);
   } finally {

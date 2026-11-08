@@ -3,13 +3,16 @@
 *
 !orchestrator/package.json
 !orchestrator/pnpm-lock.yaml
+!orchestrator/pnpm-workspace.yaml
 !orchestrator/migrations/
 !orchestrator/src/
 !orchestrator/lang/
 !orchestrator/web/
 !tool-template/agents/report.schema.json
+!core/src/contract-lint.js
 !tool-template/AGENTS.md
 !tool-template/agents/*.md
+!tool-template/agents/capabilities.json
 !tool-template/.claude/rules/*.md
 !examples/requests/README.md
 !examples/requests/openapi.yaml

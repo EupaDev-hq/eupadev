@@ -2,10 +2,10 @@
 // never from the cloned repository; fail-closed at loading. Without a database.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { RULES_BY_ROLE, ROLES, assembler, loadInstructions, withoutFrontmatter } from '../src/agent-engine/instructions.ts';
+import { RULES_BY_ROLE, ROLES, assembler, loadCapabilities, loadInstructions, withoutFrontmatter } from '../src/agent-engine/instructions.ts';
 import { invisibleCharacter } from '../src/text.ts';
 import { validateMessage } from '../src/messages.ts';
 
@@ -41,7 +41,10 @@ test('instructions: every role of the engine has its file, and its instructions 
   assert.deepEqual(RULES_BY_ROLE['security-reviewer'], ['security', 'tests']);
   assert.ok(instructions.builder.includes('# Backend rules') && instructions.builder.includes('# Frontend rules') && instructions.builder.includes('# Security rules'));
   // ADR-021: the backend, frontend and integration roles are no longer loaded (the engine only runs the roles of ROLES).
-  assert.deepEqual([...ROLES].sort(), ['builder', 'contract', 'overlap', 'quality-reviewer', 'scoping', 'security-reviewer', 'tests']);
+  assert.deepEqual([...ROLES].sort(), ['builder', 'contract', 'diagnosis', 'overlap', 'quality-reviewer', 'scoping', 'security-reviewer', 'tests']);
+  // ADR-027: the diagnosis reads data the orchestrator assembled, no domain rule.
+  assert.deepEqual(RULES_BY_ROLE.diagnosis, []);
+  assert.match(instructions.diagnosis, /precheck/);
 });
 
 test('C3 (A-R6): word caps — charter ≤ 500, role prompt ≤ 400, rule file ≤ 300', () => {
@@ -90,6 +93,42 @@ test('instructions: fail-closed — missing or empty file, or one with an invisi
   assert.throws(() => loadInstructions('/nowhere'), /AGENTS\.md unreadable/);
 });
 
+test('capabilities: the scoping role\'s platform catalogue loads from the template, every `from` names a file of this repository, the schema\'s closed list matches it', () => {
+  const c = loadCapabilities(TEMPLATE);
+  const root = new URL('../../', import.meta.url).pathname;
+  assert.ok(c.offered.length >= 10 && c.not_offered.length >= 5);
+  for (const o of c.offered) assert.ok(existsSync(join(root, o.from)), `${o.id}: ${o.from} missing in the repository (the capability may be gone)`);
+  assert.ok(c.offered.some((o) => o.id === 'csv-export' && o.from.startsWith('core/')), 'a capability of the core');
+  assert.ok(!c.offered.some((o) => o.id.includes('email')) && c.not_offered.some((o) => /^Email/.test(o.what)), 'tools in Production have no mail relay: email is not offered');
+  const schema = JSON.parse(read('agents/report.schema.json')) as { $defs: { capability: { enum: string[] } } };
+  assert.deepEqual(schema.$defs.capability.enum, c.offered.map((o) => o.id), 'regenerate: node tool-template/scripts/generate-report-catalogue.js');
+  // The scoping prompt names the data and the two report fields (the prompt guides, the schema checks).
+  assert.match(read('agents/scoping.md'), /platform_capabilities/);
+  assert.match(read('agents/scoping.md'), /capabilities_used/);
+  assert.match(read('agents/scoping.md'), /capabilities_missing/);
+});
+
+test('capabilities: fail-closed — missing, malformed or duplicated file = refusal to load', () => {
+  const d = mkdtempSync(join(tmpdir(), 'capabilities-'));
+  try {
+    assert.throws(() => loadCapabilities(d), /capabilities\.json unreadable/);
+    mkdirSync(join(d, 'agents'));
+    const file = join(d, 'agents', 'capabilities.json');
+    writeFileSync(file, '{ not json');
+    assert.throws(() => loadCapabilities(d), /is not JSON/);
+    writeFileSync(file, JSON.stringify({ offered: [], not_offered: [] }));
+    assert.throws(() => loadCapabilities(d), /malformed/);
+    writeFileSync(file, JSON.stringify({ offered: [{ id: 'Sign In', what: 'x', from: 'core' }], not_offered: [] }));
+    assert.throws(() => loadCapabilities(d), /malformed/);
+    writeFileSync(file, JSON.stringify({ offered: [{ id: 'a', what: 'x', from: 'core' }, { id: 'a', what: 'y', from: 'core' }], not_offered: [] }));
+    assert.throws(() => loadCapabilities(d), /duplicate id/);
+    writeFileSync(file, JSON.stringify({ offered: [{ id: 'a', what: 'x', from: 'core' }], not_offered: [{ what: 'sms', instead: 'email' }] }));
+    assert.deepEqual(loadCapabilities(d), { offered: [{ id: 'a', what: 'x', from: 'core' }], not_offered: [{ what: 'sms', instead: 'email' }] });
+  } finally {
+    rmSync(d, { recursive: true, force: true });
+  }
+});
+
 test('text: invisible characters detected (zero-width, bidi, tags, control), tab and line break accepted', () => {
   assert.equal(invisibleCharacter('normal text\n\twith a tab, accents é and « quotes »'), null);
   assert.equal(invisibleCharacter(`a${String.fromCodePoint(0x200B)}b`), 'U+200B at position 1');
@@ -107,4 +146,19 @@ test('messages: invisible character refused in a decision\'s comment (catalogue 
   assert.match(validateMessage({ type: 'decision', gate: 'gate_1', outcome: 'approved', actor_id: 'a0000000-0000-4000-8000-000000000001', comment: `Book${zwsp}ing` }) ?? '', /comment ?: .*\(U\+200B/);
   assert.match(validateMessage({ type: 'scoping_feedback', outcome: 'correction', author: 'd', text: `a${String.fromCodePoint(0x202e)}b` }) ?? '', /text ?: .*\(U\+202E/);
   assert.match(validateMessage({ type: 'requester_message', author: 'd', text: `a${String.fromCodePoint(0xe0041)}` }) ?? '', /text ?: .*U\+E0041/);
+});
+
+test('messages: rename of the tool (name, slug) accepted with a Gate 1 correction only, slug and name checked', () => {
+  const actor = 'a0000000-0000-4000-8000-000000000001';
+  const correction = { type: 'decision', gate: 'gate_1', outcome: 'correction', actor_id: actor, comment: 'Typo in the name' };
+  assert.equal(validateMessage({ ...correction, name: 'Equipment Management', slug: 'equipment-management' }), null);
+  assert.equal(validateMessage({ ...correction, name: 'Equipment Management' }), null);
+  assert.equal(validateMessage({ ...correction, slug: 'equipment-management' }), null);
+  assert.match(validateMessage({ ...correction, outcome: 'approved', slug: 'equipment-management' }) ?? '', /only with a "correction" at gate_1/);
+  assert.match(validateMessage({ ...correction, outcome: 'scope_change', name: 'X' }) ?? '', /only with a "correction" at gate_1/);
+  assert.match(validateMessage({ ...correction, gate: 'gate_2', name: 'X' }) ?? '', /only with a "correction" at gate_1/);
+  assert.match(validateMessage({ ...correction, gate: 'gate_hardening_blocked', slug: 'x' }) ?? '', /only with a "correction" at gate_1/);
+  for (const slug of ['Equipment', 'equipment_management', '-equipment', 'equipment-', 'a'.repeat(64), '']) assert.match(validateMessage({ ...correction, slug }) ?? '', /^slug:/, slug);
+  for (const name of ['', ' ', 'a\nb', 'a'.repeat(201)]) assert.match(validateMessage({ ...correction, name }) ?? '', /^name:/, JSON.stringify(name));
+  assert.match(validateMessage({ ...correction, name: `Equip${String.fromCodePoint(0x200b)}ment` }) ?? '', /name: invisible character refused/);
 });

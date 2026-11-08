@@ -1,9 +1,12 @@
-# Real test of the Docker storage — rerunnable, read only.
+# Real test of the Docker storage — rerunnable, read only (the CI VM runs its
+# nightly prune once, which removes nothing in use).
 #   ansible-playbook verify-storage.yml
 # On each VM: images and containers (containerd storage of Docker 29) are on
 # the separate Docker disk, nothing is left on the system disk, and the
 # garbage collector of the build cache is on. A full Docker disk must never
-# fill the system disk (ROADMAP §8.11, decision 1).
+# fill the system disk (ROADMAP §8.11, decision 1). On the CI VM: the daily
+# prune (role docker_prune) is scheduled and runs its four steps without
+# touching a container.
 - name: Verify the Docker storage
   hosts: all
   become: true
@@ -51,3 +54,57 @@
         that:
           - (storage_daemon.content | b64decode | from_json).builder.gc.enabled
           - (storage_daemon.content | b64decode | from_json).builder.gc.defaultKeepStorage == docker_buildkit_cache_max
+
+    # CI VM (role docker_prune): the daily prune is scheduled, and one run
+    # does its four steps (build cache, tool images, dangling images,
+    # anonymous volumes) without
+    # removing a single container — a Preview in service or paused keeps its
+    # image.
+    - name: Daily prune of the CI VM
+      when: inventory_hostname in groups['ci']
+      block:
+        - name: State of the prune timer
+          ansible.builtin.systemd_service:
+            name: eupadev-docker-prune.timer
+          register: storage_prune_timer
+
+        - name: The prune timer is enabled and active
+          ansible.builtin.assert:
+            that:
+              - storage_prune_timer.status.ActiveState == 'active'
+              - storage_prune_timer.status.UnitFileState == 'enabled'
+            fail_msg: "eupadev-docker-prune.timer is {{ storage_prune_timer.status.ActiveState }} / {{ storage_prune_timer.status.UnitFileState }}"
+
+        - name: Containers before the prune
+          ansible.builtin.command:
+            cmd: docker ps -aq --no-trunc
+          register: storage_containers_before
+          changed_when: false
+
+        - name: Run the prune now (what the timer does every night)
+          ansible.builtin.systemd_service:
+            name: eupadev-docker-prune.service
+            state: started
+
+        - name: Containers after the prune
+          ansible.builtin.command:
+            cmd: docker ps -aq --no-trunc
+          register: storage_containers_after
+          changed_when: false
+
+        - name: Journal of the run
+          ansible.builtin.command:
+            cmd: journalctl -u eupadev-docker-prune.service -n 60 --no-pager -o cat
+          register: storage_prune_log
+          changed_when: false
+
+        - name: The prune ran its four steps and removed no container
+          ansible.builtin.assert:
+            that:
+              - storage_prune_log.stdout is search('== build cache older than')
+              - storage_prune_log.stdout is search('== tool images \(label eupadev.core\) older than')
+              - storage_prune_log.stdout is search('== dangling images older than')
+              - storage_prune_log.stdout is search('== anonymous volumes used by no container')
+              - storage_prune_log.stdout is search('== Docker disk after the prune')
+              - storage_containers_after.stdout_lines | sort == storage_containers_before.stdout_lines | sort
+            fail_msg: "prune incomplete or a container removed — journal: {{ storage_prune_log.stdout }}"

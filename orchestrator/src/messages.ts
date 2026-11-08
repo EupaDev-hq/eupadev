@@ -39,6 +39,12 @@ export type Message =
       digest?: string;
       /** Four eyes (Gate 2) lifted by FOUR_EYES_EXEMPTION_SUBJECT: recorded in `approvals`. */
       four_eyes_exemption?: boolean;
+      /**
+       * Rename of the tool, Gate 1 `correction` only: new displayed name and/or new slug (forge repository, image path,
+       * web address `<slug>.<domain>`). At least one of them differs from the current value (checked by `Orchestrator.send`).
+       */
+      name?: string;
+      slug?: string;
     } & Human)
   | { type: 'ci_finished'; outcome: 'green' | 'red'; digest?: string; checks: PipelineCheck[]; visit?: number }
   | { type: 'preview_pipeline_finished'; outcome: 'green' | 'red'; checks: PipelineCheck[]; visit?: number }
@@ -76,6 +82,10 @@ export function eventKey(m: Message): string {
 }
 
 export const DIGEST_FORMAT = /^sha256:[0-9a-f]{64}$/;
+/** Slug of a tool (`tools.slug`, `orchestrator.ts`): forge repository name, image path and web address. */
+export const SLUG_FORMAT = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+export const SLUG_MAX_LENGTH = 63;
+export const NAME_MAX_LENGTH = 200;
 /** Cap of a top-up (numeric(10, 2) in the db): beyond it, it is a typo. */
 export const MAX_TOP_UP_USD = 100_000;
 
@@ -109,7 +119,7 @@ export function validateMessage(m: unknown): string | null {
   const x = m as Record<string, unknown>;
   // Free texts passed on to the agents (chat, clarification, catalogue description): never an invisible character
   // (zero-width, bidi, Unicode tags — "Rules File Backdoor").
-  for (const field of ['text', 'comment']) {
+  for (const field of ['text', 'comment', 'name']) {
     const invisible = typeof x[field] === 'string' ? invisibleCharacter(x[field]) : null;
     if (invisible !== null) return `${field}: invisible character refused (${invisible})`;
   }
@@ -138,6 +148,12 @@ export function validateMessage(m: unknown): string | null {
         if (x['outcome'] !== 'approved') return 'budget_top_up_usd: only with "approved"';
       }
       if (x['digest'] !== undefined && !(typeof x['digest'] === 'string' && DIGEST_FORMAT.test(x['digest']))) return 'digest: sha256:<64 hexadecimal digits> expected';
+      // Rename of the tool: Gate 1 correction only (the builder updates the visible names, the forge the repository).
+      if (x['name'] !== undefined || x['slug'] !== undefined) {
+        if (x['gate'] !== 'gate_1' || x['outcome'] !== 'correction') return 'name and slug: only with a "correction" at gate_1';
+        if (x['name'] !== undefined && !(nonEmpty(x['name']) && x['name'].length <= NAME_MAX_LENGTH && !/[\u0000-\u001f\u007f]/.test(x['name']))) return `name: non-empty text of at most ${NAME_MAX_LENGTH} characters expected, without line break or control character`;
+        if (x['slug'] !== undefined && !(typeof x['slug'] === 'string' && SLUG_FORMAT.test(x['slug']) && x['slug'].length <= SLUG_MAX_LENGTH)) return `slug: lowercase letters, digits and dashes expected (e.g. car-fleet), at most ${SLUG_MAX_LENGTH} characters`;
+      }
       return null;
     }
     case 'ci_finished':

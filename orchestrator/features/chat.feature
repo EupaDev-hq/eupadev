@@ -28,6 +28,7 @@ Feature: Requester's chat in the web page
     And the cycle's chat contains the orchestrator's message "Mock-up available: https://inventory.scoping.example.test"
     When the requester opens the cycle's conversation in their browser
     And the requester types "The filter per site is missing" in the chat
+    And the requester chooses "Something to change (correction)"
     Then the cycle moves from "waiting_scoping_feedback" to "scoping" by "event:scoping_feedback:correction"
     And task "scoping" of iteration 2 has "I want to track the laptops per site" in its context
     And task "scoping" of iteration 2 has "Mock-up available: https://inventory.scoping.example.test" in its context
@@ -47,3 +48,21 @@ Feature: Requester's chat in the web page
     When the requester opens the conversation of tool "car-fleet"
     Then the page shows message "I want to track the vehicles and their roadworthiness tests"
     And the page does not show message "I want to track the laptops per site"
+
+  @web
+  @t:waiting_scoping_feedback--event:scoping_feedback:satisfied-->contract
+  Scenario: C4. (ADR-031) An approval typed in plain words is understood; the contract task is paid, so one click confirms it
+    Given a creation cycle in state "waiting_scoping_feedback"
+    When the requester opens the cycle's conversation in their browser
+    And the requester types "Looks good to me" in the chat
+    Then the page shows message "Understood: Approve this mock-up. This starts a paid run of the agents"
+    When the requester chooses "Approve this mock-up"
+    Then the cycle moves from "waiting_scoping_feedback" to "contract" by "event:scoping_feedback:satisfied"
+
+  @web
+  Scenario: C5. (ADR-031) A sentence that is not plain gets one question, and nothing is sent before a click
+    Given a creation cycle in state "waiting_scoping_feedback"
+    When the requester opens the cycle's conversation in their browser
+    And the requester types "ok but the filter is missing" in the chat
+    Then the page shows message "Something to change, or all fine? Choose below."
+    And the cycle is in state "waiting_scoping_feedback"

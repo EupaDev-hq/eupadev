@@ -1,0 +1,230 @@
+# Emergency stop of the engine, levels 1 and 0, for real (free: fake engine).
+#   ansible-playbook verify-emergency-stop.yml
+#   1. a stand-in container carrying the engine's task label (eupadev.task)
+#      runs on the agents VM, as the container of a task in progress does;
+#   2. emergency-stop.yml level=1: pause in place, executor restarted with it,
+#      no agent container left on the agents VM;
+#   3. a request through the pilot's API: its first task stays queued (no
+#      process listens to agent-tasks during the pause), the cycle waits;
+#   4. emergency-stop.yml level=0: the task is taken by the executor
+#      (agent-executor), the cycle goes on;
+#   5. cleanup: cycle cancelled (nothing is deleted from the database, by
+#      design; the test cycles stay under the slug check-stop-<timestamp>).
+# Starts from a normal state (neither pause nor stop in place). A failure
+# before step 4 leaves the pause in place: lift it by hand,
+# emergency-stop.yml -e level=0 -e confirm=yes.
+# Prerequisites: site.yml and verify-engine.yml green.
+- name: Normal state before the test
+  hosts: orchestrator:agents
+  become: true
+  gather_facts: false
+  vars:
+    service_dir: "{{ '/opt/eupadev/executor' if inventory_hostname in groups['agents'] else '/opt/eupadev/orchestrator' }}"
+  tasks:
+    - name: Is a pause or a stop in place?
+      ansible.builtin.stat:
+        path: "{{ service_dir }}/{{ item }}"
+      loop: [pause-agents.conf, EMERGENCY-STOP]
+      register: markers
+
+    - name: Neither pause nor stop in place
+      ansible.builtin.assert:
+        that: markers.results | selectattr('stat.exists') | list | length == 0
+        fail_msg: "Pause or stop in place in {{ service_dir }}: resume first (emergency-stop.yml -e level=0 -e confirm=yes)."
+        quiet: true
+
+- name: A stand-in agent container, as left by a task in progress
+  hosts: agents
+  become: true
+  gather_facts: false
+  tasks:
+    # The executor's image: already on the VM, Debian based (sleep).
+    - name: Image of the executor
+      ansible.builtin.command:
+        argv: [docker, inspect, --format, "{{ '{{' }}.Image{{ '}}' }}", executor-executor-1]
+      register: executor_image_id
+      changed_when: false
+
+    - name: Stand-in container with the task label (as the engine sets it)
+      ansible.builtin.command:
+        argv: [docker, run, -d, --rm, --name, fa-check-emergency, --label, eupadev.task, --entrypoint, sleep, "{{ executor_image_id.stdout | trim }}", "600"]
+      changed_when: true
+
+- name: Level 1
+  ansible.builtin.import_playbook: emergency-stop.yml
+  vars:
+    level: "1"
+    confirm: "yes"
+
+- name: After level 1
+  hosts: agents
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Agent containers left
+      ansible.builtin.command:
+        argv: [docker, ps, -aq, --filter, label=eupadev.task]
+      register: after_level_1
+      changed_when: false
+
+    - name: Environment of the executor
+      ansible.builtin.command:
+        argv: [docker, inspect, --format, "{{ '{{' }}range .Config.Env{{ '}}' }}{{ '{{' }}println .{{ '}}' }}{{ '{{' }}end{{ '}}' }}", executor-executor-1]
+      register: executor_env
+      changed_when: false
+
+    - name: "Level 1: no agent container left, executor restarted with the pause"
+      ansible.builtin.assert:
+        that:
+          - after_level_1.stdout | trim == ''
+          - "'PAUSE_AGENTS=1' in executor_env.stdout_lines"
+        success_msg: "OK — no container with the label eupadev.task; executor paused"
+        fail_msg: >-
+          FAILED — containers left: {{ after_level_1.stdout_lines }};
+          PAUSE_AGENTS=1 in the executor: {{ 'PAUSE_AGENTS=1' in executor_env.stdout_lines }}
+        quiet: true
+
+- name: A task queued during the pause
+  hosts: orchestrator
+  become: true
+  gather_facts: false
+  vars:
+    engine_api: http://127.0.0.1:8080
+    psql: [docker, compose, exec, -T, db, psql, -U, orchestrator, -d, orchestrator, -tAc]
+  module_defaults:
+    ansible.builtin.command:
+      chdir: /opt/eupadev/orchestrator
+  tasks:
+    - name: Unique name of the test tool
+      ansible.builtin.set_fact:
+        stop_slug: "check-stop-{{ lookup('ansible.builtin.pipe', 'date -u +%Y%m%d%H%M%S') }}"
+
+    - name: Requester token
+      ansible.builtin.include_tasks: tasks/engine-token.yml
+      vars: { engine_hat: requester }
+
+    - name: New request through the API
+      ansible.builtin.uri:
+        url: "{{ engine_api }}/requests"
+        method: POST
+        headers: { X-EupaDev: "1", Authorization: "Bearer {{ engine_token }}", Idempotency-Key: "{{ stop_slug }}" }
+        body_format: json
+        body: { type: creation, name: "Check stop", slug: "{{ stop_slug }}", owner_service: lab, need: "Lab check: track lent gear" }
+        status_code: 201
+      register: stop_request
+
+    - name: Keep the cycle
+      ansible.builtin.set_fact:
+        stop_cycle: "{{ stop_request.json.cycle_id }}"
+
+    - name: Wait for the first task of the cycle
+      ansible.builtin.command:
+        argv: "{{ psql + ['select id from tasks where cycle_id = ' ~ (stop_cycle | int) ~ ' order by id limit 1'] }}"
+      register: first_task
+      until: first_task.stdout | trim != ''
+      retries: 15
+      delay: 2
+      changed_when: false
+
+    - name: Give the executor 10 s to take it (it must not)
+      ansible.builtin.wait_for:
+        timeout: 10
+
+    - name: State of the task and of its workflow during the pause
+      ansible.builtin.command:
+        argv: "{{ psql + [sql] }}"
+      vars:
+        sql: >-
+          select t.status || ' ' || coalesce(w.status, '-') from tasks t
+          left join dbos.workflow_status w on w.workflow_uuid = 'task-' || t.id where t.id = '{{ first_task.stdout | trim }}'
+      register: paused_task
+      changed_when: false
+
+    - name: "Pause: the task stays queued (ENQUEUED in DBOS, no process listens to agent-tasks)"
+      ansible.builtin.assert:
+        that: paused_task.stdout | trim == 'queued ENQUEUED'
+        success_msg: "OK — task {{ first_task.stdout | trim }}: {{ paused_task.stdout | trim }}"
+        fail_msg: "FAILED — task {{ first_task.stdout | trim }}: {{ paused_task.stdout | trim }}"
+        quiet: true
+
+- name: Level 0
+  ansible.builtin.import_playbook: emergency-stop.yml
+  vars:
+    level: "0"
+    confirm: "yes"
+
+- name: The task resumes after the pause is lifted
+  hosts: orchestrator
+  become: true
+  gather_facts: false
+  vars:
+    engine_api: http://127.0.0.1:8080
+    psql: [docker, compose, exec, -T, db, psql, -U, orchestrator, -d, orchestrator, -tAc]
+  module_defaults:
+    ansible.builtin.command:
+      chdir: /opt/eupadev/orchestrator
+  tasks:
+    - name: Resumption (cleanup guaranteed)
+      block:
+        - name: Wait for the executor to take the task
+          ansible.builtin.command:
+            argv: "{{ psql + [sql] }}"
+          vars:
+            sql: >-
+              select t.status || ' ' || coalesce(w.executor_id, '-') from tasks t
+              left join dbos.workflow_status w on w.workflow_uuid = 'task-' || t.id where t.id = '{{ first_task.stdout | trim }}'
+          register: resumed_task
+          until: resumed_task.stdout | trim is not match('queued ')
+          retries: 30
+          delay: 2
+          changed_when: false
+
+        - name: "Level 0: the task is taken by the executor"
+          ansible.builtin.assert:
+            that: resumed_task.stdout | trim is match('(in_progress|done|blocked|failed) agent-executor$')
+            success_msg: "OK — task {{ first_task.stdout | trim }}: {{ resumed_task.stdout | trim }}"
+            fail_msg: "FAILED — task {{ first_task.stdout | trim }}: {{ resumed_task.stdout | trim }}"
+            quiet: true
+
+      rescue:
+        - name: Executor log (diagnosis)
+          ansible.builtin.command:
+            argv: [docker, compose, logs, --no-color, --tail, "40", executor]
+          args:
+            chdir: /opt/eupadev/executor
+          register: executor_log
+          changed_when: false
+          failed_when: false
+          delegate_to: "{{ groups['agents'][0] }}"
+
+        - name: Show the log
+          ansible.builtin.debug:
+            var: executor_log.stdout_lines
+
+        - name: Check failed
+          ansible.builtin.fail:
+            msg: "verify-emergency-stop failed: {{ ansible_failed_task.name }} — see the log above."
+
+      always:
+        - name: Admin token (cleanup)
+          ansible.builtin.include_tasks: tasks/engine-token.yml
+          vars: { engine_hat: admin }
+
+        - name: Read the final state of the test cycle
+          ansible.builtin.uri:
+            url: "{{ engine_api }}/requests/{{ stop_cycle }}"
+            headers: { X-EupaDev: "1", Authorization: "Bearer {{ engine_token }}" }
+          register: remaining
+          failed_when: false
+
+        - name: Cancel the test cycle if it is still open
+          ansible.builtin.uri:
+            url: "{{ engine_api }}/messages"
+            method: POST
+            headers: { X-EupaDev: "1", Authorization: "Bearer {{ engine_token }}", Idempotency-Key: "{{ stop_slug }}-cancellation" }
+            body_format: json
+            body: "{{ {'cycle_id': stop_cycle | int, 'message': {'type': 'cancellation'}} }}"
+            status_code: 202
+          when: remaining.json is defined and remaining.json.finished_at is none
+          changed_when: true
+          failed_when: false

@@ -54,7 +54,7 @@ jobs:
           echo "OK: reports' schema present in the image."
           # Role instructions (ADR-018): one
           # non-empty file per engine role, the charter, the rules.
-          docker run --rm "$IMAGE:$TAG" sh -c 'test -s /app/instructions/AGENTS.md && for r in overlap scoping contract tests builder security-reviewer quality-reviewer; do test -s "/app/instructions/agents/$r.md" || exit 1; done && for d in backend frontend security quality tests; do test -s "/app/instructions/.claude/rules/$d.md" || exit 1; done'
+          docker run --rm "$IMAGE:$TAG" sh -c 'test -s /app/instructions/AGENTS.md && for r in overlap scoping contract tests builder security-reviewer quality-reviewer diagnosis; do test -s "/app/instructions/agents/$r.md" || exit 1; done && for d in backend frontend security quality tests; do test -s "/app/instructions/.claude/rules/$d.md" || exit 1; done'
           echo "OK: role instructions present in the image."
 
       # Tag = short commit (trace); the digest is the only reference used to

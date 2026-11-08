@@ -16,5 +16,5 @@ Feature: Create and submit a request (S1)
     Given reader has a draft request "Dock 3 door"
     When reader submits it
     Then reader sees the request as "Submitted"
-    And the managers' mailbox receives a mail "New request"
+    And manager sees the request "Dock 3 door" as "Submitted"
     And the history shows "Submitted" by "Alice Reader"

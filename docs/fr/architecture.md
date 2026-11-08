@@ -55,9 +55,11 @@ gate sont conçus, les gates se décident en attendant par l'API locale du moteu
 Tout le reste tourne au labo : le cycle entier, de la demande à la Production,
 a été joué avec la vraie forge, la vraie CI et le vrai déployeur, l'agent étant
 un faux scripté qui pousse des fichiers préparés (`verify-engine-deployment.yml`,
-sans appel d'IA). Un vrai outil construit de bout en bout par Claude Code n'a
-pas encore été joué ; les contrôles payants du labo s'arrêtent à une seule
-tâche (`verify-engine-claude.yml`, `verify-executor-claude.yml`).
+sans appel d'IA). Un vrai outil a été construit de bout en bout par Claude Code
+au labo, de la demande à la Production (cycle 9 payant, novembre 2026 ; ses
+leçons sont dans l'ADR-027) ; les contrôles payants rejouables du labo
+s'arrêtent à une seule tâche (`verify-engine-claude.yml`,
+`verify-executor-claude.yml`).
 
 ## Le parcours d'un outil
 
@@ -70,7 +72,7 @@ tâche (`verify-engine-claude.yml`, `verify-executor-claude.yml`).
 | 5. Review | Deux relecteurs en lecture seule (sécurité, qualité) signalent les écarts avec fichier et ligne ; seuls les rôles propriétaires sont relancés. | deux agents |
 | 6. Fusion | Une fois conforme, l'orchestrateur fusionne (squash) dans `main`. Seul `svc-orchestrator` peut y écrire. | orchestrateur |
 | 7. CI | Une seule construction, à partir de la golden image : contrôles, scan, démarrage (lecture seule, base jetable migrée), puis publication de l'image **avec son empreinte**. | CI |
-| 8. Gate 1 | Un humain approuve le nom et le domaine de l'outil, une seule fois par outil. Pour un outil du socle, l'admin l'enregistre aussi sur les cibles (`infra/ansible/register-tools.yml` : base, rôles, client OIDC, personas de test) avant la première Preview. | humain |
+| 8. Gate 1 | Un humain approuve le nom et le domaine de l'outil, une seule fois par outil ; une correction peut renommer l'outil (nouveau nom et/ou slug : dépôt, branches, chemin d'image et adresse suivent). Pour un outil du socle, l'admin l'enregistre aussi sur les cibles avant la première Preview (`infra/ansible/register-tools.yml` : base, rôles, client OIDC, personas de test) ; la page de la gate lui donne l'entrée `core-tools.yml` prête à coller (rôles lus dans le contrat, durées de rétention qu'il y fixe) et la commande. | humain |
 | 9. Preview | L'empreinte est déployée ; les contrôles de performance, d'accessibilité, de sécurité dynamique et la suite d'acceptation propre à l'outil tournent dessus ; seulement quand tout est vert, le demandeur est prévenu et essaie l'outil. Un contrôle rouge ou une correction demandée renvoie à l'étape 4 (la nouvelle empreinte est recontrôlée avant de solliciter le demandeur). | orchestrateur, CI, demandeur |
 | 10. Gate 2 | Un humain approuve **cette empreinte**, affichée dans la demande. | humain |
 | 11. Production | La même empreinte est déployée. Rien n'est reconstruit. | orchestrateur |

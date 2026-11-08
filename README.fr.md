@@ -79,10 +79,13 @@ connecteurs ITSM) n'y sont pas.
 **Pré-publication.** Sur les VM du labo, un cycle complet tourne de bout en
 bout avec un agent scripté, sans coût d'IA : la forge Git et sa vraie CI, le
 moteur DBOS et ses gates, une image signée, une Preview avec ses contrôles,
-puis la Production. Claude Code a exécuté de vraies tâches dans les conteneurs
-isolés, mais aucun vrai outil n'a encore été mené par un modèle de la demande
-jusqu'à la Production. Le tableau de bord et les pages de gate ne sont pas
-construits : pour l'instant, les gates se décident par l'API locale du moteur.
+puis la Production. Un vrai outil (un suivi de prêts de matériel) a été mené
+par le modèle de la demande jusqu'à la Production au labo, en novembre 2026,
+avec des corrections humaines en cours de route ; ce qui a raté et ce que cela
+a coûté est écrit dans l'ADR-027 et [`docs/ai-error-log.md`](docs/ai-error-log.md).
+Rien n'a encore tourné chez un client. Le tableau de bord et les pages de gate
+ne sont pas construits : pour l'instant, les gates se décident par l'API locale
+du moteur.
 Il n'y a pas d'installation en une commande ; le labo, ce sont cinq VM décrites
 en code dans [`infra/`](infra/README.md). Le statut pièce par pièce, avec les
 tests qui le prouvent : [`docs/fr/architecture.md`](docs/fr/architecture.md).

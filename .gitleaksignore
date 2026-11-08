@@ -1,0 +1,3 @@
+# Findings gitleaks may skip (fingerprint = path:rule:line, as `gitleaks detect --no-git` prints it).
+# sha256 of gVisor's public APT signing key: a checksum, not a secret.
+infra/ansible/roles/gvisor/defaults/main.yml:generic-api-key:10

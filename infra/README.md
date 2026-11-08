@@ -69,7 +69,7 @@ ansible-playbook verify-ci.yml         # two runners: standard without Docker, i
 ansible-playbook verify-template.yml   # template pipelines: green, red on a fault, Docker
                                        # out of reach of an agent's tests, publication
 ansible-playbook verify-orchestrator.yml # orchestrator database: answers, accounts with limited rights, unreachable from outside
-ansible-playbook verify-storage.yml     # Docker storage on the separate disk, capped cache
+ansible-playbook verify-storage.yml     # Docker storage on the separate disk, capped cache, daily prune of the CI VM
 ansible-playbook verify-backup.yml   # backup on demand, then a real restore
                                          # in throwaway containers (stops Gitea ≈ 30 s)
 ansible-playbook verify-system.yml      # swap, security updates, SSH, needrestart,
@@ -153,6 +153,18 @@ containers came back: that is the job of the `verify-*` (and of Gatus, later).
 than 7 days (the slot no longer runs). At login, Ubuntu already shows
 "*** System restart required ***".
 
+**Docker disk of the CI VM (automatic)**: every night at 01:00 UTC, the
+timer `eupadev-docker-prune.timer` (role `docker_prune`) removes what is
+older than 72 h (`docker_prune_age`) and used by no container: the build
+cache, the tool images (one `check/<tool>:<sha>` per CI run, label
+`eupadev.core` of the fixed Dockerfile; also the Preview images the deployer
+pulled) and the dangling images. A Preview or mock-up in service or paused
+keeps its image (Docker never prunes an image a container references); the
+pulled reference images (runner, Playwright, ZAP, Trivy, PostgreSQL) carry
+no label and stay; the anonymous volumes no container uses (left by the CI
+jobs) go; no container nor named volume is ever touched. Log:
+`journalctl -u eupadev-docker-prune`; checked by `verify-storage.yml`.
+
 **Immediate restart, by hand** (outside the slot), from `infra/ansible`:
 
 ```sh
@@ -170,6 +182,28 @@ Role (ROADMAP §8.16 L1-L4): run the code written by the agents far from
 everything valuable (token that writes to `main`, databases, images being
 built). Ansible roles: `base`, `docker_disk`, `gvisor`, `docker`, `lab_ca`,
 `executor`, `agent_proxies`; Compose: `compose/agents/`.
+
+**Paid engine only after a free cycle.** The executor runs the fake agent
+engine by default; `executor_claude_engine: true` switches it to the real
+Claude Code (paid). The role refuses that switch unless a free full cycle
+has proved today's platform: `verify-engine-deployment.yml -e
+free_cycle=true` (the pushing fake pushes the reference tool
+`examples/requests`, up to a healthy Preview with its four checks green,
+no AI call) writes `/opt/eupadev/executor/free-cycle.json` on the agents
+VM with what it proved (engine image digest, commit of the template's
+`main`, latest published core). On `executor_claude_engine: true` the role
+reads the same three identifiers on the forge (`roles/executor/tasks/fingerprint.yml`)
+and fails, naming what differs and the commands to run, when the marker
+does not match; a second `site.yml` run with nothing changed asks for no
+new free cycle. Only override, printed as `OVERRIDE` in the run output:
+`-e executor_free_cycle_skip=true` (used by `verify-executor-claude.yml`,
+a single capped task). Order, from `infra/ansible`:
+
+```sh
+ansible-playbook site.yml --limit orchestrator,agents -e orchestrator_real_world=true </dev/null   # executor on the pushing fake
+ansible-playbook verify-engine-deployment.yml -e free_cycle=true </dev/null                        # free cycle, marker written
+ansible-playbook site.yml --limit orchestrator,agents -e orchestrator_real_world=true -e executor_claude_engine=true </dev/null   # paid engine
+```
 
 - **gVisor** (`runsc` 20261005.0, official APT repository, systrap platform:
   no hardware virtualisation needed in the VM). Declared to Docker under the
@@ -529,13 +563,23 @@ Decisions: ADR-017.
 | Level | Command | Effect |
 |---|---|---|
 | — | message `cancellation` through the API | a single cycle stops (`end_cancellation`) |
-| 1 | `ansible-playbook emergency-stop.yml -e level=1 -e confirm=yes` | agents paused: `PAUSE_AGENTS=1` (file `pause-agents.conf` next to the Compose file), engine restarted; no agent task is taken any more, the cycles go on (messages, gates); `/health` answers `pause_agents: true` |
-| 2 | `ansible-playbook emergency-stop.yml -e level=2 -e confirm=yes` | engine stopped cleanly (60 s for DBOS) and **kept stopped**: file `EMERGENCY-STOP`, which `site.yml` respects; Docker does not restart it when the VM restarts |
+| 1 | `ansible-playbook emergency-stop.yml -e level=1 -e confirm=yes` | agents paused: `PAUSE_AGENTS=1` (file `pause-agents.conf` next to the Compose file), engine restarted; no agent task is taken any more, the cycles go on (messages, gates); `/health` answers `pause_agents: true`; the agent containers still running on the agents VM are removed (they belong to dockerd, not to the executor, and would keep spending until the pause is lifted) |
+| 2 | `ansible-playbook emergency-stop.yml -e level=2 -e confirm=yes` | engine stopped cleanly (60 s for DBOS) and **kept stopped**: file `EMERGENCY-STOP`, which `site.yml` respects; Docker does not restart it when the VM restarts; agent containers removed as at level 1 |
 | 3 | `ansible-playbook emergency-stop.yml -e level=3 -e confirm=yes` | level 2 + **every token** of `svc-orchestrator` and `svc-agent` deleted through the admin API (no write to the forge possible any more); then, by hand: revoke the AI API key in the provider's console |
 
 Deadlines keep running during a stop: reminders sent all at once on return,
 "silent" CI if the stop lasts more than 60 min. Nothing is deleted in the
-database: everything resumes at restart (DBOS).
+database: everything resumes at restart (DBOS). A task whose container was
+removed is re-enqueued by DBOS when its executor restarts and resumes at
+level 0 from the tip of its branch (the containers are removed **after** the
+executor's restart or stop: removed while the executor still runs the task,
+it would record it as failed). Its lost execution is charged the role's cap
+(cost unknown), whatever the moment of the removal.
+
+The playbook itself is checked by `verify-emergency-stop.yml` (free, fake
+engine): a stand-in container with the task label, level 1, no container
+left and the executor paused, a request whose task stays queued, level 0,
+the task taken by the executor; the test cycle is cancelled.
 
 **Back to normal**:
 

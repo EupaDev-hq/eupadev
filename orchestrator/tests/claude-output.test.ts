@@ -61,6 +61,7 @@ test('E4 claude options: reviewers and overlap read-only; code roles with Bash a
   // A-R4 (ADR-020): reviewers have Bash without an allow rule (dontAsk read-only set); overlap keeps Read alone.
   for (const r of ['security-reviewer', 'quality-reviewer'] as const) assert.deepEqual(roleOptions(r), { tools: 'Bash,Read', permissions: '' });
   assert.deepEqual(roleOptions('overlap'), { tools: 'Read', permissions: '' });
+  assert.deepEqual(roleOptions('diagnosis'), { tools: 'Read', permissions: '' }, 'ADR-027: reads its data and the contract, never a shell');
   assert.match(CLAUDE_LINE, /^claude --bare --restricted -p /);
   assert.match(CLAUDE_LINE, /--permission-mode dontAsk /);
   assert.match(CLAUDE_LINE, /--allowedTools 'Read\(\/\/tmp\/task\/\*\*\)' \$FA_PERMISSIONS --add-dir \/tmp\/task --strict-mcp-config /);

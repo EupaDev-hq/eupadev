@@ -1,0 +1,28 @@
+{
+  "$comment": "What the platform offers to a generated tool, in business words, for the scoping role (given as platform_capabilities in its task data). Maintained with the core: `from` names the file of the EupaDev repository that provides each capability (checked by orchestrator/tests/instructions.test.ts); the ids feed $defs.capability of report.schema.json (scripts/generate-report-catalogue.js).",
+  "offered": [
+    { "id": "sign-in", "what": "People sign in with their organisation account (single sign-on); the tool never stores a password.", "from": "core/src/auth.js" },
+    { "id": "roles", "what": "Each screen and action is open to named roles (for example requester, manager); a person's roles come from the organisation's directory.", "from": "core/src/http.js" },
+    { "id": "records", "what": "Business records with lists, filters, search and detail pages, by role; a deleted record is hidden, not erased, and can be restored.", "from": "tool-template/.claude/rules/backend.md" },
+    { "id": "forms", "what": "Forms whose required fields, formats and limits are checked before saving, the error shown next to the field.", "from": "core/web/form.js" },
+    { "id": "status-flow", "what": "Statuses with the allowed changes between them, enforced by the database.", "from": "examples/requests/db/migrations" },
+    { "id": "charts", "what": "Bar charts with an equivalent table (accessible).", "from": "core/web/svg-chart.js" },
+    { "id": "csv-export", "what": "Download of a table as a spreadsheet file (CSV).", "from": "core/src/contract-lint.js" },
+    { "id": "file-upload", "what": "One attachment per upload, PDF, PNG or JPEG, up to 10 MiB, checked before storage; downloaded again by its owner or role.", "from": "core/web/api.js" },
+    { "id": "rich-text", "what": "Formatted text (bold, lists, links) typed and displayed safely.", "from": "core/src/static.js" },
+    { "id": "external-system", "what": "Reading or writing in another system through its documented, authenticated web service; never its database or files.", "from": "core/src/protections.js" },
+    { "id": "audit-trail", "what": "Who changed what and when, on every business record, kept 6 to 12 months.", "from": "core/migrations" },
+    { "id": "retention", "what": "Automatic deletion of data after the period set per category of personal data (purge).", "from": "core/bin/purge.js" }
+  ],
+  "not_offered": [
+    { "what": "Email sent by the tool (notifications, confirmations, digests): tools in Production have no mail relay.", "instead": "A notification or a status the person sees in the tool at their next visit; a mail relay for the tools would be a separate platform feature." },
+    { "what": "Scheduled or delayed actions: reminders, digests, deadline alerts, anything that happens without a person acting.", "instead": "A status or a due date shown in the tool; otherwise out of scope (platform change)." },
+    { "what": "Text messages (SMS), chat tools (Teams, Slack), push notifications, incoming email, calendar invitations.", "instead": "A notification shown in the tool; otherwise out of scope." },
+    { "what": "Access for people without an organisation account: public forms, external partners, self-registration, password accounts.", "instead": "Out of scope; the organisation's directory creates the accounts." },
+    { "what": "Documents laid out by the tool (PDF, Word, Excel with formulas), print templates, labels.", "instead": "CSV export; otherwise out of scope." },
+    { "what": "Attachments other than PDF, PNG or JPEG, or over 10 MiB; video, audio, scanned documents read automatically (OCR).", "instead": "Out of scope." },
+    { "what": "Live updates between users, real-time collaboration, offline use, mobile application, maps, geolocation, barcode or QR scanning, camera.", "instead": "Pages the user reloads, typed references; otherwise out of scope." },
+    { "what": "Payments, electronic signature, AI features (summaries, suggestions, classification).", "instead": "Out of scope." },
+    { "what": "Connections to another system without a documented web service: file exchange, shared folder, direct database access, screen automation.", "instead": "Out of scope (platform change)." }
+  ]
+}

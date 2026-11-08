@@ -4,8 +4,12 @@
  * (fail-closed: invalid → failed) and writes `tasks` (unknown cost = the task's cap). The budget check is
  * done by W1 once per round (D11), never here.
  *
- * B7: each engine execution is counted (`tasks.executions`) before the call; an execution cut short by an abrupt
- * stop (replayed by DBOS) is charged at the cap on top of the cost of the one that completes — never forgotten.
+ * B7: each container launch is counted (`tasks.executions`) by the engine's `launched` callback, right before the agent's
+ * container starts; an execution cut short by an abrupt stop (replayed by DBOS) after that point never returned its cost: it is
+ * charged the role's cap on top of the cost of the one that completes — never forgotten. An execution cut short BEFORE the
+ * container started (pause of the executor during the clone, task closed while queued…) costs nothing: no model ran (paid
+ * cycle 9: two tasks paused then resumed were charged a cap each for nothing). A failed task whose engine reported its
+ * cost is charged that cost; the cap stands in for the cost only when it is unknown, and the record then says so.
  *
  * S4: W1 waits for the NATIVE end of this workflow (DBOS status); no message. If starting or recording fails after
  * the retries, the workflow ends in ERROR and W1 closes the task as failed at the cap (A4). The task timeout is enforced
@@ -75,7 +79,16 @@ export function createAgentTask(deps: Deps) {
   async function execute(args: TaskArgs, launch: Launch): Promise<Result> {
     // A-R5: caps of the task's role (duration, turns, budget); TASK_TIMEOUT_MS imposes the duration on all (tests, lab).
     const cap = config.thresholds.task[args.role];
-    const failure = (reason: string, duration_s = 0, lost = 0): Result => ({ status: 'failed', report: { status: 'failed', reason: reason }, cost_usd: cap.budget_usd + lost, duration_s: duration_s, tree_hash: null });
+    // Launches that never reported a cost: earlier executions cut short (`before`, B7), plus this one once its container
+    // started (`launched`). Each is charged the role's cap, and the record says so: a bound, not a measure.
+    let before = 0;
+    let launched = false;
+    const estimated = (reason: string, unknown: number): string =>
+      unknown === 0 ? reason : `${reason} (cost unknown: ${unknown} execution(s) cut short without a reported cost, each charged the role's cap of $${cap.budget_usd})`;
+    const failure = (reason: string, duration_s = 0, cut = launched): Result => {
+      const unknown = before + (cut ? 1 : 0);
+      return { status: 'failed', report: { status: 'failed', reason: estimated(reason, unknown) }, cost_usd: unknown * cap.budget_usd, duration_s: duration_s, tree_hash: null };
+    };
     const { branch: branch } = launch;
     // typeof: also a resume point from before step 0 (`start` returned a boolean); fail-closed.
     if (typeof branch !== 'string') return failure('task without a branch: the launcher would not know where to push');
@@ -88,20 +101,28 @@ export function createAgentTask(deps: Deps) {
     const abandon = new Promise<never>((_, reject) => check.signal.addEventListener('abort', () => reject(new Error(`interrupted: ${String(check.signal.reason)}`)), { once: true }));
     const start = Date.now();
     const elapsed = () => Math.round((Date.now() - start) / 1000);
-    let lost = 0;
     try {
-      // B7: counted BEFORE the call; a previous execution, cut short, never returned its cost: cap.
-      const executions = (await base.pool.query<{ n: number }>(`UPDATE tasks SET executions = executions + 1 WHERE id = $1 AND status = 'in_progress' RETURNING executions AS n`, [args.task_id])).rows[0]?.n;
+      // B7: launches of earlier executions, cut short before returning their cost (replay): each one at the cap.
+      const executions = (await base.pool.query<{ n: number }>(`SELECT executions AS n FROM tasks WHERE id = $1 AND status = 'in_progress'`, [args.task_id])).rows[0]?.n;
       // Task closed in the meantime (cancellation, incident): the engine is not called.
       if (executions === undefined) return failure('task closed before the execution');
-      lost = (executions - 1) * cap.budget_usd;
-      const output = await Promise.race([external.engine.execute({ ...args, model: launch.model, effort: launch.effort, branch, cap, signal: check.signal }), abandon]);
+      before = executions;
+      // Counted BEFORE the container starts (the engine calls it right before): an execution cut short after this point is
+      // never forgotten; a task closed meanwhile refuses the launch (the engine does not start the container).
+      const launching = async () => {
+        const n = (await base.pool.query<{ n: number }>(`UPDATE tasks SET executions = executions + 1 WHERE id = $1 AND status = 'in_progress' RETURNING executions AS n`, [args.task_id])).rows[0]?.n;
+        if (n === undefined) throw new Error('task closed before the launch of its container');
+        launched = true;
+      };
+      const output = await Promise.race([external.engine.execute({ ...args, model: launch.model, effort: launch.effort, branch, cap, signal: check.signal, launched: launching }), abandon]);
       const outOfBounds = outputOutOfBounds(output, args.role);
-      if (outOfBounds !== null) return failure(`invalid engine output: ${outOfBounds}`, elapsed(), lost);
-      const cost = (output.cost_usd ?? cap.budget_usd) + lost;
+      // The engine returned something: it may have spent (cap), even if it never said it launched.
+      if (outOfBounds !== null) return failure(`invalid engine output: ${outOfBounds}`, elapsed(), true);
+      const unknown = before + (output.cost_usd === null ? 1 : 0);
+      const cost = (output.cost_usd ?? cap.budget_usd) + before * cap.budget_usd;
       const tree = (CODE_ROLES as readonly string[]).includes(args.role) ? output.tree_hash : null;
       if (output.report === null) {
-        const reason = output.error ?? 'no report produced';
+        const reason = estimated(output.error ?? 'no report produced', unknown);
         return { status: 'failed', report: { status: 'failed', reason: reason }, cost_usd: cost, duration_s: output.duration_s, tree_hash: tree, tokens: output.tokens };
       }
       const v = validator.validate(output.report, { role: args.role, task_id: args.task_id });
@@ -114,7 +135,8 @@ export function createAgentTask(deps: Deps) {
       if (r.status === 'blocked') return { status: 'blocked', report: r, cost_usd: cost, duration_s: output.duration_s, tree_hash: tree, tokens: output.tokens };
       return { status: 'failed', report: r, cost_usd: cost, duration_s: output.duration_s, tree_hash: tree, tokens: output.tokens };
     } catch (e) {
-      return failure(e instanceof Error ? e.message : String(e), elapsed(), lost);
+      // Thrown or interrupted (timeout, cancellation, infrastructure): the cap only if the container had started.
+      return failure(e instanceof Error ? e.message : String(e), elapsed());
     } finally {
       clearTimeout(timer);
       cancellation?.removeEventListener('abort', onCancellation);

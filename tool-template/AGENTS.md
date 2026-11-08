@@ -20,7 +20,7 @@ You perform your role's step and nothing after it.
 
 | Role | May write in |
 |---|---|
-| overlap, security-reviewer, quality-reviewer | nothing but the report |
+| overlap, security-reviewer, quality-reviewer, diagnosis | nothing but the report |
 | scoping | everything except protected files |
 | contract | `openapi.yaml`, `tests/acceptance/features/` |
 | tests | `tests/acceptance/` |

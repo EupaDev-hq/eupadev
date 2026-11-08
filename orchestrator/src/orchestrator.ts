@@ -18,7 +18,7 @@ import { STATES, TRANSITIONS, triggerKey, topUpEnvelope, isIncidentDetour, gateO
 import { eventKey, isHuman, validateMessage, MAILBOX, type Message } from './messages.ts';
 import { invisibleCharacter } from './text.ts';
 import { ReportValidator } from './agent-engine/report.ts';
-import { loadInstructions } from './agent-engine/instructions.ts';
+import { loadCapabilities, loadInstructions } from './agent-engine/instructions.ts';
 import { createToolCycle, HARDENING_ROLES, type ToolCycle } from './workflows/toolCycle.ts';
 import { stopChildren, configureSteps, LAUNCH_PREVIEW_PIPELINE_STEP, requirePilot, CONTROL_QUEUE, TASK_QUEUE, cycleWorkflowId, newGeneration, CANCELLATION_TOPIC, errorText, ALIVE } from './workflows/deps.ts';
 import type { Environment } from './external/contracts.ts';
@@ -182,7 +182,8 @@ export class Orchestrator {
       const validator = new ReportValidator(config.reportSchemaPath);
       // Fail-closed: a missing, empty or booby-trapped (invisible character) instructions file = no startup.
       const instructions = loadInstructions(config.instructionsPath);
-      const deps = { base, external, config, validator, instructions };
+      const capabilities = loadCapabilities(config.instructionsPath);
+      const deps = { base, external, config, validator, instructions, capabilities };
       configureSteps(config.retries, config.timeouts.operation_ms);
       newGeneration();
       // Step 6: the engine (orch_engine) neither creates nor modifies the DBOS schema (installed by src/migrate.ts, owner
@@ -670,6 +671,11 @@ export class Orchestrator {
         // B1: a Gate 2 decision is exactly about the candidate digest (CI + Preview + pipeline).
         const candidate = await this.base.candidateDigest(c.id);
         if (m.digest !== candidate) throw new Error(`digest ${m.digest} refused: the candidate digest of Gate 2 is ${candidate ?? '(none)'}`);
+      }
+      // Rename at Gate 1 (gate and outcome checked by `validateMessage`): something changes, and the slug is free.
+      if (m.name !== undefined || m.slug !== undefined) {
+        if ((m.name ?? c.name) === c.name && (m.slug ?? c.slug) === c.slug) throw new Error(`rename refused: the tool is already named "${c.name}" with slug ${c.slug}`);
+        if (m.slug !== undefined && m.slug !== c.slug && (await this.base.slugTaken(m.slug))) throw new Error(`rename refused: slug ${m.slug} is already used by another tool`);
       }
       return authorization;
     }

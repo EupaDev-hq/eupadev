@@ -53,7 +53,7 @@ Gate 1. Ajouter à cette section chaque variable propre à l'outil, reprise dans
 | `tests/perf/` | scénario k6 joué contre la Preview déployée | adapter l'exemple |
 | `docs/spec.md`, `docs/DECISIONS.md` | périmètre et décisions propres à l'outil | scoping ; `docs/DECISIONS.md` aussi le builder |
 | `design/` | design system partagé, copié tel quel dans `web/styles/` | protégé |
-| `AGENTS.md`, `agents/`, `.claude/`, `.opengrep/`, `.gitea/`, `pnpm-workspace.yaml` | charte des agents, prompts des rôles, règles d'analyse, CI, réglages pnpm | protégé |
+| `AGENTS.md`, `agents/`, `.claude/`, `.opengrep/`, `.gitea/`, `pnpm-workspace.yaml` | charte des agents, prompts des rôles, schéma du rapport, capacités de la plateforme (`agents/capabilities.json`, ce que le cadrage peut promettre), règles d'analyse, CI, réglages pnpm | protégé |
 | `docs/fr/` | traductions françaises pour les lecteurs humains (l'anglais fait foi) | — |
 
 Qui peut écrire où, et quels fichiers sont protégés : `AGENTS.md`.

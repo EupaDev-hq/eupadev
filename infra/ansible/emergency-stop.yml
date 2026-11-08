@@ -2,7 +2,9 @@
 # to the strongest. Always with -e confirm=yes (otherwise nothing is done).
 #   ansible-playbook emergency-stop.yml -e level=1 -e confirm=yes
 #     → agents paused: PAUSE_AGENTS=1, engine restarted; it takes no agent
-#       task any more, the cycles go on (messages, gates).
+#       task any more, the cycles go on (messages, gates). The agent
+#       containers still running are removed (after the restart: the task
+#       in progress is re-enqueued and resumes at level 0, not failed).
 #   ansible-playbook emergency-stop.yml -e level=2 -e confirm=yes
 #     → engine stopped cleanly, and kept stopped (neither site.yml nor a VM
 #       reboot restarts it). Deadlines keep running during the stop (reminders
@@ -95,20 +97,29 @@
             argv: [docker, compose, stop, "{{ service }}"]
           changed_when: true
 
-        # Agent containers still alive (label set by the engine on each task),
-        # their volumes included; DBOS resumes the tasks.
+    # ---------- Levels 1 to 3: agent containers removed ----------
+    # Agent containers still alive (label set by the engine on each task): they
+    # belong to dockerd, not to the executor, so they outlive its restart or stop
+    # and keep spending AI money. ONLY AFTER the executor restart (level 1) or
+    # stop (level 2): a container removed while the executor still runs its task
+    # is read as "container stopped before the end" and the task is recorded as
+    # failed; removed once the executor is gone, the task is re-enqueued by DBOS
+    # and resumes (level 0) from scratch on the task's branch, the launcher's
+    # cleanup removing what is left (network, volume).
+    - name: Levels 1 to 3 — remaining agent containers removed
+      when: executor and level | string in ['1', '2', '3']
+      block:
         - name: List the remaining agent containers
           ansible.builtin.command:
             argv: [docker, ps, -aq, --filter, label=eupadev.task]
           register: remaining_agents
           changed_when: false
-          when: executor
 
         - name: Remove the remaining agent containers
           ansible.builtin.command:
             argv: "{{ ['docker', 'rm', '-f', '-v'] + remaining_agents.stdout_lines }}"
           changed_when: true
-          when: executor and remaining_agents.stdout_lines | length > 0
+          when: remaining_agents.stdout_lines | length > 0
 
     # ---------- Level 3: robot tokens deleted ----------
     - name: Level 3 — tokens of svc-orchestrator and svc-agent deleted

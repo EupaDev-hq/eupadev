@@ -1,0 +1,35 @@
+#!/bin/sh
+# Managed by Ansible (role docker_prune). Daily prune of the CI VM's Docker
+# disk (40 GB filled during cycle 9 of the lab: one `check/<tool>:<sha>`
+# image per CI run, never removed). Argument: the age under which nothing is
+# pruned (Docker `until` filter, from the build or the pull).
+#
+# What goes, when older than that age:
+#   - the build cache (its garbage collector, role docker, only caps its size);
+#   - the tool images used by no container: every image of a tool carries
+#     the label `eupadev.core` of the template's fixed Dockerfile (built by
+#     the CI, or pulled by the deployer for a Preview or a mock-up);
+#   - the dangling images (the weekly golden images, rebuilt under the same
+#     tags, leave the previous ones untagged);
+#   - the anonymous volumes no container uses (left by the CI jobs: 113 of
+#     them, 8.8 GB, on the lab's CI VM). `docker volume prune` keeps every
+#     named volume (Docker 23+) and every volume a container still uses; it
+#     has no age filter, the in-use rule is what protects a running job.
+# What stays, whatever its age: the images of the containers that exist,
+# running or stopped (Docker never prunes an image a container references:
+# a Preview in service or paused keeps its image); the pulled reference
+# images without the label (runner job image, Playwright, ZAP, Trivy,
+# PostgreSQL: the runner role pulls them once); every container and named
+# volume (trivy-cache, Preview databases).
+set -eu
+AGE="$1"
+echo "== build cache older than $AGE"
+docker builder prune -af --filter "until=$AGE"
+echo "== tool images (label eupadev.core) older than $AGE, used by no container"
+docker image prune -af --filter "until=$AGE" --filter label=eupadev.core
+echo "== dangling images older than $AGE"
+docker image prune -f --filter "until=$AGE"
+echo "== anonymous volumes used by no container"
+docker volume prune -f
+echo "== Docker disk after the prune"
+docker system df

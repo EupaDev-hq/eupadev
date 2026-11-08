@@ -58,6 +58,13 @@ case "$scenario" in
   symbolic_link) commit ping; ln -s ../.claude api/link && git add api/link && git commit -q -m link >/dev/null; result success false ",\"structured_output\":$report" ;;
   submodule) git update-index --add --cacheinfo "160000,$(git rev-parse HEAD),vendor/x" && git commit -q -m "submodule" >/dev/null; result success false ",\"structured_output\":$report" ;;
   invisible_path) commit ping; write_file "api/a$(printf '\342\200\213')b.js" 'x'; result success false ",\"structured_output\":$report" ;;
+  # Contract role: its openapi.yaml is checked by the launcher with the core's linter, only when the report says done.
+  contract_valid) write_file tests/acceptance/features/list.feature 'Feature: list'; result success false ",\"structured_output\":$report" ;;
+  contract_refused) write_file openapi.yaml 'openapi: 3.1.0
+paths: {}'; result success false ",\"structured_output\":$report" ;;
+  contract_unparsable) write_file openapi.yaml 'paths: ['; result success false ",\"structured_output\":$report" ;;
+  contract_removed) git rm -q openapi.yaml && git commit -q -m "no contract" >/dev/null; result success false ",\"structured_output\":$report" ;;
+  contract_blocked) write_file openapi.yaml 'paths: ['; result success false ",\"structured_output\":$(printf %s "$report" | sed 's/^{"status":"done"/{"status":"blocked","blocked_reason":"which roles?"/')" ;;
   git_tree) # a commit whose tree contains a ".git" directory (refused by the launcher's object check)
     blob=$(echo "[core] fsmonitor = touch /tmp/attacker" | git hash-object -w --stdin)
     t1=$(printf '100644 blob %s\tconfig\n' "$blob" | git mktree)

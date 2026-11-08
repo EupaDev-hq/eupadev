@@ -14,7 +14,7 @@ change the infra without breaking or rediscovering anything.
 - **Proof of a behaviour**: the real tests `verify-forge.yml`,
   `verify-ci.yml`, `verify-base-image.yml`, `verify-template.yml`, `verify-core.yml`, `verify-orchestrator.yml`,
   `verify-storage.yml`, `verify-backup.yml`, `verify-system.yml`, `verify-engine.yml`,
-  `verify-engine-forge.yml`, `verify-engine-mails.yml`, `verify-engine-integration.yml`, `verify-engine-ci.yml`, `verify-agents.yml`, `verify-image-agent.yml`, `verify-deployer-access.yml`, `verify-deployer.yml`, `verify-mockup.yml`, `verify-engine-preview.yml`, `verify-prod-switch.yml`, `verify-deployer-core.yml`, `verify-engine-deployment.yml`, `verify-engine-claude.yml`, `verify-executor-claude.yml`, `verify-keycloak.yml`, `verify-engine-chat.yml`, `verify-letsencrypt.yml`. Every new capability comes with
+  `verify-engine-forge.yml`, `verify-engine-mails.yml`, `verify-engine-integration.yml`, `verify-engine-ci.yml`, `verify-agents.yml`, `verify-image-agent.yml`, `verify-deployer-access.yml`, `verify-deployer.yml`, `verify-mockup.yml`, `verify-engine-preview.yml`, `verify-prod-switch.yml`, `verify-deployer-core.yml`, `verify-engine-deployment.yml`, `verify-engine-claude.yml`, `verify-executor-claude.yml`, `verify-keycloak.yml`, `verify-engine-chat.yml`, `verify-letsencrypt.yml`, `verify-emergency-stop.yml`. Every new capability comes with
   its real test, which cleans up after itself (`always` block) and prints the
   useful logs on failure.
 - **ansible-lint** must pass, locally and on GitHub
@@ -48,8 +48,9 @@ ansible-playbook verify-mockup.yml </dev/null  # E5e: mock-up archives on the sc
 ansible-playbook verify-engine-preview.yml </dev/null  # E5f: a template tool (core) — a trivial commit runs its real CI, which publishes the signed image; registered by register-tools.yml; the engine deploys it as Preview, starts preview-check.yml with the URL and reads the run (perf, pa11y, ZAP, acceptance — a one-scenario suite signed in as a persona, then the platform SEC-* — all green); an injected fault turns acceptance red with the failing test in the result; features without Playwright config turn guard-rails red at push; -e orchestrator_image=<digest> tests a candidate engine image; job logs printed on failure
 ansible-playbook verify-prod-switch.yml </dev/null  # E5g: Prod on the tools VM: creation, switch beside the old one, unhealthy version refused while the old one keeps serving, rollback = previous digest (still local), removal
 ansible-playbook verify-deployer-core.yml </dev/null  # d5: core mode with a throwaway stand-in image (NOT the core): refused before registration, register-tools.yml twice (changed=0), migration then traffic, _app role over TLS, OIDC secret accepted via Smokescreen, other host refused, no secret in inspect, failing migration keeps the old version (Preview and Prod), Preview database emptied on a new digest only (same digest kept, Prod never), purge (command and timer), Prod backup; personas (two per role, one role on the Preview client, PREVIEW_PERSONAS in a throwaway repository); with a core tool served in Prod: its digest as Preview, kit `signIn` signs persona -1 in there, Prod answers 403 with no session row; cleans up (clients, personas, database, roles, secrets, repository, images)
-ansible-playbook register-tools.yml </dev/null  # the administrator, after Gate 1 of a core tool (D-E5): entries of group_vars/all/core-tools.yml → Keycloak clients, databases and roles, secrets, /etc/eupadev/tools/<slug>.json, test personas (`<slug>-<role>-<n>`, Preview client only) and the tool repository's Actions secret PREVIEW_PERSONAS
+ansible-playbook register-tools.yml </dev/null  # the administrator, after Gate 1 of a core tool (D-E5): entries of group_vars/all/core-tools.yml (shown ready to paste on the tool's Gate 1 page) → Keycloak clients, databases and roles, secrets, /etc/eupadev/tools/<slug>.json, test personas (`<slug>-<role>-<n>`, Preview client only) and the tool repository's Actions secret PREVIEW_PERSONAS
 ansible-playbook verify-engine-deployment.yml </dev/null  # E5 full cycle, free (pushing fake): needs site.yml --limit orchestrator,agents -e orchestrator_real_world=true first (real forge + real deployer); drives the cycle with check-requester / check-admin up to Prod, registering the core tool by register-tools.yml at Gate 1; the Preview pipeline (four controls, acceptance suite files/trial-acceptance committed on main by a throwaway svc-orchestrator token) runs before the requester is asked (S5); cleans up (registration and token included); site.yml without -e goes back to the fakes
+ansible-playbook verify-engine-deployment.yml -e free_cycle=true </dev/null  # the free cycle required before the paid engine: the pushing fake pushes the reference tool (examples/requests, slug -example: contract, sign-in suite per role, api/db/web, dependencies merged into the lockfile), registered with its roles (reader, manager, admin); stops once the Preview is healthy and its four checks green, writes /opt/eupadev/executor/free-cycle.json (engine image, template commit, latest core) on the agents VM, cleans up; the executor role refuses executor_claude_engine=true without that marker for today's platform (only override: -e executor_free_cycle_skip=true, printed)
 ansible-playbook verify-engine-claude.yml -e ai_call=true </dev/null  # PAID (cap $1): real Claude Code through the engine's code on the agents VM, commit pushed to the task's branch, nothing left behind
 ansible-playbook verify-executor-claude.yml -e ai_call=true </dev/null  # PAID (overlap, Haiku 5.5, cap $4 per task, provisional A-R5): the pilot queues a task, the executor in service runs the real Claude Code; cycle cancelled, executor set back to the fake
 ansible-playbook verify-image-agent.yml </dev/null  # published agents image: neither docker nor sudo, non-root, claude version, Trivy, cosign signature (other key refused)
@@ -62,6 +63,7 @@ ansible-playbook measure-resources.yml -e mode=<start|end> </dev/null  # memory/
 ansible-playbook registry-cleanup.yml </dev/null  # forge registry: trial mode (list + space freed); -e apply=true deletes (keeps the images in service, base-node movable tags, last 3 builds per variant, their signatures); automatically: Sunday 01:30 UTC timer (role registry_cleanup)
 ansible-playbook maintenance.yml </dev/null  # immediate restart, one VM at a time (otherwise: nightly slot)
 ansible-playbook emergency-stop.yml -e level=<0|1|2|3> -e confirm=yes </dev/null  # the administrator only
+ansible-playbook verify-emergency-stop.yml </dev/null  # levels 1 and 0 for real (fake engine): stand-in task container removed by level 1, executor paused, a request's task stays queued, taken by the executor after level 0; test cycle cancelled
 ANSIBLE_COLLECTIONS_PATH=$PWD/.ansible/collections ansible-lint
 ```
 
@@ -73,7 +75,7 @@ environment ("non-blocking IO").
 | VM | IP | Ansible roles |
 |---|---|---|
 | `eupadev-forge` | 10.42.0.10 | base, docker_disk, docker, gitea, gitea_org, backup, registry_cleanup, lab_ca (last: trusts its own Caddy, to pull the platform's Caddy image on the next pass) |
-| `eupadev-ci` | 10.42.0.11 | base, docker_disk, docker, lab_ca, runner (2 runners: `standard`, `image`), postgres_tools, deployer (mockup, preview) |
+| `eupadev-ci` | 10.42.0.11 | base, docker_disk, docker, lab_ca, runner (2 runners: `standard`, `image`), postgres_tools, deployer (mockup, preview), docker_prune (daily, 01:00 UTC) |
 | `eupadev-orch` | 10.42.0.12 | base, docker_disk, docker, lab_ca, orchestrator, keycloak, backup (6 GiB: Keycloak) |
 | `eupadev-agents` | 10.42.0.13 | base, docker_disk, gvisor, docker, lab_ca, executor, agent_proxies |
 | `eupadev-tools` | 10.42.0.14 | base, docker_disk, docker, lab_ca, postgres_tools, deployer (prod), backup |
@@ -430,7 +432,12 @@ secrets of the `core` repository only, `gitea_platform_repos[].badges`).
   before `agent_proxies`). svc-agent's token kept encrypted as long as the
   forge accepts it, checked by a call within its scopes
   (`/packages/eupadev`, not `/user`, which requires `read:user`). Fake
-  engine by default; `executor_claude_engine: true` = real Claude Code (paid).
+  engine by default; `executor_claude_engine: true` = real Claude Code (paid),
+  refused by the role (`free-cycle-gate.yml`) unless
+  `/opt/eupadev/executor/free-cycle.json` (written by
+  `verify-engine-deployment.yml -e free_cycle=true`) names today's engine
+  image, template commit and latest core (`fingerprint.yml`, read on the
+  forge); `-e executor_free_cycle_skip=true` is the only override, printed.
   Published Go binaries (cosign) refused by Trivy: rebuilt like gitleaks.
 - **Docker publishes its ports bypassing ufw**: Caddy's 443 is reachable even
   without the ufw rule (Docker docs, "Packet filtering and firewalls", ufw

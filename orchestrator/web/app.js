@@ -3,6 +3,9 @@
 // dictionary per language. Rules: deep-chat is configured by JS properties only (never attributes), messages are plain
 // `text` (never the `html` type), every string we insert ourselves goes through `textContent`, every API call carries
 // `X-EupaDev: 1` and the session cookie, and a double click sends one request (one Idempotency-Key per button).
+// Commands in plain words (ADR-031, S2): a typed text is read by the engine (`POST /requests/<id>/intent`, the assistant)
+// and becomes the message a button would have sent; when the assistant cannot be reached, the page says so, nothing more.
+
 const POLL_MS = 10_000;
 const main = document.getElementById('main');
 /** The dictionary of the current language (`lang/<l>.json`). */
@@ -16,7 +19,7 @@ class ApiError extends Error {
 /** One API call; a JSON body means a POST with its Idempotency-Key. RFC 9457 problems become ApiError(status, detail). */
 async function api(method, path, body, key) {
   const headers = { 'X-EupaDev': '1' };
-  if (body !== undefined) Object.assign(headers, { 'Content-Type': 'application/json', 'Idempotency-Key': key });
+  if (body !== undefined) Object.assign(headers, { 'Content-Type': 'application/json', ...(key === undefined ? {} : { 'Idempotency-Key': key }) });
   let res;
   try {
     res = await fetch(path, { method, headers, credentials: 'same-origin', body: body === undefined ? undefined : JSON.stringify(body) });
@@ -161,26 +164,26 @@ function newRequestForm() {
   return form;
 }
 
-/** What a text typed in the chat means in this state (the only states where the engine accepts one). */
+/** States where a text typed in the chat is sent as is, without reading it (the pause: a plain message resumes the cycle). */
 const TYPED = {
-  waiting_scoping_feedback: (text) => ({ type: 'scoping_feedback', outcome: 'correction', text }),
   scoping_pause: (text) => ({ type: 'requester_message', text }),
-  waiting_preview_feedback: (text) => ({ type: 'preview_feedback', outcome: 'bug', text }),
 };
 /**
- * The requester just talks: a short acceptance ("ok", "c'est bon"… the whole message, nothing else) is confirmed before
- * it is sent as `satisfied`; at the Preview, anything else is a bug or a new capability, which the page asks first.
+ * The requester just talks, and nothing that costs an agent run leaves without a click: at a feedback wait, "Approve"
+ * stays on the page, and a typed text is read by the engine (`understand`); when it is not understood, one question with
+ * every outcome of the state (`ok`, then `kinds` with the text).
  */
-const ACCEPT = /^(ok|okay|yes|oui|accepted|approved?|looks good|lgtm|satisfied|c['’]est bon|d['’]accord|valid[eé]|validée|parfait|perfect|good|fine|great)[\s!.]*$/i;
 const FEEDBACK = {
-  waiting_scoping_feedback: { type: 'scoping_feedback', ok: 'btn.scoping.ok' },
-  waiting_preview_feedback: { type: 'preview_feedback', ok: 'btn.preview.ok', kinds: [['btn.preview.bug', 'bug'], ['btn.preview.capability', 'new_capability']] },
+  waiting_scoping_feedback: { type: 'scoping_feedback', ok: 'btn.scoping.ok', ask: 'conv.askScoping', kinds: [['btn.scoping.correction', 'correction']] },
+  waiting_preview_feedback: { type: 'preview_feedback', ok: 'btn.preview.ok', ask: 'conv.askKind', kinds: [['btn.preview.bug', 'bug'], ['btn.preview.capability', 'new_capability']] },
 };
 /** States where the requester may still abandon (after the merge only the admin cancels). */
 const ABANDON = new Set(['waiting_scoping_feedback', 'scoping_pause']);
 /** Gate decisions in plain words; `decision.<gate>.<outcome>` wins over `decision.<outcome>` (the incident's "retry"). */
 const decisionLabel = (gate, outcome) => t[`decision.${gate}.${outcome}`] ?? t[`decision.${outcome}`] ?? outcome;
 const NEEDS_COMMENT = new Set(['correction', 'scope_change', 'refused']);
+/** Gates whose phase has a budget envelope (`topUpEnvelope` of the engine): "approve" may carry a top-up. */
+const TOP_UP_GATES = new Set(['gate_scoping_budget', 'gate_scoping_blocked', 'gate_contract_blocked', 'gate_hardening_blocked']);
 /** A new answer appears a few words at a time (instant for my own messages, or when the viewer asks for reduced motion). */
 async function typeIn(chat, msg) {
   const words = msg.text.split(/(?<=\s)/);
@@ -236,25 +239,94 @@ async function viewConversation(id) {
     handler: async (body, signals) => {
       const text = (body?.messages?.[0]?.text ?? '').trim();
       const typed = TYPED[state.state];
-      if (text === '' || typed === undefined) return signals.onResponse({ error: t['conv.noInput'] });
-      const fb = FEEDBACK[state.state];
-      const kinds = fb?.kinds?.map(([label, outcome]) => [label, { type: fb.type, outcome, text }]);
-      if (fb && ACCEPT.test(text)) {
-        ask('conv.askAccept', [[fb.ok, { type: fb.type, outcome: 'satisfied' }, 'primary'], ['conv.notAccept', kinds ? () => ask('conv.askKind', kinds) : typed(text)]]);
-        return signals.onResponse({ text: t['conv.askAccept'], role: 'orchestrator' });
-      }
-      if (kinds) {
-        ask('conv.askKind', kinds);
-        return signals.onResponse({ text: t['conv.askKind'], role: 'orchestrator' });
-      }
+      if (text === '' || !canType()) return signals.onResponse({ error: t['conv.noInput'] });
       try {
-        await post(typed(text));
-        await signals.onResponse({ text: t['conv.sent'], role: 'orchestrator' });
+        if (typed) await post(typed(text));
+        await signals.onResponse({ text: typed ? t['conv.sent'] : await understand(text), role: 'orchestrator' });
       } catch (e) {
         await signals.onResponse({ error: e.message });
       }
     },
   };
+  /**
+   * ADR-031: what the sentence means, read by the engine (`POST /requests/<id>/intent`: the allowed set of my hat in this
+   * state, the fake reader until S3), then the message the button would have built. Free and clear: posted at once, one
+   * echo line. Paid or irreversible (`needs_click`) and clear: what was understood and one "Approve" button, nothing
+   * posted before the click. Unclear: one question with the state's outcomes as buttons; a typed answer goes through the
+   * same call with the question's key, and an answer still unclear keeps the box (never two questions in a row). Nothing
+   * expected from my hat here: said so. The assistant cannot be reached (down, rate limit, `fallback`): one clear error,
+   * nothing read on the page, the buttons stay. Every line in the chat comes from the dictionary, keyed by the validated
+   * intent; the reader's own words (`reply`, a model like any LLM chat) are shown as plain text above the buttons.
+   * Returns the line shown in the chat.
+   */
+  async function understand(text) {
+    let r;
+    try {
+      r = await api('POST', `/requests/${id}/intent`, { text, lang, ...(pending === null ? {} : { pending_question: pending }) });
+    } catch {
+      r = { fallback: true };
+    }
+    if (r.fallback) throw new ApiError(0, t['conv.assistantDown']);
+    reply = r.reply ?? null;
+    if (r.allowed.length === 0) return say(t['conv.notYou']);
+    if (r.intent === 'unclear') return pending === null ? question(text) : say(t['conv.stillUnclear']);
+    const message = intentMessage(r, text);
+    if (r.needs_click) {
+      const what = r.intent === 'top_up' ? t['intent.topUp'].replace('{amount}', String(r.amount_usd)) : r.hat === 'admin' ? decisionLabel(state.state, r.intent) : intentLabel(r.intent);
+      const line = t[irreversible(r.intent) ? 'conv.irreversible' : 'conv.paid'].replace('{what}', what);
+      ask('conv.click', [[what, message, 'primary']], line);
+      return line;
+    }
+    await post(message);
+    return t[`echo.${state.state}.${r.intent}`] ?? t[`echo.${r.intent}`] ?? t['conv.sent'];
+  }
+  /** Mirrors the engine's `irreversible` (an end state, or production): only the wording of the line depends on it. */
+  const irreversible = (intent) => intent === 'abandon' || intent === 'refused' || (intent === 'approved' && state.state === 'gate_2');
+  /** Redraws the opinions (the reply with them), keeping a pending question; returns the line for the chat. */
+  function say(line) {
+    renderOpinions(opinions.querySelector('.ask') ?? undefined);
+    return line;
+  }
+  /** The message a clear intent stands for: the same payload as its button, the sentence verbatim as the text or comment. */
+  function intentMessage({ hat, intent, amount_usd }, text) {
+    if (hat === 'admin') return decision(intent === 'top_up' ? 'approved' : intent, text, intent === 'top_up' ? amount_usd : 0);
+    if (intent === 'abandon') return { type: 'requester_abandonment' };
+    if (intent === 'message') return { type: 'requester_message', text };
+    const fb = FEEDBACK[state.state];
+    return { type: fb.type, outcome: intent, ...(intent === 'satisfied' ? {} : { text }) };
+  }
+  /** The requester's intent in the words of its button. */
+  function intentLabel(intent) {
+    const fb = FEEDBACK[state.state];
+    return intent === 'abandon' ? t['btn.abandon'] : t[fb.kinds.find(([, o]) => o === intent)?.[0] ?? fb.ok];
+  }
+  /**
+   * A decision built from a typed sentence (its comment), with the candidate digest at Gate 2 and a top-up when read. At
+   * Gate 1 the comment of an approval is the catalogue description: an "ok" is not one, the card's box stays for it.
+   */
+  function decision(outcome, comment, amount) {
+    const gate = state.state;
+    const digest = gate === 'gate_2' && outcome === 'approved' && state.candidate_digest ? { digest: state.candidate_digest } : {};
+    const said = gate === 'gate_1' && outcome === 'approved' ? {} : { comment };
+    return { type: 'decision', gate, outcome, ...said, ...digest, ...(amount > 0 ? { budget_top_up_usd: amount } : {}) };
+  }
+  /**
+   * The question with buttons when the sentence is not understood: at a feedback wait, every outcome of the state (the
+   * text goes with a change); at a gate, every possible decision (the text as the comment). Returns the line shown.
+   */
+  function question(text) {
+    const fb = FEEDBACK[state.state];
+    let key, options;
+    if (fb) {
+      key = fb.ask;
+      options = [[fb.ok, { type: fb.type, outcome: 'satisfied' }, ''], ...fb.kinds.map(([label, outcome]) => [label, { type: fb.type, outcome, text }])];
+    } else {
+      key = 'conv.askDecision';
+      options = state.possible_decisions.map((outcome) => [decisionLabel(state.state, outcome), decision(outcome, text, 0), outcome === 'approved' ? 'primary' : outcome === 'refused' ? 'danger' : '']);
+    }
+    ask(key, options);
+    return t[key];
+  }
   /** `POST /messages` (one Idempotency-Key per call site), the text remembered for the poll, then the state refreshed. */
   async function post(message, key = crypto.randomUUID()) {
     await api('POST', '/messages', { cycle_id: id, message }, key);
@@ -270,13 +342,15 @@ async function viewConversation(id) {
     opinions,
   );
 
+  /** A text may be typed at the pause, at a feedback wait, and by an admin at a gate (their decision in words). */
+  const canType = () => TYPED[state.state] !== undefined || FEEDBACK[state.state] !== undefined || (isAdmin() && state.possible_decisions.length > 0);
   function placeholder() {
     if (state.state.startsWith('end_')) return t['conv.placeholder.closed'];
-    return t[`conv.placeholder.${state.state}`] ?? t['conv.placeholder.wait'];
+    return t[`conv.placeholder.${state.state}`] ?? (isAdmin() && state.possible_decisions.length > 0 ? t['conv.placeholder.gate'] : t['conv.placeholder.wait']);
   }
   function applyInput() {
     chat.setPlaceholderText(placeholder());
-    chat.disableSubmitButton(TYPED[state.state] === undefined);
+    chat.disableSubmitButton(!canType());
   }
   function renderState() {
     Object.assign(main.dataset, { state: state.state, visit: state.visit });
@@ -300,7 +374,10 @@ async function viewConversation(id) {
         try {
           await post(message, key);
           chat.addMessage({ text: t['conv.sent'], role: 'orchestrator' });
-          if (container.classList.contains('ask')) container.remove();
+          if (container.classList.contains('ask')) {
+            container.remove();
+            pending = null;
+          }
         } catch (e) {
           showError(container, e);
           for (const x of buttons) x.disabled = false;
@@ -310,15 +387,24 @@ async function viewConversation(id) {
     });
     return buttons;
   }
+  /** Key of the question (or the click line) shown above the input, sent with the next sentence so the reader knows what it answers. */
+  let pending = null;
+  /** The reader's own words for the last sentence (`reply`), shown as plain text above the buttons until the next sentence. */
+  let reply = null;
   /** A question above the input (the chat shows it too) with its answers; replaced by the next state or question. */
-  function ask(question, options) {
-    const box = el('div', { class: 'ask', role: 'group', 'aria-label': t[question] });
+  function ask(key, options, text = t[key]) {
+    const box = el('div', { class: 'ask', role: 'group', 'aria-label': text });
     box.append(el('div', { class: 'row' }, senders(box, options)));
+    pending = key;
     renderOpinions(box);
   }
-  function renderOpinions(pending) {
-    opinions.replaceChildren();
-    if (pending) opinions.append(pending);
+  /** Under the chat: the pending question, or "Approve" at a feedback wait (always there, whatever was typed) and the admin's card. */
+  function renderOpinions(box) {
+    opinions.replaceChildren(...(reply === null ? [] : [el('p', { class: 'reply', text: reply })]));
+    if (!box) pending = null;
+    const fb = FEEDBACK[state.state];
+    if (box) opinions.append(box);
+    else if (fb) opinions.append(el('div', { class: 'row' }, senders(opinions, [[fb.ok, { type: fb.type, outcome: 'satisfied' }, 'primary']])));
     else if (isAdmin() && state.possible_decisions.length > 0) opinions.append(decisionCard());
     if (ABANDON.has(state.state)) opinions.append(el('button', { type: 'button', class: 'ghost abandon', text: t['btn.abandon'], onclick: async () => {
       if (!confirm(t['conv.confirmAbandon'])) return;
@@ -329,7 +415,8 @@ async function viewConversation(id) {
   /**
    * The admin's decision at a gate: the gate in plain words, the engine's reason, at Gate 2 the candidate digest (the
    * full one is cited in the decision), a comment (required to correct, change the scope or refuse; at Gate 1 the
-   * approval's comment becomes the tool's catalogue description), one button per possible decision.
+   * approval's comment becomes the tool's catalogue description), at a budget gate an optional top-up sent with
+   * "approve", one button per possible decision.
    */
   function decisionCard() {
     const gate = state.state;
@@ -340,6 +427,13 @@ async function viewConversation(id) {
       ...(gate === 'gate_2' && state.candidate_digest ? [el('p', { text: `${t['gate.digest']} ` }, [el('code', { text: state.candidate_digest.slice(0, 12), title: state.candidate_digest })])] : []),
       el('label', { for: comment.id }, [el('span', { text: t[gate === 'gate_1' ? 'gate.comment.gate_1' : 'gate.comment'] }), comment]),
     ]);
+    const topUp = el('input', { id: 'decision-top-up', type: 'number', min: '0', step: '1', inputmode: 'decimal' });
+    if (TOP_UP_GATES.has(gate)) card.append(el('label', { for: topUp.id }, [el('span', { text: t['gate.topUp'] }), topUp]));
+    // Gate 1: the admin may rename the tool with a correction (new name and/or new address); the engine refuses them elsewhere.
+    const newName = el('input', { id: 'decision-name', type: 'text', maxlength: '200', placeholder: state.name });
+    const newSlug = el('input', { id: 'decision-slug', type: 'text', maxlength: '63', pattern: '[a-z0-9]+(-[a-z0-9]+)*', autocapitalize: 'off', spellcheck: 'false', placeholder: state.slug });
+    if (gate === 'gate_1') card.append(el('label', { for: newName.id }, [el('span', { text: t['gate.rename.name'] }), newName]), el('label', { for: newSlug.id }, [el('span', { text: t['gate.rename.slug'] }), newSlug]));
+    if (gate === 'gate_1' && state.registration) card.append(registrationBlock(state.slug, state.registration));
     const decide = (outcome) => () => {
       const c = comment.value.trim();
       if (c === '' && NEEDS_COMMENT.has(outcome)) {
@@ -348,11 +442,60 @@ async function viewConversation(id) {
         return undefined;
       }
       const digest = gate === 'gate_2' && outcome === 'approved' && state.candidate_digest ? { digest: state.candidate_digest } : {};
-      return { type: 'decision', gate, outcome, ...(c === '' ? {} : { comment: c }), ...digest };
+      const amount = Number(topUp.value);
+      const budget = TOP_UP_GATES.has(gate) && outcome === 'approved' && amount > 0 ? { budget_top_up_usd: amount } : {};
+      const rename = {};
+      if (gate === 'gate_1' && outcome === 'correction') {
+        if (newName.value.trim() !== '' && newName.value.trim() !== state.name) rename.name = newName.value.trim();
+        if (newSlug.value.trim() !== '' && newSlug.value.trim() !== state.slug) rename.slug = newSlug.value.trim();
+        if (rename.slug !== undefined && !newSlug.checkValidity()) {
+          showError(card, new Error(t['gate.rename.invalidSlug']));
+          newSlug.focus();
+          return undefined;
+        }
+      }
+      return { type: 'decision', gate, outcome, ...(c === '' ? {} : { comment: c }), ...digest, ...budget, ...rename };
     };
     const options = state.possible_decisions.map((outcome) => [decisionLabel(gate, outcome), decide(outcome), outcome === 'approved' ? 'primary' : outcome === 'refused' ? 'danger' : '']);
     card.append(el('div', { class: 'row' }, senders(card, options)));
     return card;
+  }
+  /**
+   * Gate 1 of a core tool (D-E5): the admin registers the tool by hand after approving; the page gives them the
+   * ready-to-paste `core-tools.yml` entry (slug, roles read from the contract, the retention periods they set here,
+   * audit 1 year and 5 years by default) and the command. Human values only: nothing is sent to the engine, every
+   * value is a text node or a quoted YAML scalar (JSON.stringify), never markup.
+   */
+  function registrationBlock(slug, registration) {
+    const inputs = registration.retentions.map((name) => [name, el('input', { id: `retention-${name}`, type: 'text', maxlength: '14', pattern: '[1-9][0-9]{0,5} (minutes|hours|days|months|years)', value: name === 'RETENTION_AUDIT' ? '1 years' : '5 years', title: t['gate.registration.duration'] })]);
+    const entry = el('textarea', { id: 'registration-entry', readonly: '', rows: String(4 + registration.roles.length + inputs.length), spellcheck: 'false', 'aria-label': t['gate.registration.entry'] });
+    const render = () => {
+      const roles = registration.roles.length === 0 ? '    roles: []  # fill in the roles of the scope\n' : `    roles:\n${registration.roles.map((r) => `      - { name: ${r}, description: ${JSON.stringify(r.charAt(0).toUpperCase() + r.slice(1))} }\n`).join('')}`;
+      entry.value = `  - slug: ${slug}\n${roles}    retentions:\n${inputs.map(([name, input]) => `      ${name}: ${JSON.stringify(input.value.trim())}\n`).join('')}`;
+    };
+    for (const [, input] of inputs) input.addEventListener('input', render);
+    render();
+    const status = el('p', { class: 'reason', role: 'status' });
+    const copy = el('button', { type: 'button', class: 'ghost', text: t['gate.registration.copy'], onclick: async () => {
+      try {
+        await navigator.clipboard.writeText(entry.value);
+        status.textContent = t['gate.registration.copied'];
+      } catch {
+        entry.focus();
+        entry.select();
+        status.textContent = t['gate.registration.selectToCopy'];
+      }
+    } });
+    // Folded by default (native <details>): a one-off step of core tools, which must not push the chat's input away.
+    return el('details', { class: 'registration' }, [
+      el('summary', { text: t['gate.registration.title'] }),
+      el('p', { class: 'reason', text: t['gate.registration.hint'] }),
+      el('p', { text: `${t['gate.registration.roles']} ${registration.roles.length === 0 ? t['gate.registration.noRoles'] : registration.roles.join(', ')}` }),
+      ...inputs.map(([name, input]) => el('label', { for: input.id }, [el('span', { text: name }), input])),
+      entry,
+      el('div', { class: 'row' }, [copy, status]),
+      el('p', { text: `${t['gate.registration.command']} ` }, [el('code', { text: 'ansible-playbook register-tools.yml </dev/null' })]),
+    ]);
   }
   /** New rows since the last id (the engine's answers, the agents' questions) and the state, every POLL_MS. */
   let polling = false;

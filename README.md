@@ -68,9 +68,12 @@ Open core, Apache 2.0: the engine is here; organisation-specific extras
 **Pre-release.** On the lab VMs, a complete cycle runs end to end with a
 scripted agent and no AI cost: the Git forge and its real CI, the DBOS engine
 and its gates, a signed image, a Preview with its checks, then Production.
-Claude Code has run real tasks in the isolated containers, but no real tool has
-been taken from request to Production by a model yet. The dashboard and gate
-pages are not built: gates are decided through the engine's local API for now.
+One real tool (an equipment-loan tracker) has been taken by the model from
+request to Production on the lab, in November 2026, with human corrections
+along the way; what went wrong and what it cost is written down in ADR-027 and
+[`docs/ai-error-log.md`](docs/ai-error-log.md). Nothing has run at a client
+yet. The dashboard and gate pages are not built: gates are decided through the
+engine's local API for now.
 There is no one-command install; the lab is five VMs described as code in
 [`infra/`](infra/README.md). Piece-by-piece status with the tests that prove it:
 [`docs/architecture.md`](docs/architecture.md).

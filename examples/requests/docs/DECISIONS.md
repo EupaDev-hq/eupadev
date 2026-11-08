@@ -11,7 +11,7 @@ Decisions specific to this tool, one line each with its reason (decided on
 - Concurrency by `version` in the `PATCH` body: `ctx` does not expose the headers (E11).
 - History and legality of the transitions by an SQL trigger in the tool's migration: a trigger cannot be forgotten (E7).
 - Attachment in the database (`bytea`), one per request, 5 MiB, declared binary body, PDF/PNG/JPEG checked by signature: no volume, no path, no dependency (E4, E5).
-- `nodemailer` in the tool (`api/lib/mail.js`): an ADR-019 exception, the core has no mail module (E9).
+- No mail: the platform offers no mail relay to the tools; a status change is seen in the tool (status badge, history). No ADR-019 exception needed.
 - Acceptance tests by `@playwright/test` + `playwright-bdd`: the template's `tests.md` rules (E10).
 
 ## Retention

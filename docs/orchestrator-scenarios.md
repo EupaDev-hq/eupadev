@@ -80,8 +80,10 @@ D20 M7. A previous_id declared by the reviewer makes the counter inherited, and 
 D20 M1. A label outside the closed list makes the report invalid: task failed, deviation report:<role> that counts like the others.
 D20 M3. Patience: 3, 2, 3, 2, 3 deviations all different → "no progress" at the 5th evaluation; 3, 2, 1, 0 → merge.
 D20 M4a. A role restarted for deviations that does not touch its code produces the deviation code:unchanged:<role>, visible to the admin.
-D20 M4a bis. A role restarted for the sole deviation code:unchanged:<role>, which does not touch its code, produces no deviation: the round is compliant.
+D20 M4a bis. A role restarted for its blocked report that touches nothing while the reviewers find nothing on its side produces no deviation; only the role with a real deviation runs again.
 D20 M4a ter. After "continue" at the stagnation gate, a round with no real deviation to address ends with the merge even if the role's code has not moved.
+D20 M4a quater. A role restarted for a finding that touches nothing while the reviewers find nothing more produces no deviation: the round is compliant.
+D20 M4a quinquies. After "scope change" at the stagnation gate, the new contract starts with fresh counters; the cost spent stays.
 D20 M4b. A role's Git tree back to an earlier state (A → B → A) escalates immediately, even with different labels.
 D20 M5. An Opengrep finding keeps its identity (matchBasedId) when the line moves; three different findings of the same rule do not stagnate.
 28. The duration counted is the agents' work, not the wait in the queue nor the human wait.

@@ -2,7 +2,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { jargon } from '../src/agent-engine/jargon.ts';
-import { RETAINED_EVIDENCE, transmissibleEvidence } from '../src/agent-engine/report.ts';
+import { RETAINED_EVIDENCE, ReportValidator, transmissibleEvidence } from '../src/agent-engine/report.ts';
+import { compliantReport } from '../src/external/fakes.ts';
 
 test('C1: a technical word is found, as written, in any case and plural', () => {
   assert.equal(jargon('Do you need a JSON export?'), 'JSON');
@@ -29,4 +30,17 @@ test('C2: evidence naming a code file or holding a code fence is withheld; test 
   for (const e of ['tests/acceptance/steps/list.js:14 expects 404; openapi.yaml /api/tools/{id} declares 200',
     '/tools/{id}: the test reads the tool of another site', 'GET /api/categories answers 200 in the contract'])
     assert.equal(transmissibleEvidence(e), e, e);
+});
+
+test('capabilities: a scoping report says which platform capabilities it relies on, from the closed list; without the field or outside the list it is invalid; other roles are not concerned', () => {
+  const v = new ReportValidator(new URL('../../tool-template/agents/report.schema.json', import.meta.url).pathname);
+  const expected = { role: 'scoping', task_id: 't-1' };
+  const scoping = (extra: Record<string, unknown>) => ({ ...compliantReport('scoping', 't-1'), ...extra });
+  assert.ok(v.validate(scoping({ capabilities_used: ['sign-in', 'csv-export'], capabilities_missing: ['Email to the technician at each status change'] }), expected).valid);
+  assert.ok(v.validate(scoping({ capabilities_used: [], capabilities_missing: [] }), expected).valid);
+  assert.match((v.validate(scoping({ capabilities_used: ['email-notification'] }), expected) as { errors: string }).errors, /capabilities_used\/0 must be equal to one of the allowed values/);
+  assert.match((v.validate(scoping({ capabilities_used: null }), expected) as { errors: string }).errors, /scoping without capabilities_used/);
+  const { capabilities_used: _, ...without } = compliantReport('scoping', 't-1');
+  assert.match((v.validate(without, expected) as { errors: string }).errors, /scoping without capabilities_used/);
+  assert.ok(v.validate(compliantReport('contract', 't-2'), { role: 'contract', task_id: 't-2' }).valid, 'no capabilities_used for the other roles');
 });

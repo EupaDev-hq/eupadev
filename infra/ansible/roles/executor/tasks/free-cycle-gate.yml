@@ -1,0 +1,60 @@
+# Paid engine only after a free cycle on this platform version (post-Prod fix
+# 10, docs/reflexions/2026-11-07-note-free-cycle-before-paid.md). The free
+# cycle (verify-engine-deployment.yml -e free_cycle=true: pushing fake, the
+# reference tool, up to a healthy Preview) records what it proved in a marker on
+# this VM; enabling engine=claude requires that marker to match the platform of
+# today (fingerprint.yml: engine image, template commit, latest core). A second
+# site.yml run with nothing changed finds the same fingerprint: no new free
+# cycle. Only override: -e executor_free_cycle_skip=true, printed in the run output.
+# Nothing is changed here: the gate decides before the role touches the VM.
+- name: Platform fingerprint
+  ansible.builtin.include_tasks: fingerprint.yml
+
+- name: Marker of the last free cycle
+  ansible.builtin.stat:
+    path: "{{ executor_free_cycle_marker }}"
+  register: executor_marker
+
+- name: Read the marker
+  ansible.builtin.slurp:
+    src: "{{ executor_free_cycle_marker }}"
+  register: executor_marker_content
+  when: executor_marker.stat.exists
+
+- name: What the last free cycle proved, and what differs today
+  ansible.builtin.set_fact:
+    executor_free_cycle: "{{ (executor_marker_content.content | b64decode | from_json) if executor_marker.stat.exists else {} }}"
+    executor_free_cycle_stale: >-
+      {%- set stale = [] -%}
+      {%- set proved = (executor_marker_content.content | b64decode | from_json) if executor_marker.stat.exists else {} -%}
+      {%- for key, value in executor_fingerprint.items() if proved.get(key) != value -%}
+        {%- set _ = stale.append(key ~ ': ' ~ (proved.get(key) | default('none', true)) ~ ' -> ' ~ value) -%}
+      {%- endfor -%}
+      {{ stale }}
+
+- name: OVERRIDE — free-cycle check skipped (executor_free_cycle_skip=true)
+  ansible.builtin.debug:
+    msg: >-
+      OVERRIDE: engine=claude enabled without a free cycle proven on today's platform
+      ({{ executor_free_cycle_stale | join('; ') if executor_free_cycle_stale | length > 0 else 'nothing differs from the last free cycle' }}).
+  when: executor_free_cycle_skip | bool
+
+- name: A free cycle on this platform version comes before the paid engine
+  ansible.builtin.fail:
+    msg: |-
+      engine=claude refused: no free cycle proved on today's platform ({{ executor_free_cycle_stale | join('; ') }}).
+      Run it (about an hour of lab time, no AI call), then come back:
+        1. ansible-playbook site.yml --limit orchestrator,agents -e orchestrator_real_world=true </dev/null
+           (executor on the pushing fake)
+        2. ansible-playbook verify-engine-deployment.yml -e free_cycle=true </dev/null
+           (reference tool up to a healthy Preview; writes {{ executor_free_cycle_marker }})
+        3. this run again, with executor_claude_engine=true.
+      Only override, printed in the run output: -e executor_free_cycle_skip=true.
+  when: not executor_free_cycle_skip | bool and executor_free_cycle_stale | length > 0
+
+- name: Free cycle proven on this platform version
+  ansible.builtin.debug:
+    msg: >-
+      Free cycle {{ executor_free_cycle.cycle_id }} ({{ executor_free_cycle.slug }}, {{ executor_free_cycle.date }})
+      proved today's engine image, template commit and core version.
+  when: not executor_free_cycle_skip | bool and executor_free_cycle_stale | length == 0

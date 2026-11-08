@@ -66,6 +66,8 @@ jobs:
     runs-on: ci-image
     steps:
       - name: pa11y-ci — accessibility on the actually deployed Preview
+        env:
+          PREVIEW_PERSONAS: ${{ secrets.PREVIEW_PERSONAS }}
         run: |
           case "$PREVIEW_URL" in https://*[!a-z0-9.-]*|https://) echo "invalid Preview URL"; exit 1;; https://*) ;; *) echo "invalid Preview URL"; exit 1;; esac
           HOST="${PREVIEW_URL#https://}"
@@ -75,7 +77,7 @@ jobs:
           # puppeteer download lacks system libraries); no sandbox inside the
           # throwaway container (Chrome's sandbox needs namespaces Docker refuses).
           docker run --rm --add-host "$HOST:host-gateway" -v /usr/local/share/ca-certificates:/ca:ro \
-            -e PREVIEW_URL -e PUPPETEER_SKIP_DOWNLOAD=true \
+            -e PREVIEW_URL -e PREVIEW_PERSONAS -e PUPPETEER_SKIP_DOWNLOAD=true \
             node:24.22.1-trixie-slim@sha256:43b9ba1142b8dcf33fa8f922ca1be85714adc444e0586c7cf7726daaeabc1bea sh -c '
               set -e
               apt-get update -qq > /dev/null
@@ -83,10 +85,21 @@ jobs:
               mkdir -p "$HOME/.pki/nssdb"
               certutil -d "sql:$HOME/.pki/nssdb" -N --empty-password
               for c in /ca/*.crt; do [ -e "$c" ] && certutil -d "sql:$HOME/.pki/nssdb" -A -t C,, -n "$(basename "$c")" -i "$c"; done
-              node -e "require(\"fs\").writeFileSync(\"/tmp/pa11y.json\", JSON.stringify({ defaults: { chromeLaunchConfig: { executablePath: \"/usr/bin/chromium\", args: [\"--no-sandbox\"] } }, urls: [process.argv[1]] }))" "$PREVIEW_URL"
+              # A core tool sends the visitor to the sign-in page by script: pa11y would
+              # audit the page while it navigates away (no title, no lang), or lose its
+              # actions to that navigation on a slow first start. It opens the server
+              # sign-in redirect itself, signs in as the first Preview persona and audits
+              # the tool once back on its home.
+              node -e "
+                const p = JSON.parse(process.env.PREVIEW_PERSONAS || \"[]\")[0];
+                const actions = p ? [\"wait for element #username to be visible\", \"set field #username to \" + p.name, \"set field #password to \" + p.password, \"click element #kc-login\", \"wait for path to be /\"] : [];
+                require(\"fs\").writeFileSync(\"/tmp/pa11y.json\", JSON.stringify({ defaults: { chromeLaunchConfig: { executablePath: \"/usr/bin/chromium\", args: [\"--no-sandbox\"] }, timeout: 60000 }, urls: [{ url: process.argv[1] + (p ? \"/auth/login?next=%2F\" : \"\"), actions }] }), { mode: 0o600 })" "$PREVIEW_URL"
               npx --yes pa11y-ci --config /tmp/pa11y.json'
 
+  # ZAP and the acceptance suite hammer the Preview (sign-ins, rate limits): they start once
+  # the read-only controls are done, so a 429 never lands in pa11y's or k6's page.
   pentest-dast:
+    needs: [perf, accessibility-preview]
     runs-on: ci-image
     steps:
       - name: OWASP ZAP baseline scan — actually deployed Preview URL
@@ -114,6 +127,7 @@ jobs:
   # (accepted exposure: a login on this tool's Preview, nothing else; header
   # of register-tools.yml). The registry badge reaches the install only.
   acceptance:
+    needs: [perf, accessibility-preview]
     runs-on: ci-image
     timeout-minutes: 30
     steps:

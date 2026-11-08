@@ -35,6 +35,12 @@ export interface Report {
   overlapping_tool?: string | null;
   /** Scoping only (A-R6, D2): sent to the requester with the mock-up link, after the refused-words check (C1, `jargon.ts`). */
   requester_message?: string | null;
+  /** Scoping only: ids of the platform capabilities the scope relies on (closed list `$defs.capability`); missing = invalid report. */
+  capabilities_used?: string[] | null;
+  /** Scoping only: what the requester asked for that the platform does not offer (business words). */
+  capabilities_missing?: string[] | null;
+  /** Diagnosis only (ADR-027): read by `readDiagnosis` (`hardening/diagnosis.ts`), which checks its consistency; anything else = unavailable. */
+  diagnosis?: unknown;
 }
 
 /**
@@ -66,6 +72,8 @@ export class ReportValidator {
     if (r.role !== expected.role) return { valid: false, errors: `role ${r.role} instead of ${expected.role}` };
     if (r.task_id !== expected.task_id) return { valid: false, errors: `task_id ${r.task_id} instead of ${expected.task_id}` };
     if (r.status === 'blocked' && (r.blocked_reason ?? '').trim() === '') return { valid: false, errors: 'blocked without blocked_reason' };
+    // The scoping says which platform capabilities it relies on (a promise outside the list is refused by the schema).
+    if (r.role === 'scoping' && !Array.isArray(r.capabilities_used)) return { valid: false, errors: 'scoping without capabilities_used' };
     return { valid: true, report: r };
   }
 }

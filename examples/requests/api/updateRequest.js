@@ -1,9 +1,9 @@
 // Change of a request at the version read (decision E11): the fields of a draft by its author, and/or a status change
 // and/or the restore of a deleted request (admin). The row is locked for the time of the transaction: two
 // simultaneous changes do not overwrite each other, the second gets 409. The database judges the (from, to) pair and
-// writes the history. A status change is mailed after the commit (api/lib/mail.js).
+// writes the history, which the screens show to the requester and the managers (no mail: the platform offers no
+// mail relay to the tools; what changed is visible in the tool, status badge and history).
 import { Problem } from '@eupadev/core';
-import { send, transitionMail } from './lib/mail.js';
 import { SCOPE, SELECTION, scope } from './lib/requests.js';
 import { transitionRefusal } from './lib/transitions.js';
 
@@ -13,7 +13,7 @@ export default async function updateRequest(ctx) {
   const { version, category = null, urgency = null, title = null, description = null, location = null, status = null, note = null, restore = false } = ctx.body;
   const [actor, manages] = scope(ctx.session);
   if (restore && !ctx.session.roles.includes('admin')) throw new Problem(403, 'FORBIDDEN', 'Only an admin restores a request');
-  const { body, requesterMail } = await ctx.db.tx(async (/** @type {any} */ t) => {
+  const body = await ctx.db.tx(async (/** @type {any} */ t) => {
     // A deleted request is only found when restoring it; restoring one that is not deleted is a 422, not a 404.
     const { rows } = await t.query(`SELECT r.requester_id, r.status, r.category_code, r.version::int AS version, r.deleted_at IS NOT NULL AS deleted FROM requests r
       WHERE r.id = $3 AND (r.deleted_at IS NULL OR $4) AND ${SCOPE} FOR UPDATE`, [actor, manages, id, restore]);
@@ -42,13 +42,7 @@ export default async function updateRequest(ctx) {
       if (e.code === '23514' && e.constraint === 'requests_transition') throw new Problem(422, 'INVALID_TRANSITION', `Request cannot go from ${request.status} to ${status}`);
       throw e;
     }
-    const read = await t.query(`${SELECTION} WHERE r.id = $1`, [id]);
-    const mail = status === null ? null : (await t.query('SELECT mail FROM actors WHERE id = $1', [request.requester_id])).rows[0]?.mail;
-    return { body: read.rows[0], requesterMail: mail ?? null };
+    return (await t.query(`${SELECTION} WHERE r.id = $1`, [id])).rows[0];
   });
-  if (status !== null) {
-    const message = transitionMail(body, { status, actorId: actor, requesterMail, managers: process.env.MAIL_MANAGERS, appUrl: process.env.APP_URL });
-    if (message) send(ctx.log, message, id);
-  }
   return { status: 200, body };
 }

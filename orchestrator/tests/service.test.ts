@@ -638,3 +638,71 @@ test('E0: emergency stop (PAUSE_AGENTS=1) — no agent task launched, the cycle 
   }, async (m) => { await orch.send(cycle_id, m, hats(m)); });
   assert.equal(end, 'end_success');
 });
+
+test('ADR-031 S1: POST /requests/<id>/intent reads a sentence against the state and the hat, never posts a decision; header, token, stranger, body, rate limit; row in intents', { timeout: 180_000 }, async () => {
+  const r = await call('POST', '/requests', { type: 'creation', name: 'Badge register', slug: 'badge-register', owner_service: 'security', need: 'Track the visitor badges' }, { 'Idempotency-Key': newKey() });
+  assert.equal(r.status, 201, JSON.stringify(r.body));
+  const cycle = r.body['cycle_id'] as number;
+  const waitFor = async (state: string) => {
+    for (const limit = Date.now() + 90_000; (await readByApi(cycle)()).state !== state; ) {
+      if (Date.now() > limit) throw new Error(`cycle ${cycle} never reached ${state}`);
+      await sleep(50);
+    }
+  };
+  const intent = (body: unknown, headers: Record<string, string | null> = {}, who: string = REQUESTER.id) => call('POST', `/requests/${cycle}/intent`, body, headers, who);
+  const en = (text: string) => ({ text, lang: 'en' });
+  await waitFor('waiting_scoping_feedback');
+
+  // Guards: the header, a token, the tool's requester or an admin, a strict body, a sentence checked like a message text.
+  const stranger = { Authorization: `Bearer ${await oidc.token({ subject: 'intent-stranger', mail: 'intent-stranger@example.test', roles: ['requester'] })}` };
+  assert.equal((await intent(en('ok'), { 'X-EupaDev': null })).status, 403);
+  assert.equal((await intent(en('ok'), { Authorization: null })).status, 401);
+  const refused = await intent(en('ok'), stranger);
+  assert.equal(refused.status, 403, JSON.stringify(refused.body));
+  assert.match(String(refused.body['detail']), /reserved for the requester of tool/);
+  assert.equal((await intent({ text: 'ok' })).status, 400, 'lang required');
+  assert.equal((await intent({ text: 'ok', lang: 'de' })).status, 400);
+  assert.equal((await intent({ text: 'ok', lang: 'en', hat: 'admin' })).status, 400, 'no identity from the body');
+  assert.equal((await intent(en('ok​'))).status, 400, 'invisible character');
+  assert.equal((await call('GET', `/requests/${cycle}/intent`)).status, 405);
+  assert.equal((await call('POST', '/requests/999999/intent', en('ok'))).status, 404);
+
+  // The requester at the mock-up wait: a plain yes is "satisfied" (a click: the contract task is paid), another sentence is unclear, an amount is not a top-up here.
+  const yes = await intent({ text: "c'est bon", lang: 'fr' });
+  assert.equal(yes.status, 200, JSON.stringify(yes.body));
+  assert.deepEqual(yes.body, { cycle_id: cycle, state: 'waiting_scoping_feedback', hat: 'requester', allowed: ['satisfied', 'correction', 'abandon'], intent: 'satisfied', needs_click: true, fallback: false });
+  assert.equal((await intent(en('the filter per site is missing'))).body['intent'], 'unclear');
+  assert.equal((await intent(en('ok with 20 more'))).body['intent'], 'unclear', 'no top-up at a wait');
+  // The admin at a requester's wait has nothing to say: empty set, the reader is not called.
+  const admin = await intent(en('ok'), {}, ADMIN.id);
+  assert.deepEqual([admin.body['hat'], admin.body['allowed'], admin.body['intent']], ['admin', [], 'unclear']);
+  // Nothing was posted: the state is unchanged, no message of the requester beyond the need.
+  assert.equal((await readByApi(cycle)()).state, 'waiting_scoping_feedback');
+  assert.equal((await orch.base.pool.query<{ n: number }>("SELECT count(*)::int AS n FROM messages WHERE cycle_id = $1 AND author_type = 'requester'", [cycle])).rows[0]!.n, 1);
+  // Every sentence is recorded with its reading; the engine can neither change nor delete the rows.
+  const rows = await orch.base.pool.query<{ hat: string; allowed: string[]; text: string; lang: string; intent: string; amount_usd: string | null; reader: string; fallback: boolean }>('SELECT hat, allowed, text, lang, intent, amount_usd, reader, fallback FROM intents WHERE cycle_id = $1 ORDER BY id', [cycle]);
+  assert.deepEqual(rows.rows.map((x) => [x.hat, x.text, x.intent]), [['requester', "c'est bon", 'satisfied'], ['requester', 'the filter per site is missing', 'unclear'], ['requester', 'ok with 20 more', 'unclear'], ['admin', 'ok', 'unclear']]);
+  assert.deepEqual([rows.rows[0]!.lang, rows.rows[0]!.allowed, rows.rows[0]!.reader, rows.rows[0]!.fallback, rows.rows[3]!.allowed], ['fr', ['satisfied', 'correction', 'abandon'], 'words', false, []]);
+  await assert.rejects(orch.base.pool.query('UPDATE intents SET intent = $2 WHERE cycle_id = $1', [cycle, 'approved']), /append-only|permission denied/);
+  await assert.rejects(orch.base.pool.query('DELETE FROM intents WHERE cycle_id = $1', [cycle]), /append-only|permission denied/);
+
+  // Rate limit per person: a runaway client is slowed down, nobody else is.
+  const hurried = { Authorization: `Bearer ${await oidc.token({ subject: 'intent-hurried', mail: 'intent-hurried@example.test', roles: ['admin'] })}` };
+  for (let i = 0; i < 20; i++) assert.equal((await intent(en('ok'), hurried)).status, 200, `call ${i + 1}`);
+  const slowed = await intent(en('ok'), hurried);
+  assert.equal(slowed.status, 429, JSON.stringify(slowed.body));
+  assert.match(slowed.type, PROBLEM);
+  assert.ok(Number(slowed.headers['retry-after']) >= 1);
+  assert.equal((await intent(en('ok'), {}, ADMIN.id)).status, 200, 'another person is not slowed down');
+
+  // The admin at Gate 1 (reached by the automatic fakes once the requester is satisfied): "ok" approves, free (a Preview
+  // deployment, no agent); an amount is unclear there (no envelope); the requester has nothing to say at a gate.
+  assert.equal((await posterMessage(cycle, { type: 'scoping_feedback', outcome: 'satisfied', actor_id: REQUESTER.id }, { 'Idempotency-Key': newKey() })).status, 202);
+  await waitFor('gate_1');
+  const gate = await intent(en('ok'), {}, ADMIN.id);
+  assert.deepEqual([gate.body['hat'], gate.body['allowed'], gate.body['intent'], gate.body['needs_click']], ['admin', ['approved', 'correction', 'refused', 'scope_change'], 'approved', false]);
+  assert.equal((await intent(en('ok with 20 more'), {}, ADMIN.id)).body['intent'], 'unclear');
+  assert.deepEqual((await intent(en('ok'))).body['allowed'], [], 'the requester at a gate');
+  assert.equal((await readByApi(cycle)()).state, 'gate_1', 'understanding decided nothing');
+  await posterMessage(cycle, { type: 'cancellation', actor_id: ADMIN.id }, { 'Idempotency-Key': newKey() });
+});

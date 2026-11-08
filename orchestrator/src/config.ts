@@ -27,6 +27,8 @@ export const MODELS_BY_ROLE: Readonly<Record<Role, { model: string; effort: Effo
   builder: { model: 'claude-opus-5-5', effort: 'medium' },
   'security-reviewer': { model: 'claude-opus-5-5', effort: 'high' },
   'quality-reviewer': { model: 'claude-opus-5-5', effort: 'high' },
+  /** ADR-027: reads a small, pre-digested file; Sonnet is enough and keeps the cap at $2 realistic. */
+  diagnosis: { model: 'claude-sonnet-5-5', effort: 'medium' },
 };
 
 export interface Timeouts {

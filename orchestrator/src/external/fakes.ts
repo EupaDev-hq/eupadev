@@ -7,11 +7,12 @@
 import { createHash } from 'node:crypto';
 import type {
   Deployer, TaskInput, Environment, External, Forge, CoreUpdate, AgentEngine, Notifications, DeploymentResult, MergeResult,
-  IntegrationResult, Role, PublishedRole, TaskOutput,
+  IntegrationResult, Role, RoleCode, PublishedRole, TaskOutput, Registration,
 } from './contracts.ts';
 import { CODE_ROLES, ownerRole } from './contracts.ts';
 import type { Message } from '../messages.ts';
 import type { Report, Finding } from '../agent-engine/report.ts';
+import type { Cause } from '../hardening/diagnosis.ts';
 import type { Orchestrator } from '../orchestrator.ts';
 
 const sha256 = (s: string) => createHash('sha256').update(s).digest('hex');
@@ -118,6 +119,8 @@ export class FakeEngine implements AgentEngine {
   readonly lastDigests = new Map<string, string>();
   /** Tasks whose stop signal was received (timeout, cancellation): the "container" was stopped. */
   readonly stopped = new Set<string>();
+  /** Roles whose tasks stay "preparing" (clone, image check…): no container started, no launch counted, until the stop signal. */
+  readonly preparing = new Set<Role>();
 
   static key(tool: string, role: string): string {
     return `${tool}/${role}`;
@@ -126,9 +129,13 @@ export class FakeEngine implements AgentEngine {
   async execute(input: TaskInput): Promise<TaskOutput> {
     const { signal, ...noSignal } = input;
     signal.addEventListener('abort', () => this.stopped.add(input.task_id), { once: true });
+    const interrupted = () => new Promise<TaskOutput>((_, reject) => signal.addEventListener('abort', () => reject(new Error(`interrupted: ${String(signal.reason)}`)), { once: true }));
+    if (this.preparing.has(input.role)) return interrupted();
+    // The pending request is the "running container": counted before it starts, like the real launcher.
+    await input.launched();
     const answer = await this.switchboard.ask(FakeEngine.key(input.tool, input.role), noSignal, input.task_id, signal, [`*/${input.role}`]);
     if (answer.type === 'failed') return { report: null, error: answer.reason, cost_usd: answer.cost_usd ?? this.defaultCost, duration_s: this.defaultDuration_s, tree_hash: null };
-    if (answer.type === 'silence') return new Promise<TaskOutput>((_, reject) => signal.addEventListener('abort', () => reject(new Error(`interrupted: ${String(signal.reason)}`)), { once: true }));
+    if (answer.type === 'silence') return interrupted();
     const treeKey = FakeEngine.key(input.tool, input.role);
     let tree: string | null = null;
     if ((CODE_ROLES as readonly string[]).includes(input.role)) {
@@ -172,7 +179,7 @@ export function compliantReport(role: Role, task_id: string, extra: Partial<Repo
     schema_version: '1', role, task_id: task_id, status: 'done', summary: `Task ${role} finished without a deviation.`, blocked_reason: null,
     files_changed: [], verifications: [{ command: 'pnpm run verify', result: 'pass', details: '' }], findings: [],
     category_verdicts: REVIEW_ROLES_SET.has(role) ? [{ category: 'security.md#Requests', verdict: 'compliant', evidence: 'api/ reviewed' }] : [],
-    assumptions: [], ...extra,
+    assumptions: [], ...(role === 'scoping' ? { capabilities_used: [], capabilities_missing: [] } : {}), ...extra,
   };
 }
 
@@ -197,6 +204,14 @@ export function blockedReport(role: Role, task_id: string, reason: string): Repo
   return compliantReport(role, task_id, { status: 'blocked', blocked_reason: reason, summary: `Blocked: ${reason}` });
 }
 
+/** ADR-027: diagnosis report whose cause and recommendation agree (`readDiagnosis`); the pre-check lines are its default evidence. */
+export function diagnosisReport(task_id: string, cause: Cause, explanation: string, recommendation: { top_up_usd?: number; question?: string } = {}, evidence: string[] = ['see the orchestrator pre-check']): Report {
+  return compliantReport('diagnosis', task_id, {
+    summary: explanation.slice(0, 600),
+    diagnosis: { cause, explanation, evidence, recommendation: { top_up_usd: recommendation.top_up_usd ?? null, question: recommendation.question ?? null } },
+  });
+}
+
 /** Verdict of the overlap search: the report's `verdict` field (C1), the reason in the summary. */
 export function overlapReport(task_id: string, verdict: 'plausible' | 'not_plausible', reason = '', tool?: string): Report {
   const summary = reason !== '' ? reason : verdict === 'plausible' ? 'A tool of the registry may already cover this need.' : 'No tool of the registry covers this need.';
@@ -218,6 +233,8 @@ export class FakeForge implements Forge {
   readonly merges = new Map<string, number>();
   /** Validated work published into main (scoping, contract, core bump), in order; no branch in the fake, so no switchboard: always ok. */
   readonly publications: { slug: string; cycleId: number; role: PublishedRole | 'core'; at: number }[] = [];
+  /** ADR-027: commits ahead of main on a code role's branch, scripted per `<slug>/<cycle>/<role>`; 0 (no branch) otherwise. */
+  readonly branchCommits = new Map<string, number>();
 
   #repo(slug: string) {
     if (!this.repos.has(slug)) this.repos.set(slug, { creations: 0 });
@@ -231,12 +248,37 @@ export class FakeForge implements Forge {
     if (d.creations === 0) d.creations = 1; // idempotent: an existing repository is not created again
   }
 
+  /** Renames done at Gate 1, in order (the fake has no branch: the repository entry and the scripted commits follow the slug). */
+  readonly renames: { from: string; to: string }[] = [];
+
+  async renameTool(from: string, to: string): Promise<void> {
+    this.renames.push({ from, to });
+    const d = this.repos.get(from);
+    if (d !== undefined && !this.repos.has(to)) {
+      this.repos.delete(from);
+      this.repos.set(to, d);
+    }
+    for (const [key, n] of [...this.branchCommits]) {
+      if (key.startsWith(`${from}/`)) { this.branchCommits.delete(key); this.branchCommits.set(`${to}/${key.slice(from.length + 1)}`, n); }
+    }
+  }
+
   async publish(slug: string, cycleId: number, role: PublishedRole): Promise<void> {
     this.publications.push({ slug, cycleId, role, at: Date.now() });
   }
 
   async publishCore(slug: string, cycleId: number): Promise<void> {
     this.publications.push({ slug, cycleId, role: 'core', at: Date.now() });
+  }
+
+  async roleBranchCommits(slug: string, cycleId: number): Promise<Record<RoleCode, number>> {
+    return Object.fromEntries(CODE_ROLES.map((r) => [r, this.branchCommits.get(`${slug}/${cycleId}/${r}`) ?? 0])) as Record<RoleCode, number>;
+  }
+
+  /** Gate 1 (D-E5): names of the fake contract and purge, scripted per slug or the same for every tool. */
+  readonly registrations = new Map<string, Registration>();
+  async registration(slug: string): Promise<Registration> {
+    return this.registrations.get(slug) ?? { roles: ['reader', 'admin'], retentions: ['RETENTION_AUDIT', 'RETENTION_REQUESTS'] };
   }
 
   async integrate(slug: string, _cycleId: number, iteration: number, signal?: AbortSignal): Promise<IntegrationResult> {
@@ -347,9 +389,11 @@ export class FakeNotifications implements Notifications {
 
 // ── "All is well" answers and automatic fake world (E0) ─────────────────────────────────────────────
 
-/** The engine's "all is well" answer: compliant report, not-plausible verdict for the overlap search. */
+/** The engine's "all is well" answer: compliant report, not-plausible verdict for the overlap search, slow progress for a diagnosis. */
 export function happyResponse(input: { role: string; task_id: string }): EngineResponse {
-  const report = input.role === 'overlap' ? overlapReport(input.task_id, 'not_plausible') : compliantReport(input.role as Role, input.task_id);
+  const report = input.role === 'overlap' ? overlapReport(input.task_id, 'not_plausible')
+    : input.role === 'diagnosis' ? diagnosisReport(input.task_id, 'slow_progress', 'The agents are moving forward but ran out of budget.', { top_up_usd: 10 })
+      : compliantReport(input.role as Role, input.task_id);
   return { type: 'report', report: report };
 }
 

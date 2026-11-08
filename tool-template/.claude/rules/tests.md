@@ -8,7 +8,7 @@ paths:
 ## Tooling and layout
 - Unit tests: `node --test` under `tests/unit/`, by the code's owner.
 - Acceptance: Playwright and playwright-bdd under `tests/acceptance/`, as in the reference tool.
-- Import the kit, `@eupadev/core/kit` (two users, Mailpit, browser); never copy it.
+- Import the kit, `@eupadev/core/kit` (two users, browser); never copy it.
 - Gherkin only for behaviour a requester reads.
 
 ## Execution

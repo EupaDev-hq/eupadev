@@ -412,7 +412,7 @@ class Core(unittest.TestCase):
 
     def test_no_entry_refused_nothing_started(self):
         vm = FakeVM(core=True)
-        with self.assertRaisesRegex(Refusal, "not registered at Gate 1"):
+        with self.assertRaisesRegex(Refusal, "not registered at Gate 1: paste the entry shown on the tool's Gate 1 page into .*core-tools.yml, then run ansible-playbook register-tools.yml"):
             self.execute(vm)
         self.assertEqual(compose(vm), [])
 

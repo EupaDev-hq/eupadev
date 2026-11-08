@@ -244,7 +244,8 @@ def entry(slug):
         with open(os.path.join(TOOLS, f"{slug}.json"), encoding="utf-8") as f:
             e = json.load(f)
     except FileNotFoundError:
-        raise Refusal("core tool not registered at Gate 1 (register-tools.yml)") from None
+        raise Refusal("core tool not registered at Gate 1: paste the entry shown on the tool's Gate 1 page into "
+                      "infra/ansible/group_vars/all/core-tools.yml, then run ansible-playbook register-tools.yml") from None
     retentions = e.get("retentions") or {}
     if not isinstance(e.get("client_id"), str) or not SLUG.fullmatch(e["client_id"]) or not all(
             RETENTION.fullmatch(k) and isinstance(v, str) and DURATION.fullmatch(v) for k, v in retentions.items()):

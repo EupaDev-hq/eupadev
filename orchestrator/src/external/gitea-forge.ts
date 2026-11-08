@@ -20,7 +20,8 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { CODE_ROLES, inScope, type Forge, type CoreUpdate, type CiResult, type MergeResult, type IntegrationResult, type Role, type PublishedRole } from './contracts.ts';
+import { CODE_ROLES, inScope, type Forge, type CoreUpdate, type CiResult, type MergeResult, type IntegrationResult, type Role, type RoleCode, type PublishedRole, type Registration } from './contracts.ts';
+import { rolesOf, retentionsOf } from '../registration.ts';
 
 export class ForgeError extends Error {
   override name = 'ForgeError';
@@ -89,6 +90,21 @@ export function acceptanceFailures(log: string): string[] {
     if (m) failures.add(m[1]!.slice(0, 200));
   }
   return [...failures].slice(0, 20);
+}
+
+/** Bounds of a red job's log tail: what an agent can read without being flooded (ADR-027). */
+export const LOG_TAIL = { lines: 40, line_chars: 300 };
+
+/**
+ * The last lines of a red job's log, as DATA for the agents (the diagnosis today; the code roles if ADR-030 decides so):
+ * timestamps and colours removed, control characters dropped, empty lines left out, `LOG_TAIL.lines` at most, each cut at
+ * `LOG_TAIL.line_chars`. Untrusted text, like a report: bounded, never interpreted by the engine.
+ */
+export function logTail(log: string, lines = LOG_TAIL.lines): string[] {
+  const clean = log.split('\n')
+    .map((l) => l.replace(/\x1b\[[0-9;]*m/g, '').replace(/^\d{4}-\d\d-\d\dT\S+Z /, '').replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '').trimEnd())
+    .filter((l) => l !== '');
+  return clean.slice(-lines).map((l) => l.slice(0, LOG_TAIL.line_chars));
 }
 
 /** Line printed by the template's `analysis` job before its Opengrep SARIF results, one JSON result per line (check.yml). */
@@ -164,6 +180,36 @@ export class GiteaForge implements Forge {
       await this.#call('DELETE', `${repo}/collaborators/${this.#account}`, [204], signal);
     }
     await this.#checkRepo(slug, signal);
+  }
+
+  /**
+   * Rename at Gate 1. Repository: `PATCH /repos/{org}/{from}` (Gitea requires the repository's administration, which the
+   * account gave up at the creation: a 403 is a permanent refusal, and a human who renames the repository in Gitea lets the
+   * replay continue — `from` gone, answered by a redirect or 404, and `to` present). Branches: Gitea refuses to rename
+   * (`PATCH …/branches/{branch}`, 403 "branch protection rules", models/git RenameBranch) or to delete a branch matched by
+   * a glob rule, and every branch of a tool is (`agent/**`, `**`, M5): each `agent/<from>/…` head is pushed as
+   * `agent/<to>/…` from a clone (a new branch under `agent/**`, allowed to any writer) and the old branch stays as
+   * history; a branch already carried over is skipped.
+   */
+  async renameTool(from: string, to: string, signal?: AbortSignal): Promise<void> {
+    verifierSlug(from);
+    verifierSlug(to);
+    if (from === to) return;
+    const old = await this.#call('GET', `/repos/${this.#org}/${from}`, [200, 301, 404], signal);
+    if (old.status === 200) await this.#call('PATCH', `/repos/${this.#org}/${from}`, [200], signal, { name: to });
+    else if ((await this.#call('GET', `/repos/${this.#org}/${to}`, [200, 404], signal)).status !== 200) {
+      throw new ForgeError(`repository ${this.#org}/${from} not found, nor ${this.#org}/${to}: nothing to rename`, false);
+    }
+    const prefix = `agent/${from}/`;
+    await this.#withClone(to, signal, async (repo) => {
+      const branches = await repo.branches();
+      for (const b of [...branches].sort()) {
+        if (!b.startsWith(prefix)) continue;
+        const carried = `agent/${to}/${b.slice(prefix.length)}`;
+        if (branches.has(carried)) continue; // replay: already carried over
+        await repo.push(carried, `refs/remotes/origin/${b}`);
+      }
+    });
   }
 
   /** Required final state: private, not archived, account no longer admin nor collaborator, assigned to the team, `main` protected. */
@@ -278,6 +324,20 @@ export class GiteaForge implements Forge {
     });
   }
 
+  /** ADR-027: commits of each code role's branch not yet in main (`main..branch`), 0 for an absent branch; read with a clone, not through the API. */
+  async roleBranchCommits(slug: string, cycleId: number, signal?: AbortSignal): Promise<Record<RoleCode, number>> {
+    verifierSlug(slug, cycleId);
+    return this.#withClone(slug, signal, async (repo) => {
+      const branches = await repo.branches();
+      const counts = {} as Record<RoleCode, number>;
+      for (const role of CODE_ROLES) {
+        const b = `agent/${slug}/${cycleId}/${role}`;
+        counts[role] = branches.has(b) ? Number((await repo.git(['rev-list', '--count', `origin/main..origin/${b}`])).output.trim()) : 0;
+      }
+      return counts;
+    });
+  }
+
   /**
    * Diff check of each role (same scope as the launcher, `inScope`: the commons pass), then PR `integration/<cycle>/<round>` → main (resumed if it exists), squash by the
    * orchestrator account, never `force_merge`. An already merged PR returns `ok` (resume). Diff checked (local Git): what
@@ -352,9 +412,10 @@ export class GiteaForge implements Forge {
 
   /**
    * Jobs of a finished run as checks: `success` → green, anything else → red, `skipped` left out; a failed run without a red
-   * job adds a red `pipeline`. A red `acceptance` job carries its failing tests read in its log (`details.failures`):
-   * the hardening round cannot rerun that suite itself. A red `analysis` job carries its Opengrep
-   * SARIF results read in its log (`opengrepSarif`, M5).
+   * job adds a red `pipeline`. Every red job carries the tail of its log (`details.log_tail`, ADR-027: what the diagnosis
+   * reads to tell a platform failure from a defect of the code). A red `acceptance` job also carries its failing tests
+   * (`details.failures`): the hardening round cannot rerun that suite itself. A red `analysis` job also carries its
+   * Opengrep SARIF results read in its log (`opengrepSarif`, M5).
    */
   async #checks(repo: string, run: Run, signal?: AbortSignal): Promise<CiResult['checks']> {
     const jobs = ((await this.#call('GET', `${repo}/actions/runs/${run.id}/jobs?limit=50`, [200], signal)).body as { jobs?: { id?: unknown; name?: unknown; conclusion?: unknown }[] } | null)?.jobs;
@@ -362,13 +423,15 @@ export class GiteaForge implements Forge {
     const checks: CiResult['checks'] = [];
     for (const j of jobs.filter((x) => x?.conclusion !== 'skipped')) {
       const k: CiResult['checks'][number] = { check: typeof j?.name === 'string' && j.name.trim() !== '' ? j.name : 'unnamed job', result: j?.conclusion === 'success' ? 'green' : 'red' };
-      if (k.check === 'acceptance' && k.result === 'red' && Number.isSafeInteger(j.id)) {
+      if (k.result === 'red' && Number.isSafeInteger(j.id)) {
         const log = await this.#call('GET', `${repo}/actions/jobs/${j.id as number}/logs`, [200, 404], signal, undefined, { text: true });
-        k.details = { failures: log.status === 200 ? acceptanceFailures(log.text) : [] };
-      } else if (k.check === 'analysis' && k.result === 'red' && Number.isSafeInteger(j.id)) {
-        const log = await this.#call('GET', `${repo}/actions/jobs/${j.id as number}/logs`, [200, 404], signal, undefined, { text: true });
-        const sarif = log.status === 200 ? opengrepSarif(log.text) : null;
-        if (sarif !== null) k.details = sarif;
+        const text = log.status === 200 ? log.text : '';
+        const sarif = k.check === 'analysis' ? opengrepSarif(text) : null;
+        k.details = {
+          ...(k.check === 'acceptance' ? { failures: acceptanceFailures(text) } : {}),
+          ...(sarif ?? {}),
+          log_tail: logTail(text),
+        };
       }
       checks.push(k);
     }
@@ -435,6 +498,16 @@ export class GiteaForge implements Forge {
    * E5e: tar.gz archive of the head of the scoping branch (`agent/<slug>/<cycle>/scoping`), read with the engine's token,
    * capped at 50 MB (ADR-009). The deployer hashes it; the target checks the hash again before extracting `web/`.
    */
+  /** Gate 1 entry names, read from main's raw files (`GET /repos/{org}/{slug}/raw/{path}?ref=main`; 404 = file absent). */
+  async registration(slug: string, signal?: AbortSignal): Promise<Registration> {
+    verifierSlug(slug, 1);
+    const file = async (path: string) => {
+      const r = await this.#call('GET', `/repos/${this.#org}/${slug}/raw/${path}?ref=main`, [200, 404], signal, undefined, { accept: 'text/plain', text: true });
+      return r.status === 200 ? r.text : '';
+    };
+    return { roles: rolesOf(await file('openapi.yaml')), retentions: retentionsOf(await file('db/purge.sql')) };
+  }
+
   async scopingArchive(slug: string, cycleId: number, signal?: AbortSignal): Promise<Buffer> {
     verifierSlug(slug, cycleId);
     const repo = `/repos/${this.#org}/${slug}`;
@@ -471,7 +544,7 @@ export class GiteaForge implements Forge {
         });
         const text = await r.text();
         let json: unknown = null;
-        if (text !== '') {
+        if (text !== '' && (r.status < 300 || r.status >= 400)) { // a redirect's body is HTML (renamed repository): its status is the answer
           try {
             json = JSON.parse(text);
           } catch {
@@ -558,9 +631,9 @@ export class GitRepo {
     return new Set(r.output.split('\n').filter((b) => b !== '' && b !== 'HEAD'));
   }
 
-  /** Pushes HEAD to `branch`, never forcing (a push refused by the forge is a refusal). */
-  async push(branch: string): Promise<void> {
-    await this.#network(['push', '-q', 'origin', `HEAD:refs/heads/${branch}`], this.dir);
+  /** Pushes `source` (HEAD by default) to `branch`, never forcing (a push refused by the forge is a refusal). */
+  async push(branch: string, source = 'HEAD'): Promise<void> {
+    await this.#network(['push', '-q', 'origin', `${source}:refs/heads/${branch}`], this.dir);
   }
 
   /** One Git command; an exit code outside `codes` is an error (refusal) with the end of its error output. */

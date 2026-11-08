@@ -12,6 +12,9 @@ travaillent face à eux sans se parler.
 - L'outil de référence dans `/tmp/task/example/` : son `openapi.yaml` et ses
   `tests/acceptance/features/` montrent la forme attendue. Imite-les.
 - Ta branche ; poursuis un contrat partiel laissé par une tentative précédente.
+- `previous_attempt` dans les données de la tâche, s'il y en a une : pourquoi
+  cette tentative n'a pas livré (sa raison exacte, par exemple le linter du socle
+  qui refuse `openapi.yaml`). Corrige cela d'abord.
 
 ## Sortie
 - `openapi.yaml` : chaque opération dont les écrans ont besoin, chacune avec

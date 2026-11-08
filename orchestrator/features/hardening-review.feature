@@ -58,6 +58,123 @@ Feature: Hardening and review
     And table "tasks" contains no "security-reviewer" task for iteration 1
     And the engine received for task "security-reviewer" of iteration 2 this model, this effort and branch "integration/<cycle>/2"
 
+  # ADR-027: before the hardening-blocked gate opens, a read-only diagnosis task names the cause for an admin who is not a
+  # developer. Cycle 5 of the lab (the PPE tool): the builder stopped at its budget cap round after round and pushed nothing.
+  @t:hardening_evaluation--guard:escalation-->gate_hardening_blocked
+  Scenario: ADR-027. Cycle 5 of the lab: the builder stops at its cap round after round and delivers nothing; the diagnosis reads the orchestrator's pre-check and the admin sees a platform problem on the gate
+    Given a creation cycle in state "hardening_execution"
+    When the fake engine returns a compliant report for roles "tests"
+    And the fake engine returns a failure for "builder" with reason "Claude Code stopped: budget cap reached (error_max_budget_usd, 79 turns, code 1)" and a cost of 8.39 $
+    Then the cycle moves from "hardening_execution" to "hardening_evaluation" by "task:failed"
+    And the cycle moves from "hardening_evaluation" to "hardening_execution" by "guard:non_compliant"
+    When the fake engine returns a failure for "builder" with reason "Claude Code stopped: budget cap reached (error_max_budget_usd, 90 turns, code 1)" and a cost of 8.35 $
+    Then the cycle moves from "hardening_evaluation" to "hardening_execution" by "guard:non_compliant"
+    When the fake engine returns a failure for "builder" with reason "Claude Code stopped: budget cap reached (error_max_budget_usd, 84 turns, code 1)" and a cost of 8.4 $
+    And the fake engine returns for "diagnosis" the diagnosis "platform_or_impossible" explaining "The builder ran out of budget three times without delivering anything."
+    Then the cycle moves from "hardening_evaluation" to "gate_hardening_blocked" by "guard:escalation"
+    And task "diagnosis" of iteration 1 has "builder: 3 attempts stopped at the task cap (round 1: $8.39, round 2: $8.35, round 3: $8.40) and no commit on its branch" in its context
+    And task "diagnosis" of iteration 1 has "stagnation: invalid or missing report of role builder for 3 rounds" in its context
+    And the notification sent to the admin contains "stagnation"
+    And the notification sent to the admin contains "Diagnosis — platform problem or impossible request: The builder ran out of budget three times without delivering anything."
+    And the notification sent to the admin contains "send this report to the EupaDev maintainers"
+
+  @t:hardening_evaluation--guard:escalation-->gate_hardening_blocked
+  @t:gate_hardening_blocked--gate:correction-->hardening_execution
+  @t:hardening_execution--guard:budget_exceeded-->gate_hardening_blocked
+  Scenario: ADR-027 bis. A diagnosis that fails never holds the gate back; its cost is the cycle's but never the budget check's; a gate reopened by the same overrun pays no second diagnosis
+    Given a creation cycle in state "hardening_execution"
+    And a cumulative cycle cost of 40 $
+    When the fake engine returns a failure for "diagnosis" with reason "container stopped: OOM"
+    And the next hardening round is played with, for "security-reviewer", the deviations:
+      | rule     | file         |
+      | SEC-IDOR | api/tools.js |
+    Then the cycle moves from "hardening_evaluation" to "gate_hardening_blocked" by "guard:escalation"
+    And the notification sent to the admin contains "hardening budget exceeded"
+    And the notification sent to the admin contains "Diagnosis unavailable (container stopped: OOM)"
+    And task "diagnosis" of iteration 1 has status "failed"
+    # 40 $ + four tasks of the round at 0.50 $: the failed diagnosis (0.50 $, in `tasks`) is outside the check.
+    And the cycle's budget overrun is at most 2 $
+    When the admin decides "correction" at gate "gate_hardening_blocked" with text "Carry on with the same contract"
+    Then the cycle moves from "gate_hardening_blocked" to "hardening_execution" by "gate:correction"
+    And the cycle moves from "hardening_execution" to "gate_hardening_blocked" by "guard:budget_exceeded"
+    And table "tasks" contains exactly one "diagnosis" task for iteration 1
+    And table "tasks" contains no "diagnosis" task for iteration 2
+    And the notification sent to the admin contains "Diagnosis unavailable (container stopped: OOM)"
+
+  # ADR-027, first failed round (paid cycle 9: five rounds paid on a Preview check the platform itself failed): a failure
+  # the agents did not produce (red check, task that did not run, task blocked) is diagnosed BEFORE the next paid round,
+  # once per situation, with the red checks' log tails as data; a platform or unclear-request verdict opens the gate at once.
+  @t:preview_pipeline--event:preview_pipeline_finished:red-->hardening_execution
+  @t:hardening_execution--guard:escalation-->gate_hardening_blocked
+  Scenario: ADR-027 quater. Paid cycle 9: a Preview check fails for a platform reason at round 1; the diagnosis runs before round 2 with the check's log tail, says platform problem, and the gate opens at once: no second paid round
+    Given a creation cycle in state "preview_pipeline" with digest "sha256:1111111111111111111111111111111111111111111111111111111111111111" in Preview
+    And check "accessibility-preview" of the next pipeline carries the log:
+      """
+      2026-11-06T10:00:01.0000000Z pa11y-ci: Error: Timed out waiting for the page title
+      2026-11-06T10:00:02.0000000Z Errors in https://equipment.preview.example.test/: page has no lang attribute
+      """
+    When the fake engine returns for "diagnosis" the diagnosis "platform_or_impossible" explaining "The accessibility check audited the sign-in redirection, not the tool."
+    And the forge signals "preview_pipeline_finished" with result "red" and the failed checks:
+      | check                 | result |
+      | accessibility-preview | red    |
+    Then the cycle moves from "preview_pipeline" to "hardening_execution" by "event:preview_pipeline_finished:red"
+    And the cycle moves from "hardening_execution" to "gate_hardening_blocked" by "guard:escalation"
+    And task "diagnosis" of iteration 1 has "pa11y-ci: Error: Timed out waiting for the page title" in its context
+    And task "diagnosis" of iteration 1 has "round 1 failed by a red check or by a task that produced no report" in its context
+    And table "tasks" contains no task for iteration 2
+    And table "tasks" contains exactly one "diagnosis" task for iteration 1
+    And the notification sent to the admin contains "Round 1 failed for a reason the agents did not produce"
+    And the notification sent to the admin contains "Diagnosis — platform problem or impossible request: The accessibility check audited the sign-in redirection, not the tool."
+
+  @t:hardening_execution--task:failed-->hardening_evaluation
+  @t:hardening_evaluation--guard:non_compliant-->hardening_execution
+  @t:hardening_execution--guard:escalation-->gate_hardening_blocked
+  Scenario: ADR-027 quinquies. Cycle 5 of the lab: the tests role is blocked at round 1 on a point the contract left open; the diagnosis runs before round 2, says unclear request, and the gate opens with the question for the requester: no paid review of an empty repository
+    Given a creation cycle in state "hardening_execution"
+    When the fake engine returns state "blocked" for "tests" with reason "The contract does not say who can read /ppe"
+    And the fake engine returns for "diagnosis" the diagnosis "unclear_request" explaining "The contract does not say who may read the equipment list."
+    Then the cycle moves from "hardening_execution" to "hardening_evaluation" by "task:failed"
+    And the cycle moves from "hardening_evaluation" to "hardening_execution" by "guard:non_compliant"
+    And the cycle moves from "hardening_execution" to "gate_hardening_blocked" by "guard:escalation"
+    And task "diagnosis" of iteration 1 has "tests blocked at round 1" in its context
+    And table "tasks" contains no task for iteration 2
+    And the notification sent to the admin contains "Diagnosis — unclear request: The contract does not say who may read the equipment list."
+    And the notification sent to the admin contains "Which sites must the tool cover?"
+
+  @t:preview_pipeline--event:preview_pipeline_finished:red-->hardening_execution
+  Scenario: ADR-027 sexies. A slow-progress verdict at the first failed round lets round 2 start; the same red check at round 2 pays no second early diagnosis: the stagnation rule takes over as before
+    Given a creation cycle in state "preview_pipeline" with digest "sha256:1111111111111111111111111111111111111111111111111111111111111111" in Preview
+    When the fake engine returns for "diagnosis" the diagnosis "slow_progress" explaining "The agents are moving forward; the check will pass once the form is finished."
+    And the forge signals "preview_pipeline_finished" with result "red" and the failed checks:
+      | check | result |
+      | dast  | red    |
+    Then the cycle moves from "preview_pipeline" to "hardening_execution" by "event:preview_pipeline_finished:red"
+    When hardening round 2 is played with, for "security-reviewer", the deviations:
+      | rule | file |
+    Then table "tasks" contains exactly one "diagnosis" task for iteration 1
+    When the delivery up to the Preview pipeline replays with digest "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    And the forge signals "preview_pipeline_finished" with result "red" and the failed checks:
+      | check | result |
+      | dast  | red    |
+    And hardening round 3 is played with, for "security-reviewer", the deviations:
+      | rule | file |
+    Then table "tasks" contains no "diagnosis" task for iteration 2
+    And the cycle has not passed through state "gate_hardening_blocked"
+
+  @t:preview_pipeline--event:preview_pipeline_finished:red-->hardening_execution
+  Scenario: ADR-027 septies. A diagnosis that fails at the first failed round never holds the cycle: round 2 starts as before and the admin is not disturbed
+    Given a creation cycle in state "preview_pipeline" with digest "sha256:1111111111111111111111111111111111111111111111111111111111111111" in Preview
+    When the fake engine returns a failure for "diagnosis" with reason "container stopped: OOM"
+    And the forge signals "preview_pipeline_finished" with result "red" and the failed checks:
+      | check | result |
+      | dast  | red    |
+    Then the cycle moves from "preview_pipeline" to "hardening_execution" by "event:preview_pipeline_finished:red"
+    When hardening round 2 is played with, for "security-reviewer", the deviations:
+      | rule | file |
+    Then task "diagnosis" of iteration 1 has status "failed"
+    And the cycle's round counter is 2
+    And the cycle has not passed through state "gate_hardening_blocked"
+
   Scenario: A-R2a bis. A defect of the suite raised by the builder becomes a deviation of the tests role, even if it cites the contract; its other findings are not deviations
     Given a creation cycle in state "hardening_execution"
     When the fake engine returns a compliant report for "tests"
@@ -311,7 +428,7 @@ Feature: Hardening and review
   # Lab cycle 43: code:unchanged:builder was sent back to the builder, which had nothing left to fix, touched nothing and
   # reproduced the deviation — dead end (stagnation, then a loop after "continue"). A role restarted without a real deviation does not stagnate.
   @t:hardening_evaluation--guard:compliant-->merge
-  Scenario: D20 M4a bis. A role restarted for the sole deviation code:unchanged:<role>, which does not touch its code, produces no deviation: the round is compliant
+  Scenario: D20 M4a bis. A role restarted for its blocked report that touches nothing while the reviewers find nothing on its side produces no deviation; only the role with a real deviation runs again
     Given a creation cycle in state "hardening_execution"
     When hardening round 1 is played with, for "security-reviewer", the deviations:
       | rule     | file         | category             |
@@ -324,23 +441,39 @@ Feature: Hardening and review
     And table "deviations" contains for iteration 2 deviation "report:builder" on "report"
     And table "deviations" contains for iteration 2 deviation "code:unchanged:builder" on "builder"
     And the cycle moves from "hardening_evaluation" to "hardening_execution" by "guard:non_compliant"
-    # Round 3: restarted for its blocked report (a real deviation), the builder returns a valid report without touching the code: code:unchanged:builder
-    # still counts; the quality reviewer targets the suite (tests role).
+    # Round 3: restarted for its blocked report, the builder returns a valid report without touching the code; the quality reviewer
+    # targets the suite (tests role) only. Nothing is left on the builder's side: code:unchanged:builder does not count (paid cycle 9).
     When the fake engine returns a compliant report for "builder" without changing any file
     And hardening round 3 is played with, for "quality-reviewer", the deviations:
       | rule               | file                            | category           |
       | tests.md#Execution | tests/acceptance/steps/list.js  | tests.md#Execution |
       | tests.md#Execution | tests/acceptance/steps/sites.js | tests.md#Execution |
-    Then table "deviations" contains for iteration 3 deviation "code:unchanged:builder" on "builder"
+    Then table "deviations" contains for iteration 3 no deviation "code:unchanged:builder"
     And the cycle moves from "hardening_evaluation" to "hardening_execution" by "guard:non_compliant"
-    # Round 4: tests fixes its suite; the builder had nothing real to address and touches nothing; the reviewers find nothing.
-    When the fake engine returns a compliant report for "builder" without changing any file
-    And hardening round 4 is played with, for "quality-reviewer", the deviations:
+    # Round 4: tests fixes its suite; the builder, with nothing to address, is not paid again; the reviewers find nothing.
+    When hardening round 4 is played with, for "quality-reviewer", the deviations:
       | rule | file |
     Then task "tests" of iteration 4 receives deviation "tests.md#Execution" on "tests/acceptance/steps/list.js"
-    And task "builder" of iteration 4 receives deviation "code:unchanged:builder" on "builder"
-    And the tree hash of task "builder" of iteration 4 equals the one of iteration 3
+    And table "tasks" contains no "builder" task for iteration 4
     And table "deviations" contains for iteration 4 no deviation "code:unchanged:builder"
+    And the cycle moves from "hardening_evaluation" to "merge" by "guard:compliant"
+    And the cycle has not passed through state "gate_hardening_blocked"
+
+  # Paid cycle 9: a role restarted for a finding rightly changed nothing and the reviewers found nothing more, yet
+  # code:unchanged:<role> made the round non-compliant and paid one more round for nothing. An unchanged tree is a
+  # deviation only while a real deviation of the round still targets the role.
+  @t:hardening_evaluation--guard:compliant-->merge
+  Scenario: D20 M4a quater. A role restarted for a finding that touches nothing while the reviewers find nothing more produces no deviation: the round is compliant
+    Given a creation cycle in state "hardening_execution"
+    When hardening round 1 is played with, for "security-reviewer", the deviations:
+      | rule     | file         | category             |
+      | SEC-IDOR | api/tools.js | security.md#Requests |
+    Then task "builder" of iteration 2 receives deviation "SEC-IDOR" on "api/tools.js"
+    When the fake engine returns a compliant report for "builder" without changing any file
+    And hardening round 2 is played with, for "security-reviewer", the deviations:
+      | rule | file |
+    Then the tree hash of task "builder" of iteration 2 equals the one of iteration 1
+    And table "deviations" contains for iteration 2 no deviation "code:unchanged:builder"
     And the cycle moves from "hardening_evaluation" to "merge" by "guard:compliant"
     And the cycle has not passed through state "gate_hardening_blocked"
 
@@ -363,6 +496,35 @@ Feature: Hardening and review
     Then the tree hash of task "builder" of iteration 4 equals the one of iteration 3
     And table "deviations" contains for iteration 4 no deviation "code:unchanged:builder"
     And the cycle moves from "hardening_evaluation" to "merge" by "guard:compliant"
+
+  # Paid cycle 9: after "scope change" at the escalation gate, the new contract started with the counters of the old
+  # scope, already at their limits. A new scope starts the counters again (stagnation, rounds, duration), never the cost.
+  @t:gate_hardening_blocked--gate:scope_change-->contract
+  @t:contract--task:done-->hardening_execution
+  Scenario: D20 M4a quinquies. After "scope change" at the stagnation gate, the new contract starts with fresh counters; the cost spent stays
+    Given a creation cycle in state "hardening_execution"
+    When the fake engine declares a cost of 1 $ per task
+    Given deviation "SEC-IDOR" on "api/tools.js" present in the last 2 rounds
+    When hardening round 3 is played with, for "security-reviewer", the deviations:
+      | rule     | file         |
+      | SEC-IDOR | api/tools.js |
+    Then the cycle moves from "hardening_evaluation" to "gate_hardening_blocked" by "guard:escalation"
+    And the notification sent to the admin contains "SEC-IDOR api/tools.js present for 3 rounds"
+    When the admin decides "scope_change" at gate "gate_hardening_blocked" with text "The contract forgot the sites: add them to openapi.yaml"
+    Then the cycle moves from "gate_hardening_blocked" to "contract" by "gate:scope_change"
+    And the cycle moves from "contract" to "hardening_execution" by "task:done"
+    # The cost of the old scope stays: the first contract (0.5 $), 3 rounds (4 + 3 + 3 tasks at 1 $) and the new contract
+    # (the diagnosis before the gate is outside the budget check).
+    And the cycle's hardening budget check is on 11.5 $ spent for a cap of 40 $
+    # Round 4 on the new contract: every code role runs again, the same finding counts 1 and not 4, no escalation.
+    When hardening round 4 is played with, for "security-reviewer", the deviations:
+      | rule     | file         |
+      | SEC-IDOR | api/tools.js |
+    Then table "tasks" contains exactly one "tests" task for iteration 4
+    And the stagnation counter of deviation "SEC-IDOR" on "api/tools.js" is 1
+    # The reviewers of round 4 still get round 3's gaps, marked as from before the reset (they drop those about code that is gone).
+    And task "security-reviewer" of iteration 4 has "\"previous_before_reset\":true" in its context
+    And the cycle moves from "hardening_evaluation" to "hardening_execution" by "guard:non_compliant"
 
   Scenario: D20 M4b. A role's Git tree back to an earlier state (A → B → A) escalates immediately, even with different labels
     Given a creation cycle in state "hardening_execution"
@@ -494,7 +656,8 @@ Feature: Hardening and review
       | rule     | file         |
       | SEC-IDOR | api/tools.js |
     Then the 4 tasks of round 1 have status "done"
-    And the cycle's cumulative cost is 51 $
+    # 39 $ + 4 × 3 $ for the round = 51 $, plus the 3 $ of the diagnosis run before the gate (ADR-027), outside the budget check.
+    And the cycle's cumulative cost is 54 $
     And the cycle's budget overrun is at most 12 $
     And the cycle moves from "hardening_evaluation" to "gate_hardening_blocked" by "guard:escalation"
     And the notification sent to the admin contains "budget"
@@ -607,3 +770,11 @@ Feature: Hardening and review
       | state            |
       | waiting_ci       |
       | preview_pipeline |
+
+  @t:gate_hardening_blocked--gate:scope_change-->contract
+  Scenario: ADR-027 ter. A defect of the frozen contract found during hardening goes back to the contract: the "scope change" button of the escalation gate
+    Given a creation cycle in state "gate_hardening_blocked" for tool "equipment-loans"
+    When the admin decides "scope_change" at gate "gate_hardening_blocked" with text "Quote the descriptions that hold a comma in openapi.yaml"
+    Then the cycle moves from "gate_hardening_blocked" to "contract" by "gate:scope_change"
+    And task "contract" of iteration 2 has "Quote the descriptions that hold a comma in openapi.yaml" in its context
+    And table "tasks" contains no "scoping" task for iteration 2

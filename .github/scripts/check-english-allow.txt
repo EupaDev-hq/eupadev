@@ -15,5 +15,10 @@ ROADMAP.md | Alpine\.js/Petite-Vue | third-party name (petite-vue), not French
 orchestrator/tests/a-r6.test.ts | jargon\('Le (schéma des données|SCHÉMA)'\) | deliberate French fixtures: the A-R6 jargon list of the French dictionary is checked, accents and case included
 orchestrator/tests/instructions.test.ts | accents é and « quotes » | deliberate fixture: accented letters and French quotes are ordinary text, never refused as invisible characters
 orchestrator/tests/i18n.test.ts | 'Tableau de bord : https://d/cycles/1' | deliberate fixture: the rendering of the French dictionary (lang/fr.json) is checked
-orchestrator/web/app.js | est bon | French acceptance words: a requester may answer the mock-up in French
-orchestrator/tests/web.test.ts | Prêts de clés|prets-de-cles|c'est bon | deliberate French fixtures: accents stripped from the short name, French acceptance words
+orchestrator/web/words.js | est bon|^export const (YES|FILLER) = new Set\( | French acceptance words: a requester may answer the mock-up in French
+orchestrator/tests/web.test.ts | Prêts de clés|prets-de-cles|c'est bon|tout est bon | deliberate French fixtures: accents stripped from the short name, French acceptance words
+orchestrator/tests/service.test.ts | c'est bon | deliberate French fixture: a French yes read by the fake intent reader (ADR-031)
+orchestrator/tests/diagnosis.test.ts | text\('fr', | deliberate fixtures: the French rendering of the diagnosis gate lines (lang/fr.json) is checked
+orchestrator/src/intent.ts | ^const MONEY = new Set\( | French words found around an amount ("avec", "de", "en"): the fake intent reader reads a top-up typed in French (ADR-031)
+orchestrator/tests/intent.test.ts | read\("c'est bon" | deliberate French fixture: a French yes read by the fake intent reader (ADR-031)
+scripts/sync-public.deny | * | the French private words the public sync refuses are the data of the guard

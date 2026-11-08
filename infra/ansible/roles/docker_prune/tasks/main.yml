@@ -1,0 +1,52 @@
+# Daily prune of the Docker disk (CI VM): build cache, tool images older than
+# docker_prune_age used by no container, dangling images, unused anonymous volumes; never a container
+# nor a named volume (files/eupadev-docker-prune says what stays). Result:
+# journalctl -u eupadev-docker-prune; failure: systemctl --failed.
+- name: Install the prune script
+  ansible.builtin.copy:
+    src: eupadev-docker-prune
+    dest: /usr/local/sbin/eupadev-docker-prune
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Unit and timer of the prune
+  ansible.builtin.copy:
+    dest: "/etc/systemd/system/{{ item.name }}"
+    content: "{{ item.content }}"
+    mode: "0644"
+  loop:
+    - name: eupadev-docker-prune.service
+      content: |
+        # Managed by Ansible (role docker_prune).
+        [Unit]
+        Description=EupaDev: prune of the Docker disk (build cache, old unused tool images)
+        Requires=docker.service
+        After=docker.service
+
+        [Service]
+        Type=oneshot
+        ExecStart=/usr/local/sbin/eupadev-docker-prune {{ docker_prune_age }}
+        TimeoutStartSec=30min
+    - name: eupadev-docker-prune.timer
+      content: |
+        # Managed by Ansible (role docker_prune).
+        [Unit]
+        Description=EupaDev: daily prune of the Docker disk
+
+        [Timer]
+        OnCalendar={{ docker_prune_hour }}
+        # VM off at that time: the prune runs at the next boot.
+        Persistent=true
+
+        [Install]
+        WantedBy=timers.target
+  loop_control: { label: "{{ item.name }}" }
+  register: docker_prune_units
+
+- name: Daily timer active
+  ansible.builtin.systemd_service:
+    name: eupadev-docker-prune.timer
+    enabled: true
+    state: "{{ 'restarted' if docker_prune_units is changed else 'started' }}"
+    daemon_reload: "{{ docker_prune_units is changed }}"

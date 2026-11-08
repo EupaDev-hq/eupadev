@@ -1,0 +1,33 @@
+{
+  "source": "Lab database, cycle 5 (the PPE tool), the first paid run, 2026-11-02. Escalation by stagnation at $30.12 of $40; no builder branch on the forge. Root cause, fixed since (fix/builder-keeps-work): a task stopped at its cap discarded its bundle, so each builder attempt started again from zero. The contract cost is inferred from the total.",
+  "reason": "Round 4 non-compliant (2 deviation(s)) and stagnation: invalid or missing report of role builder for 2 rounds (deviation report:builder)",
+  "budget": { "cost_usd": 30.12, "cap_usd": 40 },
+  "branches": { "tests": 3, "builder": 0 },
+  "tasks": [
+    { "id": "1-5-1-contract", "role": "contract", "iteration": 1, "step": "contract", "status": "done", "cost_usd": 2.9, "duration_s": 600, "tree_hash": null, "report": { "status": "done", "summary": "openapi.yaml and the features written from the validated scope." } },
+    { "id": "1-5-1-tests", "role": "tests", "iteration": 1, "step": "hardening_execution", "status": "blocked", "cost_usd": 5.3, "duration_s": 900, "tree_hash": null, "report": { "status": "blocked", "summary": "Blocked on the contract.", "blocked_reason": "The contract does not say who can read /ppe" } },
+    { "id": "1-5-2-tests", "role": "tests", "iteration": 2, "step": "hardening_execution", "status": "done", "cost_usd": 0.21, "duration_s": 120, "tree_hash": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1", "report": { "status": "done", "summary": "Acceptance suite written." } },
+    { "id": "1-5-2-security-reviewer", "role": "security-reviewer", "iteration": 2, "step": "hardening_review", "status": "done", "cost_usd": 1.39, "duration_s": 300, "tree_hash": null, "report": { "status": "done", "summary": "The builder has not built anything: the repository only holds the template and the acceptance suite.", "findings": [] } },
+    { "id": "1-5-2-quality-reviewer", "role": "quality-reviewer", "iteration": 2, "step": "hardening_review", "status": "done", "cost_usd": 1.56, "duration_s": 300, "tree_hash": null, "report": { "status": "done", "summary": "No implementation to review.", "findings": [] } },
+    { "id": "1-5-3-tests", "role": "tests", "iteration": 3, "step": "hardening_execution", "status": "done", "cost_usd": 2.02, "duration_s": 400, "tree_hash": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2", "report": { "status": "done", "summary": "Suite completed." } },
+    { "id": "1-5-3-builder", "role": "builder", "iteration": 3, "step": "hardening_execution", "status": "failed", "cost_usd": 8.39, "duration_s": 1800, "tree_hash": null, "report": { "status": "failed", "reason": "Claude Code stopped: budget cap reached (error_max_budget_usd, 79 turns, code 1)" } },
+    { "id": "1-5-4-builder", "role": "builder", "iteration": 4, "step": "hardening_execution", "status": "failed", "cost_usd": 8.35, "duration_s": 1800, "tree_hash": null, "report": { "status": "failed", "reason": "Claude Code stopped: budget cap reached (error_max_budget_usd, 90 turns, code 1)" } }
+  ],
+  "deviations": [
+    { "iteration": 1, "rule": "report:tests", "file": "report", "category": null, "finding_id": null, "previous_id": null, "source": "orchestrator" },
+    { "iteration": 3, "rule": "report:builder", "file": "report", "category": null, "finding_id": null, "previous_id": null, "source": "orchestrator" },
+    { "iteration": 4, "rule": "report:builder", "file": "report", "category": null, "finding_id": null, "previous_id": null, "source": "orchestrator" },
+    { "iteration": 4, "rule": "code:unchanged:builder", "file": "builder", "category": null, "finding_id": null, "previous_id": null, "source": "orchestrator" }
+  ],
+  "expected_cause": "platform_or_impossible",
+  "plausible_report": {
+    "cause": "platform_or_impossible",
+    "explanation": "The part of the tool that holds the screens and the data was never produced: the agent in charge ran out of budget twice without saving any work, so every attempt started from nothing. Adding money would pay for the same failure again. The reviewers confirmed that there was nothing to review.",
+    "evidence": [
+      "builder: 2 attempts stopped at the task cap (round 3: $8.39, round 4: $8.35) and no commit on its branch: the agent delivered nothing — platform defect or impossible request",
+      "security-reviewer, round 2: \"The builder has not built anything\" ($1.39)",
+      "$30.12 spent of $40, 4 rounds"
+    ],
+    "recommendation": { "top_up_usd": null, "question": null }
+  }
+}

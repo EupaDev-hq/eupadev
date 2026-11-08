@@ -47,8 +47,8 @@ RUN cp -r "$(go mod download -json github.com/sigstore/cosign/v3@v3.1.3 \
 FROM common AS dependencies
 ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 WORKDIR /app
-RUN npm install -g corepack@0.36.0 && corepack enable
-COPY orchestrator/package.json orchestrator/pnpm-lock.yaml ./
+RUN corepack enable
+COPY orchestrator/package.json orchestrator/pnpm-lock.yaml orchestrator/pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile --prod
 
 # deep-chat (ADR-024): a development dependency pinned by the lockfile's integrity; only its single bundle enters the
@@ -84,14 +84,19 @@ COPY --from=vendor /deepChat.bundle.js ./vendor/deepChat.bundle.js
 # Schema of the agents' reports IN the image: by default the engine would read
 # it outside its directory (config.ts, ../../tool-template/…).
 COPY tool-template/agents/report.schema.json ./schemas/report.schema.json
+# The core's contract linter (no dependency), at its place relative to src/ as
+# in the repository: the launcher checks the contract role's openapi.yaml
+# with it (src/agent-engine/contract.ts).
+COPY core/src/contract-lint.js /core/src/contract-lint.js
 # Role instructions IN the image (ADR-018):
 # charter, role prompts and domain rules of the template, never read in the
 # cloned repository of a tool (data). The engine refuses to start if one
 # is missing (src/agent-engine/instructions.ts).
 COPY tool-template/AGENTS.md ./instructions/AGENTS.md
-COPY tool-template/agents/*.md ./instructions/agents/
+COPY tool-template/agents/*.md tool-template/agents/capabilities.json ./instructions/agents/
 COPY tool-template/.claude/rules/*.md ./instructions/.claude/rules/
-# Reference tool given read-only to the contract, tests and builder roles (A-R6).
+# Reference tool given read-only to the contract, tests and builder roles (A-R6), and pushed as is by the
+# pushing fake's `example` set (free cycle).
 COPY examples/requests/README.md examples/requests/openapi.yaml ./example/
 COPY examples/requests/api ./example/api
 COPY examples/requests/db ./example/db

@@ -30,10 +30,11 @@
 
 # deployer: Caddy of the mock-ups and Previews, access of the engine (ADR-014).
 # Tools database role (S4): database of the core tools' Previews.
+# docker_prune: daily prune of the Docker disk (one image per CI run otherwise).
 - name: CI (quality control machine, mock-ups and Previews)
   hosts: ci
   become: true
-  roles: [docker_disk, docker, lab_ca, runner, postgres_tools, deployer]
+  roles: [docker_disk, docker, lab_ca, runner, postgres_tools, deployer, docker_prune]
 
 # lab_ca: the VM's Docker and cosign trust the forge registry (engine image,
 # pulled by digest).

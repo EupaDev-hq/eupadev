@@ -27,13 +27,14 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { join } from 'node:path';
 import { PATHS_BY_ROLE, EFFORTS, CODE_ROLES, REVIEW_ROLES, inScope, type TaskInput, type CoreUpdate, type AgentEngine, type Role, type RoleCode, type TaskOutput } from './contracts.ts';
 import { forbiddenPath } from '../agent-engine/forbidden-paths.ts';
+import { contractRefused } from '../agent-engine/contract.ts';
 import { invisibleCharacter } from '../text.ts';
 /**
  * Roles that change nothing (reviewers; overlap search): no permission, and the launcher fetches
  * no bundle, so nothing is pushed (ADR-020: a reviewer's clone is ordinary; the harness refuses writes,
  * the launcher discards them).
  */
-export const READ_ROLES: readonly Role[] = ['overlap', 'security-reviewer', 'quality-reviewer'];
+export const READ_ROLES: readonly Role[] = ['overlap', 'security-reviewer', 'quality-reviewer', 'diagnosis'];
 /**
  * Roles without a repository: `overlap` runs before the tool's repository is created. No clone,
  * no bundle, no push; empty working folder, `task.md` (with the tool catalogue as data) is its only input.
@@ -49,7 +50,7 @@ const EXAMPLE_CONTENT =['README.md', 'openapi.yaml', 'api', 'db', 'web', 'tests'
  * lists say what exists: a code role creates its files through Bash and changes them through Edit.
  */
 const CODE_TOOLS = 'Bash,Read,Edit';
-/** `overlap`: `Read` only (no repository, no need to search); never Bash as a side effect of the reviewers. */
+/** `overlap` (no repository) and `diagnosis` (its data, the contract at main): `Read` only; never Bash as a side effect of the reviewers. */
 const READ_TOOLS = 'Read';
 /**
  * Reviewers (A-R4, ADR-020): Bash WITHOUT permission. In `dontAsk`, Bash runs only Claude Code's read-only set
@@ -119,14 +120,13 @@ export const CONTAINER_SCRIPT = containerScript(true);
  * /tmp (tmpfs of this container only). The store lands in pnpm's default place (`~/.local/share/pnpm/store`, same
  * volume as the agent's clone: hard links work); `~/.npmrc` gets the scope's registry WITHOUT the badge, so the
  * agent's pnpm resolves `@eupadev/core` from the store (frozen lockfile) and fails clearly on any other version
- * (the forge is unreachable from its network). Only the lockfile comes from the repository; pnpm settings are fixed
- * here (core exempt from the minimum release age, like the template's pnpm-workspace.yaml).
+ * (the forge is unreachable from its network). Only the lockfile comes from the repository; pnpm settings are written
+ * by the launcher (`coreWorkspace`: core exempt from the minimum release age, the lockfile's checked overrides).
  */
 export const CORE_SCRIPT = `set -eu
 mkdir /tmp/core && tar -x -f - -C /tmp/core
 printf '@eupadev:registry=%s\\n' "$FA_CORE_REGISTRY" > "$HOME/.npmrc"
-mkdir "$HOME/.core-fetch" && cp /tmp/core/pnpm-lock.yaml "$HOME/.core-fetch/"
-printf 'minimumReleaseAgeExclude:\\n  - "@eupadev/core"\\n' > "$HOME/.core-fetch/pnpm-workspace.yaml"
+mkdir "$HOME/.core-fetch" && cp /tmp/core/pnpm-lock.yaml /tmp/core/pnpm-workspace.yaml "$HOME/.core-fetch/"
 cd "$HOME/.core-fetch"
 code=0
 NPM_CONFIG_USERCONFIG=/tmp/core/npmrc pnpm fetch --ignore-scripts --ignore-pnpmfile || code=$?
@@ -136,14 +136,13 @@ exit $code
 
 /**
  * Decision A: core bump in the same kind of container as the fetch (badge on stdin, route to the registry, no task
- * volume: `HOME` on the tmpfs). Inputs on stdin (tar): `npmrc`, the tool's `package.json` and `pnpm-lock.yaml`, nothing
- * else of the repository (no project `.npmrc`, no pnpmfile). `pnpm add --save-exact --lockfile-only` resolves the `latest`
- * tag and rewrites the two files only; pnpm's own output goes to stderr, the framed files to stdout.
+ * volume: `HOME` on the tmpfs). Inputs on stdin (tar): `npmrc`, the tool's `package.json` and `pnpm-lock.yaml`, the
+ * launcher's `pnpm-workspace.yaml`, nothing else of the repository (no project `.npmrc`, no pnpmfile).
+ * `pnpm add --save-exact --lockfile-only` resolves the `latest` tag and rewrites the two files only; pnpm's own output goes to stderr, the framed files to stdout.
  */
 export const CORE_UPDATE_SCRIPT = `set -eu
 mkdir -p "$HOME" /tmp/core && tar -x -f - -C /tmp/core
 cd /tmp/core
-printf 'minimumReleaseAgeExclude:\\n  - "@eupadev/core"\\n' > pnpm-workspace.yaml
 NPM_CONFIG_USERCONFIG=/tmp/core/npmrc pnpm add --save-exact --lockfile-only --ignore-scripts --ignore-pnpmfile '@eupadev/core@latest' >&2
 b64() { base64 | tr -d '\\n'; }
 printf '\\nEUPADEV-PACKAGE %s\\n' "$(b64 <package.json)"
@@ -189,6 +188,24 @@ export function lockfileRefused(lockfile: string, registry: string): string | nu
     if (/\b(type|directory|commit|repo|path):/.test(line)) return `non-registry resolution: ${line.trim().slice(0, 120)}`;
   }
   return null;
+}
+
+/**
+ * pnpm settings of the core containers: the core exempt from the minimum release age (like the template's
+ * pnpm-workspace.yaml) and the lockfile's `overrides` (a frozen fetch refuses settings that differ from the lockfile's).
+ * The lockfile is written by agents: an override must name a package and a plain version range, never an alias,
+ * path, git or URL. Throws on the first refused entry.
+ */
+export function coreWorkspace(lockfile: string): string {
+  const lines = lockfile.split('\n');
+  const start = lines.indexOf('overrides:');
+  const overrides: string[] = [];
+  for (let i = start + 1; start >= 0 && i < lines.length && lines[i]!.startsWith('  '); i++) {
+    const m = /^ {2}('?)([@a-z0-9][\w./@-]*)\1: ('?)([\w.^~<>=| *-]+)\3$/i.exec(lines[i]!);
+    if (m === null) throw new Error(`core: pnpm-lock.yaml override refused: ${lines[i]!.trim().slice(0, 120)}`);
+    overrides.push(lines[i]!);
+  }
+  return `minimumReleaseAgeExclude:\n  - "@eupadev/core"\n${overrides.length > 0 ? `overrides:\n${overrides.join('\n')}\n` : ''}`;
 }
 
 export interface ClaudeEngineOptions {
@@ -478,7 +495,7 @@ export class ClaudeCodeEngine implements AgentEngine {
    * failure (version absent from the registry, registry unreachable) stops the task with a clear message.
    */
   async #loadCore(e: TaskInput, container: string, volume: string, label: string, dir: string, core: { version: string; lockfile: string }): Promise<void> {
-    const archive = await this.#coreArchive(dir, { 'pnpm-lock.yaml': core.lockfile });
+    const archive = await this.#coreArchive(dir, { 'pnpm-lock.yaml': core.lockfile, 'pnpm-workspace.yaml': coreWorkspace(core.lockfile) });
     const r = await this.#coreContainer(container.replace(/^fa-/, 'fa-core-'), label, CORE_SCRIPT, archive, [`--mount=type=volume,src=${volume},dst=/home/agent`], e.signal);
     e.signal.throwIfAborted();
     if (r.code !== 0) {
@@ -552,7 +569,7 @@ export class ClaudeCodeEngine implements AgentEngine {
       const refusal = lockfileRefused(lockfile, this.#core.registry);
       if (refusal !== null) throw new Error(`core: pnpm-lock.yaml refused before the update (${refusal})`);
       const packageJson = await this.#git(repo, ['cat-file', 'blob', `${main}:package.json`], 'package.json', sig);
-      const archive = await this.#coreArchive(dir, { 'package.json': packageJson, 'pnpm-lock.yaml': lockfile });
+      const archive = await this.#coreArchive(dir, { 'package.json': packageJson, 'pnpm-lock.yaml': lockfile, 'pnpm-workspace.yaml': coreWorkspace(lockfile) });
       const r = await this.#coreContainer(name, `${LABEL}=core-${tool}`, CORE_UPDATE_SCRIPT, archive, ['-e', 'HOME=/tmp/home'], sig);
       sig.throwIfAborted();
       if (r.code !== 0) throw new Error(`core: update of @eupadev/core to the latest version failed (code ${r.code}): registry unreachable or no version published — ${this.#coreOutput(r)}`);
@@ -708,6 +725,8 @@ export class ClaudeCodeEngine implements AgentEngine {
         }),
       };
       e.signal.throwIfAborted();
+      // Counted by W2 right before the only thing here that spends money; a task closed meanwhile refuses the launch.
+      await e.launched();
       const run = await this.#docker([
         'run', '-i', '--rm', '--name', container, '--label', label, `--runtime=${this.#o.runtime}`, `--network=${network}`,
         '--read-only', '--tmpfs=/tmp', `--mount=type=volume,src=${volume},dst=/home/agent`, '--cap-drop=ALL', '--security-opt=no-new-privileges',
@@ -772,6 +791,15 @@ export class ClaudeCodeEngine implements AgentEngine {
         }
       }
       if (stopped !== null) return failure(head === base ? stopped : `${stopped}; its commits are kept on ${e.branch}`);
+      // The contract role's deliverable, checked like its content, once pushed: an `openapi.yaml` the core's linter
+      // refuses (the first check of the tool's CI) fails the task now, with the linter's message, and the next attempt
+      // starts from the branch — never a paid hardening round on a contract that cannot start. Only a report that
+      // claims `done`: a blocked or failed report keeps its own reason (W2 validates it).
+      if (e.role === 'contract' && withRepo && claimsDone(lu.report)) {
+        const present = (await git(repo, ['ls-tree', '--name-only', head, '--', 'openapi.yaml'], 'contract')).trim() !== '';
+        const refusal = present ? contractRefused(await git(repo, ['cat-file', 'blob', `${head}:openapi.yaml`], 'contract')) : 'openapi.yaml missing at the root';
+        if (refusal !== null) return failure(`contract refused: ${refusal}${head === base ? '' : `; its commits are kept on ${e.branch}`}`);
+      }
       const tree_hash = withRepo && (CODE_ROLES as readonly string[]).includes(e.role)
         ? createHash('sha256').update(await git(repo, ['ls-tree', head, '--', ...PATHS_BY_ROLE[e.role as RoleCode]], 'tree digest')).digest('hex')
         : null;
@@ -784,6 +812,9 @@ export class ClaudeCodeEngine implements AgentEngine {
     }
   }
 }
+
+/** The agent's report says `done` (W2 validates the rest): the only case where its deliverable is checked here. */
+const claimsDone = (report: unknown): boolean => typeof report === 'object' && report !== null && (report as { status?: unknown }).status === 'done';
 
 /**
  * First reason to refuse a task's content, read from `git diff-tree --raw -z base head`

@@ -116,7 +116,7 @@ records the merge.
 | Iteration cap | A maximum number of code / review rounds per cycle (by default 25 rounds in Hardening, 5 attempts in Scoping; provisional values). | Reached: the tool stops, the administrator is alerted. |
 | Stagnation | The same gap reported on several consecutive rounds. | Treated like the cap. |
 | Timeout | A limit of agent working time per phase (by default 4 hours; provisional). | Waiting for a human does not count. |
-| Budget per cycle | A cost ceiling per phase of each cycle (by default $10 for Scoping, $40 for Hardening, contract included; provisional), compared with the **sum of the real costs** recorded per task in the `tasks` table, never a separate counter. | Overrun: human escalation (approve with a top-up, clarify or refuse), never a silent stop. |
+| Budget per cycle | A cost ceiling per phase of each cycle (by default $10 for Scoping, $40 for Hardening, contract included; provisional), compared with the **sum of the real costs** recorded per task in the `tasks` table, never a separate counter. | Overrun: human escalation (approve with a top-up, clarify or refuse), never a silent stop. Before the hardening gate opens, a read-only diagnosis agent tells the admin the cause in plain words (slow progress, unclear request, platform problem or impossible request) and what to do (ADR-027); if it fails, the gate opens with the reason alone. |
 | Concurrency | At most N agents at once on the platform, and 3 for one tool. | N is configuration, measured on the real machine. |
 | Budget per task | The engine itself receives a cost cap for the task. | Native option of the engine. |
 

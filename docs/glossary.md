@@ -133,6 +133,8 @@ these concepts (prose, identifiers and wire values alike).
 | `cadrage` | `scoping` | state `cadrage`, role `scoping` | |
 | `maquette` | `mock-up` (prose), `mockup` (names) | `deploiement_maquette`, `maquette.<domain>` | |
 | `chevauchement` | `overlap` | `gate_chevauchement`, role `overlap` | |
+| `extrait de journal` | `log tail` | `pipeline_results.details.log_tail`, ADR-027, ADR-030 | the bounded end of a red CI job's log (`logTail()`, 40 lines, 300 characters each), stored by the forge watcher for every red job; given as data to the diagnosis and to the next hardening round |
+| `mots d'état` | `state words` | `state.words` of `lang/*.json`, ADR-030 | words that claim an engine state (approved, sent…), refused in an agent's text for the requester like the jargon words |
 | `contrat` | `contract` | state `contrat`, `contrat.js` | OpenAPI + Gherkin contract of a tool |
 | `durcissement` | `hardening` | `durcissement_*` | |
 | `livraison` | `delivery` | phase `livraison` | |

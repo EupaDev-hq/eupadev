@@ -102,6 +102,16 @@ Feature: Technical incident
     And task "quality-reviewer" of iteration 1 has status "failed"
     And task "quality-reviewer" of iteration 1 has a cost of 0 $
 
+  # Paid cycle 9: two tasks paused then resumed were charged a cap each although no container had run.
+  Scenario: D21 sexies. A task stopped while the launcher was still preparing it (no container started) costs 0 $, not the cap
+    Given the fake engine is still preparing the "tests" tasks, their container not started
+    And a creation cycle in state "hardening_execution"
+    When the admin cancels the cycle
+    Then the cycle moves from "hardening_execution" to "end_cancellation" by "cancellation"
+    And task "tests" of iteration 1 has status "failed"
+    And task "tests" of iteration 1 has a cost of 0 $
+    And the recorded reason of task "tests" of iteration 1 is "cancellation"
+
   Scenario: D21 bis. After "retry", the state of origin is processed again from the start and the cycle runs to the end
     Given a creation cycle driven to state "scoping" whose exit fails with error "simulated fault: connection lost"
     Then the cycle moves from "scoping" to "gate_incident" by "incident"

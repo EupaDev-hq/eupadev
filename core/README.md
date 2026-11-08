@@ -36,13 +36,12 @@ behind a session, uploads added in step 8; kit shipped by the package
 | `web/svg-chart.js` | `barChart()`: accessible SVG bar chart (`role="img"`, `<title>`, equivalent table), colours `--series-N` |
 | `web/escape-html.js` | `escapeHtml()` (the template's, moved here) |
 | `web/i18n.js`, `web/lang/en.json`, `web/lang/fr.json` | The screen texts of the front modules (status messages, errors, chart description); the language is the page's `lang`, English otherwise |
-| `kit/mailpit.js` | Kit: `mailpit(base)` reads what the tool sent in the test Compose's Mailpit (`list`, `waitFor`, `clear`); its API is published on 127.0.0.1. SMTP_URL and MAIL_FROM point at it; a tool's own variables go in the file named by `TOOL_VARS` |
 | `kit/sec.js` | Kit: the twelve SEC-* (AUTH, ROLE, VALID, MASS, CSRF, HEAD, COOKIE, RATE, ERR, STATIC, BYPASS, UPLOAD) generated from the contract, `generateCases(options)` → `{ sec, name, verify }`, independent of the runner |
 | `kit/index.js`, `kit/headers.js`, `kit/http-browser.js` | Kit: reading the contract, static `REQUEST_HEADERS` (for k6 too), valid value and invalid variants of a schema (judged by Ajv), sign-in through the Keycloak form |
 | `kit/two-users.js` | Kit: isolated Playwright contexts signed in through Keycloak, anonymous context, API call from a context (SEC-IDOR, SEC-URL, SEC-XSS) |
 | `kit/throwaway-postgres.js` | Kit: throwaway PostgreSQL through Docker (pinned image), roles of `sql/roles.sql`, migrations of the core then of the tool, `query(url, sql)` |
 | `kit/test-tools.js` | Kit: `docker` arguments of Schemathesis 4.31, ZAP 2.17 api-scan, k6 2.3 (pinned images), static headers and session included |
-| `kit/compose.test.yml`, `kit/Caddyfile.test` | Test Compose: tool ×2 (production posture) behind Caddy, PostgreSQL, Keycloak, Mailpit, on `http://localhost:3000`; the example tool by default, another tool through `TOOL_NAME`, `TOOL_DIR`, `TOOL_ROOT`, `TOOL_CORE` |
+| `kit/compose.test.yml`, `kit/Caddyfile.test` | Test Compose: tool ×2 (production posture) behind Caddy, PostgreSQL, Keycloak, on `http://localhost:3000` (a tool's own variables in the file named by `TOOL_VARS`); the example tool by default, another tool through `TOOL_NAME`, `TOOL_DIR`, `TOOL_ROOT`, `TOOL_CORE` |
 | `kit/realm.js` | Kit: `readRealm()`, the people of the test realm with their roles of the `trial-tool` client, and the client's secret |
 | `tests/example/` | Minimal contract, its handlers and its `web/` page (demonstration of the front modules): the target of the tests |
 | `tests/keycloak/realm-test.json` | Test realm `tools` (client `trial-tool`, 3 roles, 3 people; secrets for CI only), also applied to the lab (`verify-keycloak.yml`) |

@@ -52,8 +52,9 @@ gates are decided through the engine's local API in the meantime. Everything
 else runs on the lab: the whole cycle, from the request to Production, has
 been played with the real forge, the real CI and the real deployer, the agent
 being a scripted fake that pushes prepared files (`verify-engine-deployment.yml`,
-no AI call). A real tool built by Claude Code end to end has not been played
-yet; the paid lab checks stop at a single task
+no AI call). One real tool has been built by Claude Code end to end on the lab,
+from the request to Production (paid cycle 9, November 2026; its lessons are
+in ADR-027); the repeatable paid lab checks stop at a single task
 (`verify-engine-claude.yml`, `verify-executor-claude.yml`).
 
 ## The journey of a tool
@@ -67,7 +68,7 @@ yet; the paid lab checks stop at a single task
 | 5. Review | Two read-only reviewers (security, quality) report gaps with file and line; only the owning roles are relaunched. | two agents |
 | 6. Merge | Once compliant, the orchestrator squashes into `main`. Only `svc-orchestrator` may write there. | orchestrator |
 | 7. CI | One build, from the golden image: checks, scan, boot check (read-only, migrated throwaway database), then publication of the image **with its digest**. | CI |
-| 8. Gate 1 | A human approves the tool's name and domain, once per tool. For a core tool, the admin also registers it on the targets (`infra/ansible/register-tools.yml`: database, roles, OIDC client, test personas) before the first Preview. | human |
+| 8. Gate 1 | A human approves the tool's name and domain, once per tool; a correction may rename the tool (new name and/or slug: repository, branches, image path and address follow). For a core tool, the admin also registers it on the targets before the first Preview (`infra/ansible/register-tools.yml`: database, roles, OIDC client, test personas); the gate page gives them the ready-to-paste `core-tools.yml` entry (roles read from the contract, retention periods they set there) and the command. | human |
 | 9. Preview | The digest is deployed; performance, accessibility, dynamic security checks and the tool's own acceptance suite run against it; only when all are green is the requester told and tries the tool. A red check or a requested change goes back to step 4 (the new digest is checked again before the requester is asked). | orchestrator, CI, requester |
 | 10. Gate 2 | A human approves **this digest**, shown in the request. | human |
 | 11. Production | The same digest is deployed. Nothing is rebuilt. | orchestrator |

@@ -17,8 +17,7 @@
     "test:acceptance": "bddgen && playwright test"
   },
   "dependencies": {
-    "@eupadev/core": "file:../../core",
-    "nodemailer": "10.1.7"
+    "@eupadev/core": "file:../../core"
   },
   "devDependencies": {
     "@axe-core/playwright": "4.14.0",

@@ -9,7 +9,7 @@
 # package cap (95, ADR-023) and size bound (≤ 3,000 lines outside tests).
 # Job `kit` (step 7): the kit's twelve SEC-* on the example
 # tool run by kit/compose.test.yml (two instances, Caddy, PostgreSQL,
-# Keycloak, Mailpit), deliberate mutations, two-user helpers, Schemathesis
+# Keycloak), deliberate mutations, two-user helpers, Schemathesis
 # and k6.
 name: Core — types, tests, migration
 
@@ -43,10 +43,10 @@ jobs:
         with:
           node-version: 24.22.1
 
-      # pnpm of packageManager (12.16.1) through corepack, like the golden image.
+      # pnpm of packageManager (12.16.1) through the corepack shipped with
+      # Node (0.36.0), like the golden image.
       - name: Pinned pnpm
         run: |
-          npm install -g corepack@0.36.0
           corepack enable
           pnpm --version
 
@@ -128,7 +128,6 @@ jobs:
 
       - name: Pinned pnpm
         run: |
-          npm install -g corepack@0.36.0
           corepack enable
           pnpm --version
 

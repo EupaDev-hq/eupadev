@@ -1,6 +1,8 @@
 # Gate 1 entries of the tools built on the core (S8, D-E5): written here by
 # the admin after approving Gate 1, never in the tool repository (agent-writable)
-# nor passed by the engine. Then, from infra/ansible:
+# nor passed by the engine. The Gate 1 page of the tool shows the entry ready
+# to paste (roles read from the contract, retention periods the admin sets
+# there). Then, from infra/ansible:
 #   ansible-playbook register-tools.yml </dev/null
 # creates for each tool: two Keycloak clients in realm tools (<slug> for
 # Prod, <slug>-preview) with the tool roles, a database and its three roles
@@ -16,8 +18,16 @@
 #     retentions:                    # RETENTION_<X> read by bin/purge.js; no default
 #       RETENTION_AUDIT: "400 days"
 #       RETENTION_REQUESTS: "3 years"
-# Empty until a tool is approved at Gate 1.
-core_tools: []
+core_tools:
+  - slug: equipment-management
+    roles:
+      - { name: borrower, description: "Books and borrows equipment" }
+      - { name: manager, description: "Confirms pick-ups and returns" }
+      - { name: admin, description: "Manages items, categories and every booking" }
+    retentions:
+      RETENTION_BOOKINGS: "2 years"
+      RETENTION_HISTORY: "2 years"
+      RETENTION_AUDIT: "1 years"
 
 # Durations accepted for a retention: PostgreSQL interval, a positive count
 # and one unit (bin/purge.js casts it with ::interval). Same pattern in

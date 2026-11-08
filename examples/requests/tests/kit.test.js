@@ -13,8 +13,7 @@ import { anonymous, callFrom, signedInContext } from '@eupadev/core/kit/two-user
 import { query } from '@eupadev/core/kit/throwaway-postgres.js';
 import { argsK6, argsSchemathesis } from '@eupadev/core/kit/test-tools.js';
 import { call, exampleFile, generateCases } from '@eupadev/core/kit/sec.js';
-import { mailpit } from '@eupadev/core/kit/mailpit.js';
-import { BASE, ROOT, compose, mailpitUrl, people, person, resetRateLimits, startStack, stopStack } from './stack.js';
+import { BASE, ROOT, compose, people, person, resetRateLimits, startStack, stopStack } from './stack.js';
 
 let admin = '';
 const reset = async () => { await resetRateLimits(admin); };
@@ -264,40 +263,6 @@ describe('draft requests and two-user specs (real Chromium, one context per pers
     assert.equal((await send(ctx.alice, 'PUT', png)).json.code, 'NOT_EDITABLE', 'the author no longer changes it once in progress');
     assert.equal((await send(ctx.chloe, 'PUT', png)).status, 200, 'the administrator still does');
     assert.equal((await send(ctx.chloe, 'DELETE')).status, 204);
-  });
-
-  test('mail: a submission goes to the managers\' mailbox, a rejection to the requester with its reason and a link', async () => {
-    await reset();
-    const box = mailpit(mailpitUrl());
-    const d = await create(ctx.alice, `Mail check ${Date.now()}`);
-    const submitted = (await patch(ctx.alice, d, { status: 'submitted' })).json;
-    const toManagers = await box.waitFor((m) => m.subject === `New request: ${d.title}`);
-    assert.deepEqual(toManagers.to, ['maintenance@example.test']);
-    assert.equal((await patch(ctx.bruno, submitted, { status: 'rejected', note: 'Not our scope' })).status, 200);
-    const rejection = await box.waitFor((m) => m.subject === `Your request is rejected: ${d.title}`);
-    assert.deepEqual(rejection.to, ['alice@example.test']);
-    assert.match(rejection.text, /Reason: Not our scope/);
-    assert.ok(rejection.text.includes(`http://localhost:3000/#/requests/${d.id}`), rejection.text);
-    assert.equal((await box.list()).filter((m) => m.subject.endsWith(d.title)).length, 2, 'nobody else, nothing more');
-  });
-
-  test('mail: SMTP down, the change is made all the same, logged with an error_id, never a 500', async () => {
-    await reset();
-    const d = await create(ctx.alice, `Mail down ${Date.now()}`);
-    compose(['stop', 'mailpit']);
-    try {
-      const r = await patch(ctx.alice, d, { status: 'submitted' });
-      assert.equal(r.status, 200, r.text);
-      assert.equal(r.json.status, 'submitted');
-      const logged = async () => compose(['logs', '--no-log-prefix', 'tool-1', 'tool-2']).split('\n')
-        .find((l) => l.includes('"event":"mail_failed"') && l.includes(d.id));
-      let line;
-      for (let i = 0; i < 50 && !(line = await logged()); i++) await new Promise((ok) => { setTimeout(ok, 200); });
-      assert.ok(line, 'mail_failed logged for this request');
-      assert.match(JSON.parse(line).error_id, /^[0-9a-f-]{36}$/);
-    } finally {
-      compose(['start', 'mailpit']);
-    }
   });
 
   test('SEC-URL: the attachment link opened without a session → 401, by another person → 404', async () => {

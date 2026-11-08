@@ -8,6 +8,13 @@ executor_orch: "{{ hostvars[groups['orchestrator'][0]] }}"
 # verify-engine.yml included); true = real Claude Code (paid), an explicit
 # decision.
 executor_claude_engine: false
+# Before engine=claude (free-cycle-gate.yml): the marker a free cycle on the
+# reference tool leaves on this VM (verify-engine-deployment.yml
+# -e free_cycle=true), compared with today's platform (fingerprint.yml, read on
+# the forge: executor_forge). executor_free_cycle_skip=true is the only override.
+executor_free_cycle_marker: /opt/eupadev/executor/free-cycle.json
+executor_forge: "{{ hostvars[groups['forge'][0]] }}"
+executor_free_cycle_skip: false
 # Free full cycle (D-E2): the pushing fake (engine=pushing) pushes real files
 # with svc-agent's token, without AI. Ignored when executor_claude_engine.
 executor_pushing_engine: "{{ executor_orch.orchestrator_real_world | default(false) | bool }}"

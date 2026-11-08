@@ -20,6 +20,18 @@
 # Cleanup: cycle cancelled if still open, Prod removed, registration and token
 # removed, repository and package deleted; the Prod and registration of an
 # interrupted run are removed at the start.
+#
+# Free cycle before any paid cycle (-e free_cycle=true, post-Prod fix 10): the
+# slug ends in `-example`, so the pushing fake pushes the reference tool
+# (examples/requests: contract, a sign-in suite per role of the contract,
+# api/, db/, web/, unit tests, its dependencies in the package files) instead
+# of one file per task; the tool is registered with the example's roles
+# (reader, manager, admin); the run stops once the Preview is healthy and its
+# four checks green (waiting_preview_feedback), records what it proved
+# (engine image, template commit, latest core: roles/executor/tasks/fingerprint.yml)
+# in /opt/eupadev/executor/free-cycle.json on the agents VM, then cleans up.
+# The executor role refuses engine=claude without that marker for today's
+# platform (free-cycle-gate.yml).
 - name: E5 — full cycle, real forge and deployer
   hosts: orchestrator
   become: true
@@ -27,6 +39,14 @@
     engine_api: http://127.0.0.1:8080
     psql: [docker, compose, exec, -T, db, psql, -U, orchestrator, -d, orchestrator, -tAc]
     check_forge: "{{ hostvars[groups['forge'][0]] }}"
+    free_cycle: false
+    # Gate 1 registration: the roles of the tool's contract (the example's with free_cycle, the template's otherwise).
+    check_roles: >-
+      {{ [{'name': 'reader', 'description': 'Reads the requests (examples/requests)'},
+          {'name': 'manager', 'description': 'Handles the requests (examples/requests)'},
+          {'name': 'admin', 'description': 'Administers the categories (examples/requests)'}]
+         if free_cycle | bool else
+         [{'name': 'user', 'description': "Role of the template's contract and of files/trial-acceptance (verify-engine-deployment.yml)"}] }}
   module_defaults:
     ansible.builtin.uri:
       headers: { X-EupaDev: "1" }
@@ -51,7 +71,7 @@
 
     - name: Unique name of the tool
       ansible.builtin.set_fact:
-        engine_slug: "check-e5-{{ lookup('ansible.builtin.pipe', 'date -u +%Y%m%d%H%M%S') }}"
+        engine_slug: "check-e5-{{ lookup('ansible.builtin.pipe', 'date -u +%Y%m%d%H%M%S') }}{{ '-example' if free_cycle | bool else '' }}"
 
     - name: Full cycle
       block:
@@ -136,6 +156,7 @@
 
         # S5: the acceptance job of the Preview pipeline needs a suite in the tool; committed on main
         # (only svc-orchestrator writes there) before the hardening branches start from main.
+        # Free cycle: the tests role of the example set pushes the suite itself.
         - name: Throwaway token of svc-orchestrator (acceptance suite on main)
           ansible.builtin.uri:
             url: "{{ check_forge.gitea_api }}/users/svc-orchestrator/tokens"
@@ -150,6 +171,7 @@
           delegate_to: "{{ groups['forge'][0] }}"
           changed_when: true
           no_log: true
+          when: not free_cycle | bool
 
         - name: Acceptance suite committed on main (files/trial-acceptance, as the tests role would write it)
           ansible.builtin.uri:
@@ -171,6 +193,7 @@
           delegate_to: "{{ groups['forge'][0] }}"
           changed_when: true
           no_log: true
+          when: not free_cycle | bool
 
         - name: Requester's feedback on the mock-up
           ansible.builtin.include_tasks: tasks/engine-step.yml
@@ -197,7 +220,7 @@
           vars:
             check_entry:
               slug: "{{ engine_slug }}"
-              roles: [{ name: user, description: "Role of the template's contract and of files/trial-acceptance (verify-engine-deployment.yml)" }]
+              roles: "{{ check_roles }}"
               retentions: { RETENTION_AUDIT: "400 days" }
           delegate_to: localhost
           become: false
@@ -255,11 +278,31 @@
           changed_when: false
           failed_when: check_order.stdout not in ['preview_pipeline event:preview_pipeline_finished:green', '1']
 
+        # Free cycle: proven up to here (healthy Preview, four checks green); what it proved is recorded on the agents
+        # VM for the executor role (free-cycle-gate.yml), and the run stops: the cleanup cancels the cycle.
+        - name: Platform fingerprint of this free cycle (engine image, template commit, latest core)
+          ansible.builtin.include_role:
+            name: executor
+            tasks_from: fingerprint
+            public: true
+          when: free_cycle | bool
+
+        - name: Record what this free cycle proved (agents VM, read before engine=claude)
+          vars:
+            check_proved: "{{ executor_fingerprint | combine({'cycle_id': engine_cycle | int, 'slug': engine_slug, 'date': ansible_date_time.iso8601}) }}"
+          ansible.builtin.copy:
+            content: "\n{{ check_proved | to_nice_json }}\n"
+            dest: "{{ executor_free_cycle_marker }}"
+            mode: "0640"
+          delegate_to: "{{ groups['agents'][0] }}"
+          when: free_cycle | bool
+
         - name: Requester's feedback on the Preview
           ansible.builtin.include_tasks: tasks/engine-step.yml
           vars:
             engine_state: waiting_preview_feedback
             engine_message: { type: preview_feedback, outcome: satisfied }
+          when: not free_cycle | bool
 
         - name: Wait for Gate 2 (no new pipeline, the digest is already checked)
           ansible.builtin.command:
@@ -270,12 +313,14 @@
           delay: 10
           changed_when: false
           failed_when: check_state.stdout != 'gate_2'
+          when: not free_cycle | bool
 
         - name: Gate 2 decision (on the candidate digest)
           ansible.builtin.include_tasks: tasks/engine-step.yml
           vars:
             engine_state: gate_2
             engine_message: { type: decision, gate: gate_2, outcome: approved }
+          when: not free_cycle | bool
 
         - name: Wait for the end of the cycle (Prod)
           ansible.builtin.command:
@@ -286,6 +331,7 @@
           delay: 10
           changed_when: false
           failed_when: check_state.stdout != 'end_success'
+          when: not free_cycle | bool
 
         - name: The Prod answers (Caddy of the tools VM)
           ansible.builtin.command:
@@ -293,6 +339,7 @@
           register: check_prod
           changed_when: false
           failed_when: check_prod.stdout != '200'
+          when: not free_cycle | bool
 
       rescue:
         - name: Cycle history (diagnosis)

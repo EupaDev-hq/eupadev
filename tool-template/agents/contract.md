@@ -10,6 +10,8 @@ without talking to each other.
 - The reference tool in `/tmp/task/example/`: its `openapi.yaml` and
   `tests/acceptance/features/` show the expected shape. Imitate them.
 - Your branch; continue a partial contract left by a previous attempt.
+- `previous_attempt` in the task data, when there is one: why that attempt did
+  not deliver (its exact reason, e.g. the core's linter refusing `openapi.yaml`). Fix that first.
 
 ## Output
 - `openapi.yaml`: every operation the screens need, each with an

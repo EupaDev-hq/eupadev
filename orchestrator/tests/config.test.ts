@@ -156,7 +156,9 @@ test('A-R5: caps per role (provisional, measurement pass) — each role has its 
   const { task, scoping, hardening } = DEFAULT_THRESHOLDS;
   assert.deepEqual(Object.keys(task).sort(), Object.keys(MODELS_BY_ROLE).sort(), 'one cap line per role');
   // Scoping roles: $4, under the $10 envelope (a lost task does not exhaust it); the others: $10.
-  for (const [role, p] of Object.entries(task)) assert.deepEqual(p, { duration_min: 60, turns: 150, budget_usd: ['overlap', 'scoping'].includes(role) ? 4 : 10 }, role);
+  for (const [role, p] of Object.entries(task)) if (role !== 'diagnosis') assert.deepEqual(p, { duration_min: 60, turns: 150, budget_usd: ['overlap', 'scoping'].includes(role) ? 4 : 10 }, role);
+  // ADR-027: one short read-only pass, small cap.
+  assert.deepEqual(task.diagnosis, { duration_min: 15, turns: 25, budget_usd: 2 });
   assert.ok(task.overlap.budget_usd < scoping.budget_usd && task.scoping.budget_usd < scoping.budget_usd);
   assert.equal(scoping.agent_work_duration_min, 240);
   assert.equal(hardening.agent_work_duration_min, 240);
@@ -183,6 +185,7 @@ test('A-R5: table of the starting models — overlap Haiku 5.5 medium, scoping S
     builder: { model: 'claude-opus-5-5', effort: 'medium' },
     'security-reviewer': { model: 'claude-opus-5-5', effort: 'high' },
     'quality-reviewer': { model: 'claude-opus-5-5', effort: 'high' },
+    diagnosis: { model: 'claude-sonnet-5-5', effort: 'medium' },
   });
   assert.ok(Object.values(MODELS_BY_ROLE).every((m) => !m.model.includes('fable')));
 });

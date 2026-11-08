@@ -6,7 +6,8 @@ import { spawnSync } from 'node:child_process';
 import pg from 'pg';
 import { readConfig } from '../src/config.ts';
 import { createDatabase, startPostgres, migrate, urlBase, type ThrowawayPostgres } from './helpers/throwaway-postgres.ts';
-import { startBench, ENV_TEST, Pilot, type Bench } from './helpers/bench.ts';
+import { startBench, ENV_TEST, Pilot, ADMIN, hats, type Bench } from './helpers/bench.ts';
+import type { Message } from '../src/messages.ts';
 
 let postgres: ThrowawayPostgres;
 let bench: Bench;
@@ -81,6 +82,36 @@ test('a creation goes from request_received to end_success along the real path, 
   const h2 = (await pilot.history(evolution)).map((x) => x.state);
   assert.ok(!h2.includes('overlap_search') && !h2.includes('gate_1'));
   assert.equal(await pilot.state(evolution), 'end_success');
+});
+
+test('Gate 1 correction with a new name and address: tools row renamed with the approval, forge asked once, the builder told; refused with another outcome, without a change or on a taken slug', { timeout: 120_000 }, async () => {
+  const cycle = await pilot.createCycle('equipment-managment');
+  await pilot.driveUntil(cycle, 'gate_1', { timeoutMs: 90_000 });
+  const send = (m: Message) => bench.orch.send(cycle, m, hats(m));
+  const decision = { type: 'decision' as const, gate: 'gate_1' as const, actor_id: ADMIN.id };
+  // Refused on entry: nothing written, the cycle still waits at Gate 1.
+  await assert.rejects(send({ ...decision, outcome: 'approved', comment: 'Equipment loans', slug: 'equipment-management' }), /only with a "correction" at gate_1/);
+  await assert.rejects(send({ ...decision, outcome: 'scope_change', comment: 'More', name: 'Equipment Management' }), /only with a "correction" at gate_1/);
+  await assert.rejects(send({ ...decision, outcome: 'correction', comment: 'Typo', name: 'Equipment-managment', slug: 'equipment-managment' }), /already named "Equipment-managment" with slug equipment-managment/);
+  await assert.rejects(send({ ...decision, outcome: 'correction', comment: 'Typo', slug: 'inventory' }), /slug inventory is already used by another tool/);
+  await assert.rejects(send({ ...decision, outcome: 'correction', comment: 'Typo', slug: 'Equipment Management' }), /^Error: message decision refused: slug:/);
+  assert.equal(await pilot.state(cycle), 'gate_1');
+  assert.equal((await bench.orch.base.pool.query('SELECT 1 FROM approvals WHERE cycle_id = $1', [cycle])).rowCount, 0);
+  assert.deepEqual(bench.forge.renames, []);
+  // The real case of the lab: a typo in the name and the slug, fixed at Gate 1.
+  const logBefore = bench.engine.switchboard.log.length;
+  await send({ ...decision, outcome: 'correction', comment: 'Typo in the name', name: 'Equipment Management', slug: 'equipment-management' });
+  await pilot.waitForState(cycle, 'hardening_execution');
+  const c = await pilot.base.readCycle(cycle);
+  assert.deepEqual([c.name, c.slug], ['Equipment Management', 'equipment-management']);
+  assert.deepEqual(bench.forge.renames, [{ from: 'equipment-managment', to: 'equipment-management' }]);
+  const approval = await bench.orch.base.pool.query<{ decision: string; comment: string }>(`SELECT decision, comment FROM approvals WHERE cycle_id = $1 AND gate = 'gate_1'`, [cycle]);
+  assert.deepEqual(approval.rows, [{ decision: 'correction', comment: 'Typo in the name' }]);
+  // The next code task of the cycle works under the new slug and reads the rename after the admin's comment.
+  const task = await pilot.wait('code task of the renamed tool', async () => bench.engine.switchboard.log.slice(logBefore).find((j) => j.input.task_id.startsWith(`${c.tool_id}-${c.id}-`))?.input);
+  assert.equal(task.tool, 'equipment-management');
+  assert.equal(task.branch, `agent/equipment-management/${c.id}/${task.role}`);
+  assert.equal(task.context['instruction'], 'Typo in the name\nThe tool was renamed: it is now "Equipment Management", at equipment-management.example.test. Update every name visible in the application (titles, texts, metadata) accordingly.');
 });
 
 test('step 6: the engine runs as orch_engine; without the DBOS schema installed, it refuses to start and creates nothing', { timeout: 60_000 }, async () => {

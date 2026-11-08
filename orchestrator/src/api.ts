@@ -29,17 +29,23 @@
  * 8. The requester's page (ADR-024, `static.ts`): `GET /`, `/cycles/<id>`, `/app.js`, `/app.css`,
  *    `/lang/*.json` and the vendored deep-chat bundle are served from a fixed table before the header check (a browser
  *    navigation cannot send `X-EupaDev`), with the page's own CSP; the page then calls the API above with the cookie.
+ * 9. `POST /requests/<cycle>/intent` (ADR-031, `intent.ts`): what a typed sentence means among the actions the state
+ *    allows for the person's hat, or `unclear`, and whether it needs a click (paid or irreversible); same readers as the cycle (requester or admin),
+ *    the sentence checked like a message text, at most `INTENT_RATE.calls` sentences a minute per person (429 +
+ *    `Retry-After`). It never posts anything: the page sends the message itself through `POST /messages`.
  * Every error is returned in the RFC 9457 format (`application/problem+json`).
  */
 import http from 'node:http';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import { Authenticator, TokenRefused, bearerToken } from './auth.ts';
 import { STATES, gateOutcomes, type StateId } from './machine/states.ts';
-import { DIGEST_FORMAT, UUID_FORMAT, MAX_TOP_UP_USD, type Message } from './messages.ts';
+import { DIGEST_FORMAT, UUID_FORMAT, MAX_TOP_UP_USD, SLUG_FORMAT, SLUG_MAX_LENGTH, type Message } from './messages.ts';
 import { IdempotencyConflict, AuthorizationError, type Actor, type ToolRequest, hatOnTool, type Orchestrator } from './orchestrator.ts';
 import { cycleWorkflowId } from './workflows/deps.ts';
 import { clearCookie, cookies, LOGIN_COOKIE, SESSION_COOKIE, SESSION_MAX_MS, setCookie, SignInRefused, WebSignIn } from './web-session.ts';
 import { buildStatic, cspPage, staticFile, serveStatic, type StaticFile } from './static.ts';
+import { allowedIntents, INTENT_RATE, needsClick, RateLimiter, replyOf, revalidate, UNCLEAR, wordsReader, type Intent, type IntentReader } from './intent.ts';
+import { invisibleCharacter } from './text.ts';
 import { DBOS } from '@dbos-inc/dbos-sdk';
 
 const HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
@@ -49,6 +55,7 @@ const GATES = new Set<string>(STATES.filter((e) => e.kind === 'gate').map((e) =>
 
 const text = { type: 'string', minLength: 1, maxLength: 10_000, pattern: '\\S' } as const;
 const court = { type: 'string', minLength: 1, maxLength: 200, pattern: '\\S' } as const;
+const slug = { type: 'string', pattern: SLUG_FORMAT.source, maxLength: SLUG_MAX_LENGTH } as const;
 const object = (required: string[], properties: Record<string, unknown>) => ({ type: 'object', additionalProperties: false, required: required, properties: properties });
 
 /**
@@ -59,7 +66,7 @@ export const REQUEST_SCHEMA = {
   type: 'object', required: ['type'], properties: { type: { enum: ['creation', 'evolution'] } }, discriminator: { propertyName: 'type' },
   oneOf: [
     object(['type', 'name', 'slug', 'owner_service', 'need'], {
-      type: { const: 'creation' }, name: court, slug: { type: 'string', pattern: '^[a-z0-9]+(-[a-z0-9]+)*$', maxLength: 63 }, owner_service: court, need: text,
+      type: { const: 'creation' }, name: court, slug: slug, owner_service: court, need: text,
     }),
     object(['type', 'tool_id', 'need'], { type: { const: 'evolution' }, tool_id: { type: 'integer', minimum: 1 }, need: text }),
   ],
@@ -84,6 +91,8 @@ export const MESSAGE_SCHEMA = object(['cycle_id', 'message'], {
       object(['type', 'gate', 'outcome'], {
         type: { const: 'decision' }, gate: { enum: [...GATES] }, outcome: { enum: ['approved', 'correction', 'refused', 'scope_change'] },
         comment: text, budget_top_up_usd: { type: 'number', exclusiveMinimum: 0, maximum: MAX_TOP_UP_USD }, digest: { type: 'string', pattern: DIGEST_FORMAT.source },
+        // Rename at Gate 1 (correction): checked again by `validateMessage` (gate and outcome) and by `send` (slug free).
+        name: court, slug: slug,
       }),
       object(['type'], { type: { const: 'cancellation' } }),
     ],
@@ -94,11 +103,18 @@ export const MESSAGE_SCHEMA = object(['cycle_id', 'message'], {
 const uuid = { type: 'string', pattern: UUID_FORMAT.source } as const;
 export const MERGE_SCHEMA = object(['absorbed_actor', 'target_actor', 'reason'], { absorbed_actor: uuid, target_actor: uuid, reason: text });
 
+/**
+ * Body of `POST /requests/<cycle>/intent` (ADR-031): the sentence as typed, the page's language and, when the page is
+ * showing a question, its key. The hat and the state come from the server, never from the body.
+ */
+export const INTENT_SCHEMA = object(['text', 'lang'], { text: text, lang: { enum: ['fr', 'en'] }, pending_question: court });
+
 type ReceivedMessage = Omit<Extract<Message, { actor_id: string }>, 'actor_id' | 'hat' | 'four_eyes_exemption' | 'visit'>;
 const ajv = new Ajv2020({ allErrors: true, strict: true, discriminator: true });
 const validateRequest = ajv.compile<ToolRequest>(REQUEST_SCHEMA);
 const validateMessage = ajv.compile<{ cycle_id: number; message: ReceivedMessage }>(MESSAGE_SCHEMA);
 const validateMerge = ajv.compile<{ absorbed_actor: string; target_actor: string; reason: string }>(MERGE_SCHEMA);
+const validateIntent = ajv.compile<{ text: string; lang: 'fr' | 'en'; pending_question?: string }>(INTENT_SCHEMA);
 
 class Problem extends Error {
   readonly status: number;
@@ -265,10 +281,53 @@ async function requestState(orch: Orchestrator, id: number, actor: Actor): Promi
     cycle_id: c.id, tool_id: c.tool_id, slug: c.slug, name: c.name, type: c.type, state: c.state, visit: c.visit,
     finished_at: c.finished_at, gate_reason: memory.gateReason || null, candidate_digest: await orch.base.candidateDigest(id),
     possible_decisions: GATES.has(c.state) ? [...gateOutcomes(c.state as StateId)] : [], workflow: w1?.status ?? null,
+    // D-E5: at Gate 1, the names the admin needs for the tool's core-tools.yml entry (the page builds the entry).
+    registration: c.state === 'gate_1' ? memory.registration : null,
   };
 }
 
-async function handle(orch: Orchestrator, auth: Authenticator, web: WebSignIn | null, page: Page, hosts: Set<string>, req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+/**
+ * ADR-031 (S1): what the person means by a typed sentence, among the actions the cycle's state allows for their hat —
+ * never a decision: the page then posts the message itself (`POST /messages`), under the same checks as a click. The
+ * reader is not called when nothing is expected from this hat (empty set); its answer is re-validated whatever it is;
+ * a reader that fails yields `unclear` with `fallback: true` (the page goes back to the word lists and buttons; the
+ * admin's notification comes with the model reader, S3). Every sentence is recorded in `intents`, its reading too.
+ * `needs_click`: the intent is paid or irreversible, the page asks for one "Approve" click before posting it. `reply`:
+ * the reader's own words when it has some (`replyOf`, capped), shown by the page as plain text next to its own line.
+ */
+async function readIntent(orch: Orchestrator, reader: IntentReader, limiter: RateLimiter, id: number, actor: Actor, body: { text: string; lang: 'fr' | 'en'; pending_question?: string }): Promise<Record<string, unknown>> {
+  const wait = limiter.take(actor.id);
+  if (wait > 0) throw new Problem(429, `intent: at most ${INTENT_RATE.calls} sentences a minute per person`, {}, { 'Retry-After': String(Math.ceil(wait / 1000)) });
+  const invisible = invisibleCharacter(body.text);
+  if (invisible !== null) throw new Problem(400, `text: invisible character refused (${invisible})`);
+  const c = await readableCycle(orch, id, actor);
+  const hat = hatOnTool(c, actor.id, actor.roles, `intent on cycle ${id}`);
+  const allowed = allowedIntents(c.state, hat);
+  const started = Date.now();
+  let answer: Intent = UNCLEAR;
+  let tokens: { input: number; output: number } | null = null;
+  let fallback = false;
+  let reply: string | undefined;
+  if (allowed.size > 0) {
+    try {
+      const reading = await reader.read({ hat, state: c.state, allowed, lang: body.lang, text: body.text, ...(body.pending_question === undefined ? {} : { pendingQuestion: body.pending_question }) });
+      answer = revalidate(reading, allowed, c.state);
+      tokens = reading.tokens ?? null;
+      reply = replyOf(reading);
+    } catch (e) {
+      DBOS.logger.warn(`cycle ${c.id}: intent reader ${reader.id} failed, fallback (${e instanceof Error ? e.message : String(e)})`);
+      fallback = true;
+    }
+  }
+  const needs_click = answer.intent !== 'unclear' && needsClick(answer.intent, c.state);
+  await orch.base.writeIntent({
+    cycle: c, actorId: actor.id, hat, allowed: [...allowed], text: body.text, lang: body.lang, pendingQuestion: body.pending_question ?? null,
+    intent: answer.intent, amountUsd: answer.amount_usd ?? null, reader: reader.id, tokens, latencyMs: Date.now() - started, fallback,
+  });
+  return { cycle_id: c.id, state: c.state, hat, allowed: [...allowed], ...answer, needs_click, fallback, ...(reply === undefined ? {} : { reply }) };
+}
+
+async function handle(orch: Orchestrator, auth: Authenticator, web: WebSignIn | null, page: Page, hosts: Set<string>, intents: { reader: IntentReader; limiter: RateLimiter }, req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   if (!expectedHost(req.headers.host, hosts)) throw new Problem(421, `unexpected Host: ${[...hosts].join(', ')} only`);
   const url = new URL(req.url ?? '/', 'http://localhost');
   const path = url.pathname;
@@ -297,10 +356,15 @@ async function handle(orch: Orchestrator, auth: Authenticator, web: WebSignIn | 
     const r = await orch.requestByKey(key, d, actor).catch((e: unknown) => { throw refusal(e); });
     return respond(res, 201, r, { Location: `/requests/${r.cycle_id}` });
   }
-  const m = /^\/requests\/([1-9][0-9]{0,15})(\/messages)?$/.exec(path);
+  const m = /^\/requests\/([1-9][0-9]{0,15})(\/messages|\/intent)?$/.exec(path);
   if (m !== null) {
-    route('GET');
     const id = Number(m[1]);
+    if (m[2] === '/intent') {
+      route('POST');
+      const body = validate(validateIntent, await readJson(req));
+      return respond(res, 200, await readIntent(orch, intents.reader, intents.limiter, id, actor, body).catch((e: unknown) => { throw refusal(e); }));
+    }
+    route('GET');
     if (m[2] === undefined) return respond(res, 200, await requestState(orch, id, actor).catch((e: unknown) => { throw refusal(e); }));
     // The cycle's chat (table `messages`, what the scoping agent reads); `since` = last id received, for the polling page.
     const since = url.searchParams.get('since') ?? '0';
@@ -324,18 +388,23 @@ async function handle(orch: Orchestrator, auth: Authenticator, web: WebSignIn | 
     if (r.new) DBOS.logger.warn(`actor merge: ${f.absorbed_actor} absorbed by ${f.target_actor}, decided by ${actor.id} (${f.reason})`);
     return respond(res, r.new ? 201 : 200, r.merge);
   }
-  throw new Problem(404, `${path}: unknown route (GET /health, GET|POST /requests, GET /requests/<cycle>, GET /requests/<cycle>/messages, POST /messages, POST /actors/merges, /auth/login|callback|logout)`);
+  throw new Problem(404, `${path}: unknown route (GET /health, GET|POST /requests, GET /requests/<cycle>, GET /requests/<cycle>/messages, POST /requests/<cycle>/intent, POST /messages, POST /actors/merges, /auth/login|callback|logout)`);
 }
 
 interface Page { files: Map<string, StaticFile>; csp: string }
 
-/** Server of the local API; the caller chooses the address and the port (`config.api`); the IdP comes from `config.oidc` (and `config.oidcWeb` for the page). */
-export function createApi(orch: Orchestrator, auth = new Authenticator(orch.config.oidc)): http.Server {
+/**
+ * Server of the local API; the caller chooses the address and the port (`config.api`); the IdP comes from `config.oidc`
+ * (and `config.oidcWeb` for the page). `reader`: how a typed sentence is understood (ADR-031) — the word lists until the
+ * model reader exists (S3).
+ */
+export function createApi(orch: Orchestrator, auth = new Authenticator(orch.config.oidc), reader: IntentReader = wordsReader): http.Server {
   const web = orch.config.oidcWeb === null ? null : new WebSignIn(orch.config.oidcWeb, orch.config.oidc.issuer);
   const page: Page = { files: buildStatic(orch.config.webPath, orch.config.deepChatPath), csp: cspPage(new URL(orch.config.oidc.issuer).origin) };
   const hosts = acceptedHosts(orch.config.dashboardUrl);
+  const intents = { reader, limiter: new RateLimiter() };
   return http.createServer((req, res) => {
-    handle(orch, auth, web, page, hosts, req, res).catch((e: unknown) => {
+    handle(orch, auth, web, page, hosts, intents, req, res).catch((e: unknown) => {
       const p = e instanceof Problem ? e : new Problem(500, 'internal error (see the engine log)');
       if (!(e instanceof Problem)) console.error(`API ${req.method ?? '?'} ${req.url ?? '?'} : ${e instanceof Error ? e.stack ?? e.message : String(e)}`);
       const headers: http.OutgoingHttpHeaders = { ...p.headers, ...(p.status === 405 ? { Allow: String(p.extra['allow']) } : {}) };

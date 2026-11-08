@@ -4,3 +4,8 @@ allowBuilds: {}
 strictDepBuilds: true
 blockExoticSubdeps: true
 minimumReleaseAge: 1440
+# Security overrides of transitive dependencies (Dependabot, 2026-11-03):
+# glob and minimatch come from node-pg-migrate, which still pins glob ~13.
+overrides:
+  glob: ^14.0.2
+  minimatch: ^11.0.1

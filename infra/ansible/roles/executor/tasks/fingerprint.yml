@@ -1,0 +1,35 @@
+# Platform fingerprint: what a free cycle proves and what the paid engine
+# requires (free-cycle-gate.yml, verify-engine-deployment.yml -e free_cycle=true).
+# Three identifiers, read where they live, never from a recipe variable alone:
+# the engine image (pilot and executor share the digest), the commit of the
+# template's main (every tool is generated from it) and the latest published
+# core (the engine moves every tool to it, decision A). Sets executor_fingerprint.
+# Read only: changes nothing.
+- name: Commit of the template's main (forge)
+  ansible.builtin.uri:
+    url: "{{ executor_forge.gitea_api }}/repos/{{ executor_forge.gitea_org }}/tool-template/branches/main"
+    url_username: "{{ gitea_admin_user }}"
+    url_password: "{{ vault_gitea_admin_password }}"
+    force_basic_auth: true
+    return_content: true
+  register: executor_template_branch
+  delegate_to: "{{ groups['forge'][0] }}"
+  changed_when: false
+
+- name: Latest published core (forge npm registry)
+  ansible.builtin.uri:
+    url: "{{ executor_forge.gitea_api | regex_replace('/api/v1$', '') }}/api/packages/{{ executor_forge.gitea_core_org.org }}/npm/@eupadev/core"
+    url_username: "{{ gitea_admin_user }}"
+    url_password: "{{ vault_gitea_admin_password }}"
+    force_basic_auth: true
+    return_content: true
+  register: executor_core_package
+  delegate_to: "{{ groups['forge'][0] }}"
+  changed_when: false
+
+- name: Platform fingerprint
+  ansible.builtin.set_fact:
+    executor_fingerprint:
+      engine_image: "{{ executor_image }}"
+      template_commit: "{{ executor_template_branch.json.commit.id }}"
+      core_version: "{{ executor_core_package.json['dist-tags'].latest }}"

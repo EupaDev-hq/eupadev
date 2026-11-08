@@ -3,7 +3,8 @@
  *   `fake-auto`  everything fake, "all is well" answers on their own (E0);
  *   `forge=gitea`   real forge (`FORGE_URL`, `FORGE_TOKEN` or `FORGE_TOKEN_FILE`), the rest automatic fake;
  *   `engine=pushing` pushing fake (E3): reports without AI, but files really pushed to the forge (`FORGE_URL`)
- *                   with the `svc-agent` token (`AGENT_TOKEN` or `AGENT_TOKEN_FILE`); lab only.
+ *                   with the `svc-agent` token (`AGENT_TOKEN` or `AGENT_TOKEN_FILE`); lab only. Its `example` set
+ *                   (free cycle, slug ending in `-example`) reads the reference tool in `EXAMPLE_PATH`.
  *   `engine=claude` Claude Code in a container (`claude-engine.ts`): `FORGE_URL`, `AGENT_FORGE_TOKEN(_FILE)` (svc-agent),
  *                   `AGENT_IMAGE` (by digest),
  *                   `AGENT_COSIGN_PUB` (public key that must have signed the image); optional `AGENT_RUNTIME` (runsc), `AGENT_PROXIES` (containers
@@ -48,7 +49,8 @@ export function externalWorld(env: Record<string, string | undefined>, domain: s
   }
   if (choices.get('forge') === 'gitea') external.forge = new GiteaForge({ url, token: readSecret(env, 'FORGE_TOKEN') });
   if (choices.get('deployer') === 'ssh') external.deployer = sshDeployer(env, choices, url, external.forge as GiteaForge);
-  if (choices.get('engine') === 'pushing') external.engine = new PushingEngine({ url, token: readSecret(env, 'AGENT_TOKEN') });
+  // The `example` set (free cycle) pushes the reference tool: the same folder the Claude Code engine hands to its agents.
+  if (choices.get('engine') === 'pushing') external.engine = new PushingEngine({ url, token: readSecret(env, 'AGENT_TOKEN'), example: env['EXAMPLE_PATH'] ?? new URL('../../../examples/requests/', import.meta.url).pathname });
   if (choices.get('notifications') === 'smtp') {
     external.notifications = new NotificationsSmtp({
       url: readSecret(env, 'SMTP_URL'),

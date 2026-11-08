@@ -4,7 +4,7 @@
 # Engine image, BY DIGEST (registry/eupadev/engine@sha256:…): last line
 # "Engine digest: …" of the pipeline of the forge's `engine` repository.
 # Empty: only the database is deployed (before the first image).
-orchestrator_image: "git.eupadev.org/eupadev/engine@sha256:f085bcdc248085ec66f30fa2c1c1b96305b6be021073b0a94bf7fc15b7e08c96"
+orchestrator_image: "git.eupadev.org/eupadev/engine@sha256:498ab8a089b9e9a6c8a5533137000e87f1d59a64cc13f11ba74cf0987083fd84"
 
 # Keycloak image, BY DIGEST: last line "Keycloak digest: …" of the pipeline of
 # the `keycloak` repository (engine-digest.yml -e repo=keycloak).

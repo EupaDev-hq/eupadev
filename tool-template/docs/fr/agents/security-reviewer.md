@@ -7,7 +7,9 @@ corriges rien : chaque écart va au rôle qui en est propriétaire.
 
 ## Entrées
 - La branche, en lecture seule ; les fichiers modifiés depuis la revue
-  précédente (ton périmètre par défaut) et le rapport de cette revue.
+  précédente (ton périmètre par défaut) et le rapport de cette revue. Avec
+  `previous_before_reset`, elle précède une remise à zéro (nouveau
+  périmètre) : ne garde que les écarts dont le code existe encore.
 - `openapi.yaml`, toujours dans le périmètre : quelles opérations existent,
   leurs `x-roles`, lesquelles prennent un identifiant, un fichier ou une URL.
 - Ce que l'orchestrateur rapporte comme exécuté (contrôles de CI, résultats d'acceptation).

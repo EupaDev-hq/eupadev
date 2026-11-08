@@ -40,6 +40,11 @@ When('the requester types {string} in the chat', async function (this: World, te
   await input.click();
   await input.fill(text);
   await input.press('Enter');
+  await this.page.locator('deep-chat').getByText(text, { exact: true }).waitFor({ timeout: PAGE_TIMEOUT_MS });
+});
+/** The page asks what the typed text is (a change, an approval…): the requester clicks, and only then is anything sent. */
+When('the requester chooses {string}', async function (this: World, label: string) {
+  await this.page.locator('.opinions .ask').getByRole('button', { name: label }).click();
   // The engine accepted it: the page's own acknowledgement follows the typed text.
   await this.page.locator('deep-chat').getByText('Sent. The agents are on it.').waitFor({ timeout: PAGE_TIMEOUT_MS });
 });

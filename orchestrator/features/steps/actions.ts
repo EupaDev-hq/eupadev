@@ -4,7 +4,8 @@ import { Given, When, type DataTable } from '@cucumber/cucumber';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { DBOS } from '@dbos-inc/dbos-sdk';
-import { reportWithDeviations, blockedReport, overlapReport, compliantReport, type ScriptedDeviation, type EngineResponse } from '../../src/external/fakes.ts';
+import { reportWithDeviations, blockedReport, overlapReport, compliantReport, diagnosisReport, type ScriptedDeviation, type EngineResponse } from '../../src/external/fakes.ts';
+import type { Cause } from '../../src/hardening/diagnosis.ts';
 import type { Role } from '../../src/external/contracts.ts';
 import type { StateId, GateOutcome } from '../../src/machine/states.ts';
 import type { PipelineCheck, Message } from '../../src/messages.ts';
@@ -12,6 +13,7 @@ import { ADMIN, REQUESTER, REQUESTER_MAIL, ENV_TEST, freeze, releaseFreezes } fr
 import { unprotected } from '../../tests/helpers/throwaway-postgres.ts';
 import { ORCHESTRATOR_ACTOR } from '../../src/db.ts';
 import { HARDENING_ROLES } from '../../src/workflows/toolCycle.ts';
+import { logTail } from '../../src/external/gitea-forge.ts';
 import { World, DEFAULT_SLUG } from '../support/world.ts';
 
 const role = (s: string) => s as Role;
@@ -240,6 +242,18 @@ When('the fake engine returns a compliant report for {string} with the message t
 When('the fake engine returns a failure for {string} with reason {string}', function (this: World, r: string, reason: string) {
   this.bench.engine.answer(role(r), { type: 'failed', reason: reason });
 });
+When('the fake engine returns a failure for {string} with reason {string} and a cost of {float} $', function (this: World, r: string, reason: string, cost: number) {
+  this.bench.engine.answer(role(r), { type: 'failed', reason: reason, cost_usd: cost });
+});
+/** ADR-027: the diagnosis verdict, its recommendation matching the cause (a top-up, a question, or neither). */
+When('the fake engine returns for {string} the diagnosis {string} explaining {string}', function (this: World, r: string, cause: string, explanation: string) {
+  assert.equal(r, 'diagnosis');
+  const recommendation = cause === 'slow_progress' ? { top_up_usd: 12 } : cause === 'unclear_request' ? { question: 'Which sites must the tool cover?' } : {};
+  this.bench.engine.answer('diagnosis', { type: 'report', report: (e: { task_id: string }) => diagnosisReport(e.task_id, cause as Cause, explanation, recommendation) });
+});
+Given('the forge holds {int} commits on the {string} branch of the cycle', async function (this: World, n: number, r: string) {
+  this.bench.forge.branchCommits.set(`${(await this.cycle()).slug}/${this.cycleId}/${r}`, n);
+});
 When('the fake engine returns for {string} a report without verdict whose summary starts with {string}', function (this: World, r: string, start: string) {
   this.bench.engine.answer(role(r), { type: 'report', report: (e: { task_id: string }) => compliantReport(role(r), e.task_id, { summary: `${start} — no tool of the registry manages the inventory` }) });
 });
@@ -288,6 +302,10 @@ When('the fake engine does not answer for {string} for {int} minutes', function 
 });
 When('the fake engine declares a cost of {int} $ per task', function (this: World, cost: number) {
   this.bench.engine.defaultCost = cost;
+});
+Given('the fake engine is still preparing the {string} tasks, their container not started', function (this: World, role: Role) {
+  // Clone, image signature…: the task is in progress for W2 but no container (nothing paid) until the stop signal.
+  this.bench.engine.preparing.add(role);
 });
 When('the fake engine declares a work duration of {int} minutes per task', function (this: World, minutes: number) {
   this.bench.engine.defaultDuration_s = minutes * 60;
@@ -431,6 +449,10 @@ When('the forge signals {string} with result {string} and the failed checks:', a
     : { type: 'preview_pipeline_finished', outcome: result as 'green' | 'red', checks: checks };
   await this.pilot.sendWhenExpected(this.cycleId, m);
 });
+// ADR-027: the log of a red job, as the watcher stores its tail (`logTail`) in the details of the next signal.
+Given('check {string} of the next pipeline carries the log:', function (this: World, check: string, log: string) {
+  this.details.set(check, { ...((this.details.get(check) as object | undefined) ?? {}), log_tail: logTail(log) });
+});
 // M5: the SARIF results the watcher reads in the log of the `analysis` job (GiteaForge.ciFinished), for the next signal.
 Given('check {string} of the next CI carries the SARIF findings:', function (this: World, check: string, table: DataTable) {
   this.details.set(check, { runs: [{ results: table.hashes().map((l) => ({
@@ -496,6 +518,13 @@ When('the admin decides {string} at gate {string}', async function (this: World,
 });
 When('the admin decides {string} at gate {string} with text {string}', async function (this: World, outcome: string, g: string, text: string) {
   await decide.call(this, outcome, g, { comment: text });
+});
+When('the admin decides {string} at gate {string} with text {string}, new name {string} and new address {string}', async function (this: World, outcome: string, g: string, text: string, name: string, slug: string) {
+  await decide.call(this, outcome, g, { comment: text, name, slug });
+});
+When('the admin tries to decide {string} at gate {string} with text {string} and new address {string}', async function (this: World, outcome: string, g: string, text: string, slug: string) {
+  this.lastError = '';
+  await this.pilot.send(this.cycleId, { type: 'decision', gate: state(g), outcome: outcome as GateOutcome, actor_id: ADMIN.id, comment: text, slug }).catch((e: Error) => { this.lastError = e.message; });
 });
 When('the admin decides {string} at gate {string} with a top-up of {int} $', async function (this: World, outcome: string, g: string, topUp: number) {
   await decide.call(this, outcome, g, { budget_top_up_usd: topUp });

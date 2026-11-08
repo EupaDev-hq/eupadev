@@ -31,7 +31,8 @@ const chosen = ids.length === 0 ? MUTATIONS : MUTATIONS.filter((m) => ids.includ
 /**
  * Throwaway copy: the directory without node_modules (a link), and what the tests read outside it at its relative
  * place: the report schema and the template's instructions (charter, prompts, rules), its image and its CI (`.gitea/`,
- * `package.json`), the forge's list of protected files, the generated files of the agent image.
+ * `package.json`, `db/purge.sql`), the forge's list of protected files, the generated files of the agent image, the core's contract linter,
+ * the reference tool (example set of the pushing fake).
  */
 function copy(): { root: string; dir: string } {
   const root = mkdtempSync(join(tmpdir(), 'mutation-orchestrator-'));
@@ -39,7 +40,7 @@ function copy(): { root: string; dir: string } {
   cpSync(ORCHESTRATOR, dir, { recursive: true, filter: (s) => !relative(ORCHESTRATOR, s).split(/[\\/]/).some((x) => x === 'node_modules' || x === '.git') });
   symlinkSync(join(ORCHESTRATOR, 'node_modules'), join(dir, 'node_modules'));
   const repo = join(ORCHESTRATOR, '..');
-  for (const path of ['tool-template/agents', 'tool-template/AGENTS.md', 'tool-template/.claude/rules', 'tool-template/.gitea', 'tool-template/package.json', 'tool-template/pnpm-lock.yaml', 'infra/ansible/group_vars/forge/vars.yml', 'images/agent/check', 'images/agent/managed-settings.json']) {
+  for (const path of ['tool-template/agents', 'tool-template/AGENTS.md', 'tool-template/.claude/rules', 'tool-template/.gitea', 'tool-template/package.json', 'tool-template/pnpm-lock.yaml', 'tool-template/openapi.yaml', 'infra/ansible/group_vars/forge/vars.yml', 'images/agent/check', 'images/agent/managed-settings.json', 'core/src/contract-lint.js', 'examples/requests', 'tool-template/db/purge.sql']) {
     mkdirSync(dirname(join(root, path)), { recursive: true });
     cpSync(join(repo, path), join(root, path), { recursive: true });
   }

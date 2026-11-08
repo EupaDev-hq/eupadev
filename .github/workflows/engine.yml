@@ -39,10 +39,10 @@ jobs:
         with:
           node-version: 22.23.4
 
-      # pnpm of packageManager (12.16.1) through corepack, like the golden image.
+      # pnpm of packageManager (12.16.1) through the corepack shipped with
+      # Node (0.36.0), like the golden image.
       - name: Pinned pnpm
         run: |
-          npm install -g corepack@0.36.0
           corepack enable
           pnpm --version
 
@@ -118,7 +118,6 @@ jobs:
           node-version: 22.23.4
       - name: Pinned pnpm
         run: |
-          npm install -g corepack@0.36.0
           corepack enable
           pnpm --version
       - run: pnpm install --frozen-lockfile

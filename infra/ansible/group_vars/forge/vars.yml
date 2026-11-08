@@ -226,10 +226,12 @@ gitea_platform_repos:
       - orchestrator/Dockerfile.dockerignore
       - orchestrator/package.json
       - orchestrator/pnpm-lock.yaml
+      - orchestrator/pnpm-workspace.yaml
       - orchestrator/migrations
       - orchestrator/src
       - orchestrator/lang
       - orchestrator/web
+      - core/src/contract-lint.js
       - tool-template/agents
       - tool-template/AGENTS.md
       - tool-template/.claude/rules

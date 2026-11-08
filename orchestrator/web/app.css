@@ -75,6 +75,7 @@ textarea { min-height: 7rem; resize: vertical; }
 .conv-head .slug { color: var(--muted); font-weight: 400; }
 deep-chat { display: block; flex: 1; min-height: 0; width: 100%; }
 .opinions { display: grid; gap: 0.5rem; padding-top: 0.5rem; }
+.opinions .reply { margin: 0; color: var(--muted); font-size: 0.92rem; white-space: pre-wrap; }
 .opinions .abandon { justify-self: end; font-size: 0.85rem; padding: 0.2rem 0.5rem; text-decoration: underline; }
 .decision { display: grid; gap: 0.6rem; }
 .decision h2 { margin: 0; font-size: 1rem; }
@@ -82,11 +83,21 @@ deep-chat { display: block; flex: 1; min-height: 0; width: 100%; }
 .decision .reason { white-space: pre-wrap; color: var(--muted); font-size: 0.92rem; }
 .decision label { display: grid; gap: 0.25rem; font-size: 0.9rem; color: var(--muted); }
 .decision textarea { min-height: 3.2rem; }
+/* Gate 1 of a core tool: the core-tools.yml entry to paste (monospace, read-only) and the command. */
+.registration { padding: 0.5rem 0.7rem; border: 1px solid var(--border); border-radius: 10px; }
+.registration summary { font-weight: 600; cursor: pointer; }
+.registration[open] summary { margin-bottom: 0.6rem; }
+.registration > :not(summary) { margin-top: 0.6rem; }
+.registration #registration-entry, .registration code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.85rem; white-space: pre; overflow-x: auto; }
 
-/* Phones: the list above the conversation, the page scrolls. */
+/* Phones and narrow windows: the list above the conversation, still one screen high, so the conversation scrolls inside
+   deep-chat and never the page (it opens on its latest messages and follows the new ones, as on a desktop); a tall
+   decision card, or the new-request form, scrolls on its own. */
 @media (max-width: 760px) {
-  body { display: block; height: auto; }
-  .side { border-right: 0; border-bottom: 1px solid var(--border); }
-  .requests { max-height: 30vh; }
-  .main { min-height: 80vh; }
+  body { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
+  .side { flex: none; border-right: 0; border-bottom: 1px solid var(--border); }
+  .requests { max-height: 25vh; }
+  .column { flex: 1; }
+  .main { overflow-y: auto; }
+  .opinions { max-height: 45vh; overflow-y: auto; }
 }

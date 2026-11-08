@@ -1,5 +1,5 @@
 // Proof of the kit (step 7): the stack of kit/compose.test.yml (example tool ×2 behind Caddy, PostgreSQL,
-// real Keycloak, Mailpit), the twelve SEC-* generated from the example's contract, all green; then the deliberate
+// real Keycloak), the twelve SEC-* generated from the example's contract, all green; then the deliberate
 // mutations of the core (a copy of src/ mounted in place of the original in the two instances), each killed by the
 // expected SEC-*. Docker is required; Caddy listens on port 3000 (addresses of the test realm). KIT_KEEP=1 leaves
 // the stack running at the end.

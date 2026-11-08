@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import type { Role } from '../external/contracts.ts';
 import { invisibleCharacter } from '../text.ts';
 
-export const ROLES: readonly Role[] = ['overlap', 'scoping', 'contract', 'tests', 'builder', 'security-reviewer', 'quality-reviewer'];
+export const ROLES: readonly Role[] = ['overlap', 'scoping', 'contract', 'tests', 'builder', 'security-reviewer', 'quality-reviewer', 'diagnosis'];
 
 /**
  * Domain rules included in the instructions of each role (those its prompt cites). The rules keep their domain names
@@ -25,6 +25,7 @@ export const RULES_BY_ROLE: Record<Role, readonly string[]> = {
   builder: ['backend', 'frontend', 'security', 'quality'],
   'security-reviewer': ['security', 'tests'],
   'quality-reviewer': ['quality', 'backend', 'frontend', 'tests'],
+  diagnosis: [],
 };
 
 export type InstructionsByRole = Readonly<Record<Role, string>>;
@@ -39,19 +40,50 @@ export function assembler(charter: string, prompt: string, rules: readonly strin
   return `${[charter, prompt, ...rules].map((t) => t.trimEnd()).join('\n\n')}\n`;
 }
 
+/** `agents/capabilities.json`: what the platform offers (ids = `$defs.capability` of the report schema) and does not. */
+export interface Capabilities {
+  offered: readonly { id: string; what: string; from: string }[];
+  not_offered: readonly { what: string; instead: string }[];
+}
+
+/** One file of the instructions folder, fail-closed: unreadable, empty or with an invisible character = refusal. */
+function readInstructionsFile(dir: string, path: string): string {
+  let text: string;
+  try {
+    text = readFileSync(join(dir, path), 'utf8');
+  } catch (e) {
+    throw new Error(`agents' instructions: ${path} unreadable in ${dir} (${(e as Error).message})`);
+  }
+  if (text.trim() === '') throw new Error(`agents' instructions: ${path} empty`);
+  const invisible = invisibleCharacter(text);
+  if (invisible !== null) throw new Error(`agents' instructions: invisible character in ${path} (${invisible})`);
+  return text;
+}
+
+/**
+ * The platform capabilities the scoping role receives as DATA of its task (`platform_capabilities`), read from the
+ * engine image like the instructions, never from the cloned repository. Fail-closed on the shape too.
+ */
+export function loadCapabilities(dir: string): Capabilities {
+  const path = join('agents', 'capabilities.json');
+  const text = readInstructionsFile(dir, path);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch (e) {
+    throw new Error(`agents' instructions: ${path} is not JSON (${(e as Error).message})`);
+  }
+  const c = parsed as Partial<Capabilities>;
+  const text_ = (x: unknown) => typeof x === 'string' && x.trim() !== '';
+  const okOffered = Array.isArray(c.offered) && c.offered.length > 0 && c.offered.every((o) => text_(o?.id) && /^[a-z0-9]+(-[a-z0-9]+)*$/.test(o.id) && text_(o.what) && text_(o.from));
+  const okNotOffered = Array.isArray(c.not_offered) && c.not_offered.every((o) => text_(o?.what) && text_(o.instead));
+  if (!okOffered || !okNotOffered) throw new Error(`agents' instructions: ${path} malformed (offered[]{id, what, from}, not_offered[]{what, instead})`);
+  if (new Set(c.offered!.map((o) => o.id)).size !== c.offered!.length) throw new Error(`agents' instructions: ${path} has a duplicate id`);
+  return { offered: c.offered!, not_offered: c.not_offered! };
+}
+
 export function loadInstructions(dir: string): InstructionsByRole {
-  const read = (path: string): string => {
-    let text: string;
-    try {
-      text = readFileSync(join(dir, path), 'utf8');
-    } catch (e) {
-      throw new Error(`agents' instructions: ${path} unreadable in ${dir} (${(e as Error).message})`);
-    }
-    if (text.trim() === '') throw new Error(`agents' instructions: ${path} empty`);
-    const invisible = invisibleCharacter(text);
-    if (invisible !== null) throw new Error(`agents' instructions: invisible character in ${path} (${invisible})`);
-    return text;
-  };
+  const read = (path: string): string => readInstructionsFile(dir, path);
   const charter = read('AGENTS.md');
   const rules = new Map<string, string>();
   const rule = (name: string) => {

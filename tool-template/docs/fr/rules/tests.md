@@ -5,7 +5,7 @@
 ## Outillage et arborescence
 - Tests unitaires : `node --test` sous `tests/unit/`, par le propriétaire du code.
 - Acceptation : Playwright et playwright-bdd sous `tests/acceptance/`, comme l'outil de référence.
-- Importe le kit, `@eupadev/core/kit` (deux utilisateurs, Mailpit, navigateur) ; ne le copie jamais.
+- Importe le kit, `@eupadev/core/kit` (deux utilisateurs, navigateur) ; ne le copie jamais.
 - Gherkin seulement pour un comportement qu'un demandeur lit.
 
 ## Exécution

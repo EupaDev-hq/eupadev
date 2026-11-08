@@ -62,7 +62,7 @@ test('(d) every waiting state and every gate has a timeout way out (exit or boun
   }
 });
 
-test('(e) every gate handles its three mandatory outcomes, each once; only Gate 1 has a 4th button (decision 2)', () => {
+test('(e) every gate handles its three mandatory outcomes, each once; only Gate 1 and the hardening escalation have a 4th button (decision 2)', () => {
   for (const e of STATES.filter((x) => x.kind === 'gate')) {
     const issues = exitsOf(e.id)
       .filter((t) => t.trigger.type === 'gate')
@@ -70,7 +70,7 @@ test('(e) every gate handles its three mandatory outcomes, each once; only Gate 
       .sort();
     // D21: the incident gate has no `correction` (an incident is not a matter of content); `approved` there is
     // the resume towards the original state (transitions resume:<state>, checked further down).
-    const expected = e.id === 'gate_1' ? [...GATE_OUTCOMES, 'scope_change'] : e.id === 'gate_incident' ? ['refused'] : [...GATE_OUTCOMES];
+    const expected = e.id === 'gate_1' || e.id === 'gate_hardening_blocked' ? [...GATE_OUTCOMES, 'scope_change'] : e.id === 'gate_incident' ? ['refused'] : [...GATE_OUTCOMES];
     assert.deepEqual(issues, expected.sort(), `${e.id} : issues ${issues.join(',')}`);
     const refusal = exitsOf(e.id).find((t) => t.trigger.type === 'gate' && t.trigger.outcome === 'refused')!;
     assert.equal(refusal.to, 'end_refusal', `${e.id}: refusing must end the cycle`);
@@ -307,8 +307,8 @@ test('Decision 2: Gate 1 — "correction" → hardening, "scope change" → cont
   assert.equal(par('gate:scope_change'), 'contract');
   assert.equal(par('gate:approved'), 'preview_deployment');
   assert.ok(!s.some((t) => t.to === 'scoping'));
-  // No other gate has this button.
-  assert.deepEqual(TRANSITIONS.filter((t) => triggerKey(t.trigger) === 'gate:scope_change').map((t) => t.from), ['gate_1']);
+  // The only other gate with this button: the hardening escalation, for a defect of the frozen contract.
+  assert.deepEqual(TRANSITIONS.filter((t) => triggerKey(t.trigger) === 'gate:scope_change').map((t) => t.from), ['gate_hardening_blocked', 'gate_1']);
 });
 
 test('Decision 11: red Preview pipeline → automatic hardening, green → requester feedback, then Gate 2 (S5); red CI likewise', () => {

@@ -20,6 +20,10 @@ Feature: Scoping
     And task "scoping" of iteration 2 has "I want to track the laptops per site" in its context
     And task "scoping" of iteration 2 has "Mock-up available: https://inventory.scoping.example.test" in its context
     And task "scoping" of iteration 2 has "The filter per site is missing" in its context
+    # What the platform offers is data of the task (agents/capabilities.json of the engine image), never an instruction.
+    And task "scoping" of iteration 2 has "platform_capabilities" in its context
+    And task "scoping" of iteration 2 has "csv-export" in its context
+    And task "scoping" of iteration 2 does not receive "csv-export" in its instructions
 
   @t:waiting_scoping_feedback--event:scoping_feedback:satisfied-->contract
   @t:contract--task:done-->hardening_execution

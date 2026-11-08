@@ -10,7 +10,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { TaskInput } from '../src/external/contracts.ts';
-import { ClaudeCodeEngine, coreFromLockfile, lockfileRefused, packageJsonRefused } from '../src/external/claude-engine.ts';
+import { ClaudeCodeEngine, coreFromLockfile, coreWorkspace, lockfileRefused, packageJsonRefused } from '../src/external/claude-engine.ts';
 
 const HERE = new URL('.', import.meta.url).pathname;
 const SCHEMA = readFileSync(join(HERE, '..', '..', 'tool-template', 'agents', 'report.schema.json'), 'utf8');
@@ -98,6 +98,7 @@ function bench(files: Record<string, string>) {
 
 const task = (role: TaskInput['role'] = 'builder'): TaskInput => ({
   task_id: `trial-tool-core-${++n}`, tool: 'trial-tool', role, instructions: 'Instructions.', context: {}, cap: { duration_min: 15, turns: 10, budget_usd: 1 },
+  launched: async () => {},
   model: 'claude-opus-5-5', effort: 'medium', branch: role === 'security-reviewer' ? 'integration/1/1' : `agent/trial-tool/1/${role}`, signal: new AbortController().signal,
 });
 
@@ -146,6 +147,15 @@ test('core store: a lockfile with a tarball outside the forge registry is refuse
   const b = bench({ 'pnpm-lock.yaml': lockfile('0.1.0', 'https://elsewhere.test/@eupadev/core/-/core-0.1.0.tgz') });
   await assert.rejects(b.engine.execute(task()), /core: pnpm-lock\.yaml refused before fetching \(tarball outside the forge registry/);
   assert.equal(b.calls().filter((a) => a.args[0] === 'run').length, 0);
+});
+
+test('core store: pnpm settings carry the lockfile overrides, plain version ranges only', () => {
+  const base = 'minimumReleaseAgeExclude:\n  - "@eupadev/core"\n';
+  assert.equal(coreWorkspace(lockfile('1.2.3')), base);
+  const withOverrides = "settings:\n  autoInstallPeers: true\n\noverrides:\n  glob: ^14.0.2\n  '@a/b': '>=1.0.0 <2'\n\nimporters:\n";
+  assert.equal(coreWorkspace(withOverrides), `${base}overrides:\n  glob: ^14.0.2\n  '@a/b': '>=1.0.0 <2'\n`);
+  for (const bad of ['glob: npm:evil@1', 'glob: link:../x', 'glob: https://x.test/g.tgz', 'glob: github:a/b', 'glob: file:../g'])
+    assert.throws(() => coreWorkspace(`overrides:\n  ${bad}\n`), /override refused/);
 });
 
 test('core store: lockfile reading (version, registry-only resolutions)', () => {

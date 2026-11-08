@@ -5,6 +5,12 @@
 # with svc-agent's token.
 # Played BEFORE agent_proxies: it holds the secrets of the whole VM (a single
 # eupadev-secrets.service unit), the AI proxy's key among them.
+# Paid engine: only after a free cycle on this platform version, decided before
+# anything changes on the VM (free-cycle-gate.yml).
+- name: Free cycle before the paid engine
+  ansible.builtin.include_tasks: free-cycle-gate.yml
+  when: executor_claude_engine | bool
+
 - name: Executor folder (root access only)
   ansible.builtin.file:
     path: /opt/eupadev/executor
