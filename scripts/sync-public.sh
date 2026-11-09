@@ -48,7 +48,8 @@ else
   [[ -z $(git -C "$tree" status --porcelain) ]] || die "$tree has uncommitted changes"
   # Everything tracked goes, except the excluded paths; the export puts back what still exists.
   keep=$(IFS='|'; echo "${excluded[*]}")
-  git -C "$tree" ls-files -z | { grep -zvE "^(${keep//./\\.})(/|$)" || true; } | xargs -0 -r rm -f
+  # The paths are relative to the public checkout: rm runs there, never in the caller's directory.
+  git -C "$tree" ls-files -z | { grep -zvE "^(${keep//./\\.})(/|$)" || true; } | (cd "$tree" && xargs -0 -r rm -f)
 fi
 
 pathspecs=()
@@ -108,7 +109,7 @@ if git -C "$public" diff --cached --quiet; then
   echo "The public checkout is already up to date with $ref"
   exit 0
 fi
-author=$(git -C "$dev" log -1 --format=%an "$ref")
+author=Ilan  # first name only in public (maintainer's decision, 2026-11-08)
 git -C "$public" -c user.name="$author" -c user.email=admin@eupadev.org commit -q -s \
   -m "Sync with the development repository ($(date +%F))" -m "Assisted-by: Claude Opus 5.5"
 git -C "$public" log -1 --stat --format='%h %s' | tail -1
