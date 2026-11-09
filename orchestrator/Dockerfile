@@ -37,7 +37,7 @@ WORKDIR /src
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN cp -r "$(go mod download -json github.com/sigstore/cosign/v3@v3.1.3 \
       | sed -n 's/^\t"Dir": "\(.*\)",$/\1/p')/." . && chmod -R u+w . \
-    && go get golang.org/x/net@v0.60.0 google.golang.org/grpc@v1.83.2 github.com/klauspost/compress@v1.18.7 \
+    && go get golang.org/x/net@v0.62.0 google.golang.org/grpc@v1.83.2 github.com/klauspost/compress@v1.18.7 \
        github.com/go-jose/go-jose/v4@v4.1.6 \
     && go mod tidy \
     && CGO_ENABLED=0 go build -trimpath -o /out/cosign \
