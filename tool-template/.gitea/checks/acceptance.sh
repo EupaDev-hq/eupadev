@@ -31,9 +31,13 @@ COREPACK="-e COREPACK_ENV_FILE=0 -e COREPACK_ENABLE_PROJECT_SPEC=0 -e COREPACK_E
 REG="$GITHUB_SERVER_URL/api/packages/${GITHUB_REPOSITORY%%/*}-core/npm/"
 C="acceptance-$RUN_ID"
 trap 'docker rm -f "$C" > /dev/null 2>&1 || true' EXIT
+# The container is a sibling of the job, not inside it: the job's
+# timeout-minutes (30) kills the job but neither this trap nor the container.
+# It ends by itself at that limit (sleep 1800 instead of infinity), its
+# docker exec with it, and --rm removes it then.
 
-docker create --name "$C" --add-host "$HOST:host-gateway" -v /usr/local/share/ca-certificates:/ca:ro -w /work \
-  -e NODE_EXTRA_CA_CERTS=/tmp/ca.pem "$IMAGE" sleep infinity > /dev/null
+docker create --rm --name "$C" --add-host "$HOST:host-gateway" -v /usr/local/share/ca-certificates:/ca:ro -w /work \
+  -e NODE_EXTRA_CA_CERTS=/tmp/ca.pem "$IMAGE" sleep 1800 > /dev/null
 docker cp . "$C:/work"
 docker start "$C" > /dev/null
 

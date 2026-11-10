@@ -22,3 +22,5 @@ orchestrator/tests/diagnosis.test.ts | text\('fr', | deliberate fixtures: the Fr
 orchestrator/src/intent.ts | ^const MONEY = new Set\( | French words found around an amount ("avec", "de", "en"): the fake intent reader reads a top-up typed in French (ADR-031)
 orchestrator/tests/intent.test.ts | read\("c'est bon" | deliberate French fixture: a French yes read by the fake intent reader (ADR-031)
 scripts/sync-public.deny | * | the French private words the public sync refuses are the data of the guard
+tests/install/screenshots.mjs | ^  fr: \{ name: | deliberate French fixture: the request of the French screenshots (README.fr.md), the French engine and page answer it
+tests/install/screenshots.mjs | ^  await admin\.getByText\(/Gate 2 | deliberate French word: the translated name of the Gate 2 mail the script waits for in Mailpit (French screenshots)

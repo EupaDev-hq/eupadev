@@ -3,7 +3,8 @@
  * the API's origin. A fixed `Map` URL → file built once at startup (the core's `static.js` model): the request path is
  * only a key of that table, never a filesystem path (`..`, `%2F`… find nothing → not static). deep-chat's bundle is
  * vendored from `node_modules` (dev) or the image's `vendor/` and served under a path carrying its sha256: pinned by
- * content, cached for a year, never fetched elsewhere at run time; `index.html` receives that path at startup.
+ * content, cached for a year, never fetched elsewhere at run time; `index.html` receives that path at startup, and the
+ * discovery flag (ADR-028) that shows its "not for production" notice.
  *
  * Headers of the page: a CSP without Trusted Types (deep-chat's `innerHTML` sinks, ADR-024) — scripts and styles from
  * this origin only, `javascript:` links inert, nothing framed; the IdP's origin is allowed as a form action because the
@@ -20,6 +21,8 @@ const TYPES: Record<string, string> = {
 /** The conversation's URL, the one already written in e-mails (`<DASHBOARD_URL>/cycles/<id>`). */
 const PAGE_CYCLE = /^\/cycles\/[1-9][0-9]{0,15}$/;
 const PLACEHOLDER_DEEP_CHAT = '__DEEP_CHAT__';
+/** `<body data-discovery="…">`: `1` in discovery mode (ADR-028), which shows the page's notice by CSS; empty otherwise. */
+const PLACEHOLDER_DISCOVERY = '__DISCOVERY__';
 
 export const cspPage = (idpOrigin: string): string =>
   `default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self' ${idpOrigin}; frame-ancestors 'none'`;
@@ -33,7 +36,7 @@ const file = (content: Buffer, type: string, immutable = false): StaticFile =>
  * `webDir` (index.html, app.js, app.css, lang/*.json) and the deep-chat bundle → table. A symbolic link or an unknown
  * extension under `web/` is refused at startup (unexpected content is an error, not a served file).
  */
-export function buildStatic(webDir: string, deepChatPath: string): Map<string, StaticFile> {
+export function buildStatic(webDir: string, deepChatPath: string, discovery = false): Map<string, StaticFile> {
   const table = new Map<string, StaticFile>();
   const walk = (dir: string, prefix: string): void => {
     for (const name of readdirSync(dir)) {
@@ -53,7 +56,7 @@ export function buildStatic(webDir: string, deepChatPath: string): Map<string, S
   table.set(urlDeepChat, file(bundle, TYPES['.js']!, true));
   const index = table.get('/index.html');
   if (index === undefined) throw new Error(`web/: index.html missing in ${webDir}`);
-  const page = file(Buffer.from(index.content.toString('utf8').replaceAll(PLACEHOLDER_DEEP_CHAT, urlDeepChat)), index.type);
+  const page = file(Buffer.from(index.content.toString('utf8').replaceAll(PLACEHOLDER_DEEP_CHAT, urlDeepChat).replaceAll(PLACEHOLDER_DISCOVERY, discovery ? '1' : '')), index.type);
   table.set('/index.html', page);
   table.set('/', page);
   return table;

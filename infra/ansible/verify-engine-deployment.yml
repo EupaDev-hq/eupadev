@@ -238,7 +238,9 @@
             argv: "{{ psql + ['select state from cycles where id = ' ~ engine_cycle] }}"
           register: check_state
           until: check_state.stdout in ['waiting_preview_feedback', 'hardening_execution', 'gate_incident', 'gate_delivery_blocked']
-          retries: 180
+          # 30 minutes; -e preview_wait_retries=360 on a slow network (the
+          # pipeline downloads Chromium, pa11y and the Playwright image).
+          retries: "{{ preview_wait_retries | default(180) }}"
           delay: 10
           changed_when: false
           failed_when: check_state.stdout != 'waiting_preview_feedback'

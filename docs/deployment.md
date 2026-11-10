@@ -46,6 +46,14 @@ decided, not built.
 About 14-16 vCPU, 42-46 GB RAM, 700 GB disk in total; these are estimates, to
 be measured during the first real runs (decision 3). Sizes per VM are in
 `docs/client-prerequisites.md` §1. A sensitive tool may add a fifth VM (below).
+Measured on the lab on 2026-11-07, the five lab VMs idle use about 4.7 GB of
+RAM and about 90 GB of disk in total: the figures above are the sizes given to
+the VMs for a company's load, not what the platform needs to start.
+During a whole free cycle on 2026-11-10 (made-up agents, real forge, CI,
+Preview and checks; memory used inside each VM, sampled every 30 s), the peaks
+were: forge 0.9 GB, CI 1.4 GB (Preview checks), engine 1.4 GB, agents 0.6 GB,
+tools 0.7 GB, about 5 GB in total. Real AI agents add their containers on the
+agents VM; that peak is still to measure.
 
 ```mermaid
 flowchart LR
@@ -158,7 +166,8 @@ From `ROADMAP.md` §8.15 (blockers found while writing the prerequisites):
   exist on a VM supplied by the IT department.
 - **Certificates**: Caddy cannot yet use a certificate supplied by the client
   (today `internal` or Let's Encrypt by DNS-01, which exposes nothing but needs
-  API access to the DNS host, OVH only today).
+  API access to the DNS host; OVH is the lab's DNS provider, Caddy has DNS
+  modules for other providers, none built or tested here).
 - **Reversibility**: handing over the secrets vault to the client at the end
   of the contract is to be designed.
 - **Open questions**: one central Caddy or one per tool VM; direction of the

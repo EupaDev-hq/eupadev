@@ -5,6 +5,7 @@
   "auth.signin.text": "Sign in to see your requests and talk to the agents.",
   "auth.logout": "Sign out",
   "ai.notice": "You are talking to an AI. What you type here is sent to the AI provider under your organisation's key; your opinions and decisions are recorded in the request's history.",
+  "discovery.notice": "Discovery mode: made-up agents, this machine only, not for production.",
   "list.title": "My requests",
   "list.empty": "No request yet.",
   "new.title": "New request",
@@ -102,5 +103,8 @@
   "echo.gate_incident.approved": "Retrying.",
   "echo.refused": "Refused. The request is closed.",
   "echo.abandon": "Request abandoned.",
-  "conv.assistantDown": "The assistant is unavailable right now; try again in a moment."
+  "conv.assistantDown": "The assistant is unavailable right now; try again in a moment.",
+  "discovery.footer": "You are talking to made-up agents: no AI is called and nothing leaves this machine; your opinions and decisions are recorded in the request's history.",
+  "list.all": "All requests",
+  "gate.rename.title": "Rename the tool (optional, sent with a correction only)"
 }

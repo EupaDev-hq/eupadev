@@ -1,0 +1,200 @@
+# Release of EupaDev (ADR-028): on a `v*` tag only, never on a push. Two
+# jobs, in this order, one identity for everything they sign (this workflow
+# at this tag, GitHub's token service as certificate issuer, public
+# transparency log):
+#   image   builds orchestrator/Dockerfile, pushes the engine image to GHCR,
+#           signs it keyless by digest and hands that digest to the next job.
+#   script  stamps the tag, the digest and the checksums of the discovery
+#           files into install.sh, publishes it with its sha256 and a keyless
+#           signature as assets of a draft release, downloads the assets back
+#           and verifies them (and the stamped image) exactly the way the docs
+#           tell the reader to, then takes the release out of draft.
+# The digest is stamped into the script only (one source of truth): the
+# Compose file keeps `${ENGINE_IMAGE:-eupadev-engine:discovery}`, so its
+# checksum, also stamped, does not depend on the image, and a checkout keeps
+# building the local image. Enterprise installations build and sign their
+# own image with their own key on their own forge
+# (images/engine/.gitea/workflows/publish.yml); the image here serves the
+# discovery mode only.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  # Official cosign binary, checked by its sha256 sum (cosign_checksums.txt
+  # of the version published on GitHub); same version as install.yml, the
+  # forge and engine.yml.
+  COSIGN_VERSION: v3.1.3
+  COSIGN_SHA256: 4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71
+  CERTIFICATE_ISSUER: https://token.actions.githubusercontent.com
+  ENGINE_IMAGE: ghcr.io/eupadev-hq/eupadev-engine
+
+jobs:
+  image:
+    # The public repository only: the private copy has no package to publish and must not sign anything.
+    if: github.repository == 'EupaDev-hq/eupadev'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+      id-token: write # keyless signature
+    outputs:
+      ref: ${{ steps.push.outputs.ref }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Context = repository root (the reports' schema lives outside
+      # orchestrator/), filtered by orchestrator/Dockerfile.dockerignore.
+      # --no-cache: the Dockerfile's Debian update is redone on every build.
+      - name: Build the image
+        run: docker build --pull --no-cache -f orchestrator/Dockerfile -t "$ENGINE_IMAGE:$GITHUB_REF_NAME" .
+
+      # Tag = release tag (trace); the digest is the only reference signed
+      # and the only one the installer runs.
+      - name: Push by digest
+        id: push
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker push -q "$ENGINE_IMAGE:$GITHUB_REF_NAME"
+          REF="$(docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$ENGINE_IMAGE:$GITHUB_REF_NAME" | grep -E "^$ENGINE_IMAGE@sha256:[0-9a-f]{64}\$")"
+          echo "REF=$REF" >> "$GITHUB_ENV"
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+
+      - name: Pinned cosign
+        run: |
+          curl -fsSLo "$RUNNER_TEMP/cosign" "https://github.com/sigstore/cosign/releases/download/$COSIGN_VERSION/cosign-linux-amd64"
+          echo "$COSIGN_SHA256  $RUNNER_TEMP/cosign" | sha256sum -c -
+          chmod 0755 "$RUNNER_TEMP/cosign"
+
+      # Keyless: cosign takes the job's OIDC token, Fulcio issues a
+      # short-lived certificate naming this workflow at this tag, the
+      # signature is recorded in the public log. Verified at once with the
+      # identity the installer will require.
+      - name: Sign the image keyless and verify
+        run: |
+          "$RUNNER_TEMP/cosign" sign --yes "$REF"
+          "$RUNNER_TEMP/cosign" verify \
+            --certificate-oidc-issuer "$CERTIFICATE_ISSUER" \
+            --certificate-identity "https://github.com/$GITHUB_REPOSITORY/.github/workflows/release.yml@$GITHUB_REF" \
+            "$REF" > /dev/null
+          echo "OK: image signature checked with the workflow identity."
+          echo "Engine image: $REF"
+
+      - name: Clean up
+        if: always()
+        run: |
+          docker logout ghcr.io > /dev/null 2>&1 || true
+          rm -f "$RUNNER_TEMP/cosign"
+
+  script:
+    needs: image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write # create the release and upload its assets
+      id-token: write # keyless signature
+    env:
+      IMAGE_REF: ${{ needs.image.outputs.ref }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Pinned cosign
+        run: |
+          curl -fsSLo "$RUNNER_TEMP/cosign" "https://github.com/sigstore/cosign/releases/download/$COSIGN_VERSION/cosign-linux-amd64"
+          echo "$COSIGN_SHA256  $RUNNER_TEMP/cosign" | sha256sum -c -
+          chmod 0755 "$RUNNER_TEMP/cosign"
+
+      # The script in the tree says `dev` and names no published image; the
+      # released copy carries the tag, the image digest the job above signed
+      # and the checksums of the three files it will download from that tag
+      # (Compose file, PostgreSQL accounts hook and its SQL), so trust in all
+      # of them flows from the script's signature.
+      - name: Stamp the version, the image digest and the checksums of the discovery files
+        run: |
+          sh -n install.sh
+          echo "$IMAGE_REF" | grep -qE "^$ENGINE_IMAGE@sha256:[0-9a-f]{64}\$"
+          COMPOSE_SHA256="$(sha256sum infra/compose/discovery/compose.yml | cut -d' ' -f1)"
+          INIT_ROLES_SHA256="$(sha256sum infra/compose/discovery/init-roles.sh | cut -d' ' -f1)"
+          ROLES_SQL_SHA256="$(sha256sum orchestrator/sql/roles.sql | cut -d' ' -f1)"
+          mkdir -p "$RUNNER_TEMP/out"
+          sed -e "s|^EUPADEV_VERSION=.*|EUPADEV_VERSION=\"$GITHUB_REF_NAME\"|" \
+              -e "s|^ENGINE_IMAGE=.*|ENGINE_IMAGE=\"$IMAGE_REF\"|" \
+              -e "s|^COMPOSE_SHA256=.*|COMPOSE_SHA256=\"$COMPOSE_SHA256\"|" \
+              -e "s|^INIT_ROLES_SHA256=.*|INIT_ROLES_SHA256=\"$INIT_ROLES_SHA256\"|" \
+              -e "s|^ROLES_SQL_SHA256=.*|ROLES_SQL_SHA256=\"$ROLES_SQL_SHA256\"|" \
+              install.sh > "$RUNNER_TEMP/out/install.sh"
+          grep -q "^EUPADEV_VERSION=\"$GITHUB_REF_NAME\"\$" "$RUNNER_TEMP/out/install.sh"
+          grep -q "^ENGINE_IMAGE=\"$IMAGE_REF\"\$" "$RUNNER_TEMP/out/install.sh"
+          grep -q "^COMPOSE_SHA256=\"$COMPOSE_SHA256\"\$" "$RUNNER_TEMP/out/install.sh"
+          grep -q "^INIT_ROLES_SHA256=\"$INIT_ROLES_SHA256\"\$" "$RUNNER_TEMP/out/install.sh"
+          grep -q "^ROLES_SQL_SHA256=\"$ROLES_SQL_SHA256\"\$" "$RUNNER_TEMP/out/install.sh"
+          sh -n "$RUNNER_TEMP/out/install.sh"
+
+      # Keyless: cosign takes the job's OIDC token, Fulcio issues a short-lived
+      # certificate naming this workflow at this tag, the signature and the
+      # certificate go into one bundle file recorded in the public log.
+      - name: Checksum and keyless signature
+        working-directory: ${{ runner.temp }}/out
+        run: |
+          sha256sum install.sh > install.sh.sha256
+          "$RUNNER_TEMP/cosign" sign-blob --yes --bundle install.sh.sigstore.json install.sh
+
+      # Draft first: nobody downloads a release whose assets have not been
+      # verified below. A release created by hand before the tag push is reused.
+      - name: Draft release with the assets
+        working-directory: ${{ runner.temp }}/out
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" --clobber install.sh install.sh.sha256 install.sh.sigstore.json
+          else
+            printf 'Installation script of EupaDev %s (ADR-028).\n\nVerify before running: docs/install.md of this tag shows how to check `install.sh.sigstore.json` and `install.sh.sha256` against this workflow identity:\n`https://github.com/%s/.github/workflows/release.yml@%s`\n\nEngine image of the discovery mode, signed with the same identity: `%s`\n' \
+              "$GITHUB_REF_NAME" "$GITHUB_REPOSITORY" "$GITHUB_REF" "$IMAGE_REF" > notes.md
+            gh release create "$GITHUB_REF_NAME" --verify-tag --draft --title "EupaDev $GITHUB_REF_NAME" --notes-file notes.md \
+              install.sh install.sh.sha256 install.sh.sigstore.json
+          fi
+
+      # What a reader will download, checked the way the docs tell them to;
+      # then the image the downloaded script names, the way the script does.
+      - name: Verify the published assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/check" && cd "$RUNNER_TEMP/check"
+          gh release download "$GITHUB_REF_NAME" --pattern 'install.sh*'
+          cmp install.sh "$RUNNER_TEMP/out/install.sh"
+          sha256sum -c install.sh.sha256
+          "$RUNNER_TEMP/cosign" verify-blob \
+            --bundle install.sh.sigstore.json \
+            --certificate-oidc-issuer "$CERTIFICATE_ISSUER" \
+            --certificate-identity "https://github.com/$GITHUB_REPOSITORY/.github/workflows/release.yml@$GITHUB_REF" \
+            install.sh
+          STAMPED="$(sed -n 's/^ENGINE_IMAGE="\(.*\)"$/\1/p' install.sh)"
+          [ "$STAMPED" = "$IMAGE_REF" ]
+          "$RUNNER_TEMP/cosign" verify \
+            --certificate-oidc-issuer "$CERTIFICATE_ISSUER" \
+            --certificate-identity "https://github.com/$GITHUB_REPOSITORY/.github/workflows/release.yml@$GITHUB_REF" \
+            "$STAMPED" > /dev/null
+          echo "OK: script checksum and signature, and the stamped image signature, checked with the workflow identity."
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "$GITHUB_REF_NAME" --draft=false
+
+      - name: Clean up
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/cosign" "$RUNNER_TEMP/out" "$RUNNER_TEMP/check"

@@ -59,7 +59,7 @@ variable "vms" {
   type = map(object({ host = number, cpu = number, memory = string, disk = string, docker_disk = string }))
   default = {
     forge = { host = 10, cpu = 2, memory = "4GiB", disk = "15GiB", docker_disk = "60GiB" }
-    ci    = { host = 11, cpu = 2, memory = "4GiB", disk = "15GiB", docker_disk = "40GiB" }
+    ci    = { host = 11, cpu = 2, memory = "4GiB", disk = "15GiB", docker_disk = "60GiB" }
     # orch: engine + PostgreSQL + Keycloak (Keycloak alone ≈ 1.25 GiB).
     orch  = { host = 12, cpu = 2, memory = "6GiB", disk = "15GiB", docker_disk = "20GiB" }
     # agents: containers of the AI agents under gVisor (ROADMAP §8.16 L1). 4 GiB

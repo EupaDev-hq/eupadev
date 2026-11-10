@@ -7,6 +7,7 @@ import type { Role } from '../../src/external/contracts.ts';
 import { HARDENING_ROLES, hardeningCounters } from '../../src/workflows/toolCycle.ts';
 import { ENV_TEST } from '../../tests/helpers/bench.ts';
 import { DEFAULT_THRESHOLDS, type StateId } from '../../src/machine/states.ts';
+import { text } from '../../src/i18n.ts';
 import { World, DEFAULT_SLUG } from '../support/world.ts';
 
 const close = (a: number, b: number) => Math.abs(a - b) < 0.005;
@@ -169,6 +170,11 @@ Then('task {string} of iteration {int} has {string} in its context', async funct
   const e = await contextOf.call(this, role, iteration);
   assert.ok(JSON.stringify(e.context).includes(text), `context: ${JSON.stringify(e.context)}`);
 });
+Then('task {string} of iteration {int} does not have {string} in its context', async function (this: World, role: string, iteration: number, text: string) {
+  assert.ok(text.trim() !== '');
+  const e = await contextOf.call(this, role, iteration);
+  assert.ok(!JSON.stringify(e.context).includes(text), `"${text}" is in the context: ${JSON.stringify(e.context).slice(0, 600)}…`);
+});
 Then('task {string} of iteration {int} works on branch {string}', async function (this: World, role: string, iteration: number, branch: string) {
   const e = await contextOf.call(this, role, iteration);
   assert.equal(e.branch, branch);
@@ -324,7 +330,7 @@ Then('the admin has received {int} reminders', async function (this: World, n: n
 });
 Then('the admin has received a weekly reminder without a new traced reminder', async function (this: World) {
   const n = this.bench.notifications.for(this.cycleId, 'admin').find((x) => x.subject.startsWith('Weekly reminder'));
-  assert.ok(n !== undefined && n.subject.includes(await this.pilot.state(this.cycleId)), n?.subject);
+  assert.ok(n !== undefined && n.subject.includes(text('en', `gate.name.${await this.pilot.state(this.cycleId)}`)), n?.subject);
   const e = await this.pilot.state(this.cycleId);
   assert.equal((await this.pilot.history(this.cycleId)).filter((x) => x.trigger === 'timeout_exceeded' && x.state === e && x.previous_state === e).length, 3, 'still 3 reminders traced (bound of the machine)');
   assert.equal(reminders(this, 'admin'), 3, 'still 3 "Reminder n/3" reminders');

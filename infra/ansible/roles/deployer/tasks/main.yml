@@ -243,6 +243,16 @@
   # d5: core mode, merged over the base model for a core image.
   loop: [tool.compose.yml, core-tool.compose.yml]
 
+# ADR-032: demo data of the Previews, run by the service `seed` of the core
+# model with the image's own node (mounted read-only, never on Prod).
+- name: Demo seed script of the core tools
+  ansible.builtin.copy:
+    src: seed.mjs
+    dest: /etc/eupadev/seed.mjs
+    owner: root
+    group: root
+    mode: "0644"
+
 - name: Registry read token (svc-deployment)
   ansible.builtin.include_tasks: token.yml
 

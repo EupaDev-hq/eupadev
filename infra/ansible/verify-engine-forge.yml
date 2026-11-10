@@ -7,9 +7,9 @@
 # cleaned up (trial repositories, token, files), even if a check fails.
 #
 # The engine in service is not touched (one engine at a time, D23): the
-# adapter runs alone, in a throwaway Node container (same base image as the
-# engine, by digest), without database or DBOS; it only needs its two files,
-# copied here.
+# adapter runs alone, in a throwaway container of the deployed engine image
+# (its code and dependencies, by digest), without database or DBOS; only the
+# trial script is copied here.
 #
 # Prerequisites:
 #   - the orchestrator VM trusts the forge and finds it (role lab_ca: lab
@@ -51,8 +51,8 @@
     # Directory in memory (tmpfs /run) on the orchestrator VM.
     trial_dir: /run/eupadev-check-e2
     trial_src: "{{ playbook_dir }}/../../orchestrator"
-    # Same base as the engine image (orchestrator/Dockerfile).
-    trial_image: node:22.23.4-trixie-slim@sha256:8eb619e402eaede1748a3c8173bffab391592812e85136452f781741c7242ddf
+    # The engine image deployed on the orchestrator VM: the trial runs the code in service.
+    trial_image: "{{ hostvars[orchestrator].orchestrator_image }}"
     lab_ca_crt: /usr/local/share/ca-certificates/eupadev-lab.crt
     workdir: /tmp/check-engine-e2
   module_defaults:
@@ -70,7 +70,8 @@
           ansible.builtin.uri:
             url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ item }}"
             method: DELETE
-            status_code: [204, 404]
+            # 301: the old slug of a renamed repository only redirects to the renamed one, deleted in the same loop.
+            status_code: [204, 301, 404]
           loop: ["{{ slug }}", "{{ renamed_slug }}", "{{ resumed_slug }}", "{{ human_slug }}"]
 
         - name: Read the teams of the organisation
@@ -146,7 +147,7 @@
             state: directory
             owner: "1000"
             mode: "0700"
-          loop: ["", src/external, scripts]
+          loop: ["", scripts]
           delegate_to: "{{ orchestrator }}"
 
         # Only the token is secret: 0400, owner = the node user of the container.
@@ -159,19 +160,10 @@
           delegate_to: "{{ orchestrator }}"
           no_log: true
 
-        - name: Copy the forge adapter and the trial script
+        - name: Copy the trial script (the adapter comes from the engine image)
           ansible.builtin.copy:
-            src: "{{ trial_src }}/{{ item }}"
-            dest: "{{ trial_dir }}/{{ item }}"
-            owner: "1000"
-            mode: "0400"
-          loop: [src/external/contracts.ts, src/external/gitea-forge.ts, scripts/trial-forge.ts]
-          delegate_to: "{{ orchestrator }}"
-
-        - name: Module file (ESM)
-          ansible.builtin.copy:
-            dest: "{{ trial_dir }}/package.json"
-            content: '{"type": "module"}'
+            src: "{{ trial_src }}/scripts/trial-forge.ts"
+            dest: "{{ trial_dir }}/scripts/trial-forge.ts"
             owner: "1000"
             mode: "0400"
           delegate_to: "{{ orchestrator }}"
@@ -181,12 +173,12 @@
         - name: The engine creates the tool, then runs the creation again (idempotence)
           ansible.builtin.command:
             argv: >-
-              {{ ['docker', 'run', '--rm', '--network', 'host', '--read-only', '--cap-drop', 'ALL',
+              {{ ['docker', 'run', '--rm', '--network', 'host', '--read-only', '--tmpfs', '/tmp', '--cap-drop', 'ALL',
                   '--security-opt', 'no-new-privileges:true', '--user', '1000',
                   '-v', trial_dir ~ ':/trial:ro',
                   '-e', 'FORGE_URL=https://' ~ gitea_domain, '-e', 'FORGE_TOKEN_FILE=/trial/token']
                  + (['-v', lab_ca_crt ~ ':/lab-ca.crt:ro', '-e', 'NODE_EXTRA_CA_CERTS=/lab-ca.crt'] if lab_ca.stat.exists else [])
-                 + [trial_image, 'node', '/trial/scripts/trial-forge.ts', 'create', item] }}
+                 + ['-v', trial_dir ~ '/scripts:/app/scripts:ro', trial_image, 'node', '/app/scripts/trial-forge.ts', 'create', item] }}
           loop: ["{{ slug }}", "{{ slug }}"]
           delegate_to: "{{ orchestrator }}"
           register: creations
@@ -302,12 +294,12 @@
         - name: The engine renames the tool without the repository's administration, then after a human renamed it, then once more
           ansible.builtin.command:
             argv: >-
-              {{ ['docker', 'run', '--rm', '--network', 'host', '--read-only', '--cap-drop', 'ALL',
+              {{ ['docker', 'run', '--rm', '--network', 'host', '--read-only', '--tmpfs', '/tmp', '--cap-drop', 'ALL',
                   '--security-opt', 'no-new-privileges:true', '--user', '1000',
                   '-v', trial_dir ~ ':/trial:ro',
                   '-e', 'FORGE_URL=https://' ~ gitea_domain, '-e', 'FORGE_TOKEN_FILE=/trial/token']
                  + (['-v', lab_ca_crt ~ ':/lab-ca.crt:ro', '-e', 'NODE_EXTRA_CA_CERTS=/lab-ca.crt'] if lab_ca.stat.exists else [])
-                 + [trial_image, 'node', '/trial/scripts/trial-forge.ts', 'rename', slug, renamed_slug] }}
+                 + ['-v', trial_dir ~ '/scripts:/app/scripts:ro', trial_image, 'node', '/app/scripts/trial-forge.ts', 'rename', slug, renamed_slug] }}
           delegate_to: "{{ orchestrator }}"
           register: rename_refused
           changed_when: false
@@ -344,12 +336,12 @@
         - name: The engine finishes the rename (branches), then runs it again (idempotence)
           ansible.builtin.command:
             argv: >-
-              {{ ['docker', 'run', '--rm', '--network', 'host', '--read-only', '--cap-drop', 'ALL',
+              {{ ['docker', 'run', '--rm', '--network', 'host', '--read-only', '--tmpfs', '/tmp', '--cap-drop', 'ALL',
                   '--security-opt', 'no-new-privileges:true', '--user', '1000',
                   '-v', trial_dir ~ ':/trial:ro',
                   '-e', 'FORGE_URL=https://' ~ gitea_domain, '-e', 'FORGE_TOKEN_FILE=/trial/token']
                  + (['-v', lab_ca_crt ~ ':/lab-ca.crt:ro', '-e', 'NODE_EXTRA_CA_CERTS=/lab-ca.crt'] if lab_ca.stat.exists else [])
-                 + [trial_image, 'node', '/trial/scripts/trial-forge.ts', 'rename', slug, renamed_slug] }}
+                 + ['-v', trial_dir ~ '/scripts:/app/scripts:ro', trial_image, 'node', '/app/scripts/trial-forge.ts', 'rename', slug, renamed_slug] }}
           loop: [first, again]
           delegate_to: "{{ orchestrator }}"
           register: renames
@@ -408,12 +400,12 @@
         - name: The engine resumes the interrupted creation, then tries the human's repository
           ansible.builtin.command:
             argv: >-
-              {{ ['docker', 'run', '--rm', '--network', 'host', '--read-only', '--cap-drop', 'ALL',
+              {{ ['docker', 'run', '--rm', '--network', 'host', '--read-only', '--tmpfs', '/tmp', '--cap-drop', 'ALL',
                   '--security-opt', 'no-new-privileges:true', '--user', '1000',
                   '-v', trial_dir ~ ':/trial:ro',
                   '-e', 'FORGE_URL=https://' ~ gitea_domain, '-e', 'FORGE_TOKEN_FILE=/trial/token']
                  + (['-v', lab_ca_crt ~ ':/lab-ca.crt:ro', '-e', 'NODE_EXTRA_CA_CERTS=/lab-ca.crt'] if lab_ca.stat.exists else [])
-                 + [trial_image, 'node', '/trial/scripts/trial-forge.ts', 'create', item] }}
+                 + ['-v', trial_dir ~ '/scripts:/app/scripts:ro', trial_image, 'node', '/app/scripts/trial-forge.ts', 'create', item] }}
           loop: ["{{ resumed_slug }}", "{{ human_slug }}"]
           delegate_to: "{{ orchestrator }}"
           register: resumptions
@@ -466,7 +458,8 @@
           ansible.builtin.uri:
             url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ item }}"
             method: DELETE
-            status_code: [204, 404]
+            # 301: the old slug of a renamed repository only redirects to the renamed one, deleted in the same loop.
+            status_code: [204, 301, 404]
           loop: ["{{ slug }}", "{{ renamed_slug }}", "{{ resumed_slug }}", "{{ human_slug }}"]
 
         - name: Delete the trial files (token included)

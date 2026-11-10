@@ -52,8 +52,8 @@ function apply(dir: string, m: Mutation): void {
   let text = readFileSync(path, 'utf8');
   for (const [before, after] of m.replacements) {
     const n = text.split(before).length - 1;
-    if (n !== 1) throw new Error(`${m.id}: text to mutate found ${n} times in ${m.file} (the mutation no longer applies to the code)`);
-    text = text.replace(before, after);
+    if (n !== (m.copies ?? 1)) throw new Error(`${m.id}: text to mutate found ${n} times in ${m.file} (the mutation no longer applies to the code)`);
+    text = text.split(before).join(after);
   }
   writeFileSync(path, text);
 }

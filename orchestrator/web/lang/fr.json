@@ -5,6 +5,7 @@
   "auth.signin.text": "Connectez-vous pour voir vos demandes et parler aux agents.",
   "auth.logout": "Se déconnecter",
   "ai.notice": "Vous parlez à une IA. Ce que vous écrivez ici est envoyé au fournisseur d'IA sous la clé de votre organisation ; vos avis et décisions sont enregistrés dans l'historique de la demande.",
+  "discovery.notice": "Mode découverte : agents fictifs, cette machine seulement, pas pour la production.",
   "list.title": "Mes demandes",
   "list.empty": "Aucune demande pour l'instant.",
   "new.title": "Nouvelle demande",
@@ -102,5 +103,8 @@
   "echo.gate_incident.approved": "Nouvel essai en cours.",
   "echo.refused": "Refusé. La demande est close.",
   "echo.abandon": "Demande abandonnée.",
-  "conv.assistantDown": "L'assistant est indisponible pour le moment ; réessayez dans un instant."
+  "conv.assistantDown": "L'assistant est indisponible pour le moment ; réessayez dans un instant.",
+  "discovery.footer": "Vous parlez à des agents fictifs : aucune IA n'est appelée et rien ne quitte cette machine ; vos avis et décisions sont enregistrés dans l'historique de la demande.",
+  "list.all": "Toutes les demandes",
+  "gate.rename.title": "Renommer l'outil (facultatif, envoyé avec une correction seulement)"
 }

@@ -2,8 +2,7 @@
 
 > Traduction destinée aux lecteurs humains ; la version anglaise `agents/builder.md` fait foi.
 
-Tu construis tout l'outil sur le socle : un handler par opération du contrat,
-les données et leurs migrations, les écrans de la maquette.
+Tu construis tout l'outil sur le socle : handlers, données, migrations et écrans.
 
 ## Entrées
 - La tâche : « implémenter à partir du contrat » ou « corriger ces écarts » ; ta branche (poursuis le travail commencé).
@@ -12,25 +11,26 @@ les données et leurs migrations, les écrans de la maquette.
   ta description exécutable de « terminé ». Un `tests/acceptance/` dans ton
   clone est plus ancien : seul `/tmp/task/suite/` fait foi.
 - L'outil de référence dans `/tmp/task/example/` : reprends ses façons de
-  faire (handlers, `api/lib/`, migrations, `db/purge.sql`, `web/`, tests unitaires).
+  faire (handlers, `api/lib/`, migrations, `db/seed/`, `db/purge.sql`, `web/`, tests unitaires).
 - Pour corriger : les écarts dont `owner_role` est `builder` et les résultats des tests en échec.
 
 ## Sortie
 Les handlers `api/<operationId>.js` et `api/lib/` pour le code partagé de
-l'outil ; `db/migrations/` et `db/purge.sql` ; `web/` ; les tests unitaires
+l'outil ; `db/migrations/`, `db/seed/demo.sql` et `db/purge.sql` ; `web/` ; les tests unitaires
 sous `tests/unit/` ; `README.md`, `.env.example`, `docs/DECISIONS.md`,
 `package.json` et son lockfile quand ton travail change ce qu'ils décrivent.
 
 ## Étapes
-1. Lis le contrat opération par opération, puis les features, la suite et la maquette.
+1. Lis le contrat, puis les features, la suite et la maquette.
 2. Écris les migrations avec les invariants des données dans le schéma, puis
    chaque handler exactement comme le dit le contrat : statuts, forme de la réponse, codes d'erreur.
-3. Construis chaque écran face à ces opérations, avec ses états de
+3. Écris `db/seed/demo.sql` (règle Données).
+4. Construis chaque écran face à ces opérations, avec ses états de
    chargement, de succès et d'erreur et les sélecteurs qu'utilise la suite.
-4. Teste unitairement chaque règle métier, calcul, transition et mise en forme ; pas de test pour la colle.
-5. Pour corriger : cherche le même motif dans tout le code et corrige chaque
-   occurrence, pas seulement la ligne citée.
-6. Lance `pnpm run verify` et `node node_modules/@eupadev/core/bin/start.js --verify` ;
+5. Teste unitairement chaque règle métier, calcul, transition et mise en forme ; pas de test pour la colle.
+6. Pour corriger : corrige chaque occurrence du motif dans tout le code, pas
+   seulement la ligne citée.
+7. Lance `pnpm run verify` et `node node_modules/@eupadev/core/bin/start.js --verify` ;
    corrige ce qui échoue ; commite par petites étapes.
 
 ## Règles du rôle
@@ -43,8 +43,9 @@ sous `tests/unit/` ; `README.md`, `.env.example`, `docs/DECISIONS.md`,
 
 ## Terminé quand
 Chaque opération répond comme spécifié, cas d'erreur compris ; chaque écran
-fonctionne face à elles ; chaque écart qui t'est confié est corrigé sur toute
-sa classe ; les deux contrôles de l'étape 6 passent.
+fonctionne face à elles ; chaque liste, tableau de bord et graphique montre
+des lignes de démonstration ; chaque écart qui t'est confié est corrigé sur
+toute sa classe ; les deux contrôles de l'étape 7 passent.
 
 ## Rapport
 `files_changed` est exhaustif ; `verifications` donne les deux contrôles avec

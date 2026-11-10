@@ -160,7 +160,7 @@ test('the cycle resumes after three abrupt stops (during the tests task before t
   const notifications = calls.filter((a) => a.startsWith('notification:'));
   const duplicates = notifications.filter((n, i) => notifications.indexOf(n) !== i);
   assert.deepEqual(duplicates, [], 'no notification sent twice');
-  assert.ok(notifications.some((n) => n.startsWith('notification:admin:Decision required: gate_2')) && notifications.some((n) => n.startsWith('notification:requester:Inventory: End of cycle')), notifications.join('\n'));
+  assert.ok(notifications.some((n) => n.startsWith('notification:admin:Decision required — Gate 2')) && notifications.some((n) => n.startsWith('notification:requester:Inventory — End of cycle')), notifications.join('\n'));
   const chat = (await pool.query<{ content: string }>('SELECT content FROM messages WHERE cycle_id = $1', [cycle])).rows.map((x) => x.content);
   assert.deepEqual(chat.filter((m, i) => chat.indexOf(m) !== i), [], 'no chat message written twice');
   const previews = await pool.query(`SELECT 1 FROM deployments WHERE cycle_id = $1 AND environment = 'preview'`, [cycle]);

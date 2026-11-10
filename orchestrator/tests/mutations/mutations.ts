@@ -14,8 +14,10 @@ export interface Mutation {
   id: string;
   fault: string;
   file: string;
-  /** Exact text replaced (must appear only once). Several pairs = a single fault in several places. */
+  /** Exact text replaced (must appear only once, or `copies` times). Several pairs = a single fault in several places. */
   replacements: [before: string, after: string][];
+  /** Identical copies of the text, all replaced: the Up and Down parts of a migration carrying the same view (default 1). */
+  copies?: number;
   /** Test commands run in the copy; the mutation is killed if one of them fails with `expected` in its output. */
   tests: string[];
   expected: RegExp;
@@ -59,7 +61,7 @@ export const MUTATIONS: Mutation[] = [
     replacements: [['const exceeded = cost >= cap;', 'const exceeded = cost > cap;']],
     tests: [`${CUKE} features/scoping.feature --name "^20 bis"`], expected: scenario('20 bis\\.') },
   { id: 'R03', fault: 'the end-of-cycle notification to the requester is no longer sent', file: 'src/workflows/toolCycle.ts',
-    replacements: [["    await action('notify requester', () => ext.notifications.notify('requester', c.id, tr('mail.requester.subject', { tool: c.name, summary: content.slice(0, 60) }), content, effectKey(end)));\n", '']],
+    replacements: [["    await action('notify requester', () => ext.notifications.notify('requester', c.id, tr('mail.requester.subject', { tool: c.name, summary: tr('chat.cycleEnd.subject', { label }) }), content, effectKey(end)));\n", '']],
     tests: [`${CUKE} features/entry-overlap.feature --name "^5\\."`], expected: scenario('5\\. A refusal') },
   { id: 'R04', fault: 'cancellation is ignored during the waits', file: 'src/workflows/toolCycle.ts',
     replacements: [["if (m.type === 'cancellation' || (validForThisPass(c, m) && accepted(m))) return m;", "if (m.type !== 'cancellation' && validForThisPass(c, m) && accepted(m)) return m;"]],
@@ -369,7 +371,7 @@ export const MUTATIONS: Mutation[] = [
     replacements: [['      await this.#verifierMain(slug, true, signal);', '      await this.#verifierMain(slug, false, signal);']],
     tests: [FORGE('^E2 forge: main without the template\'s')], expected: testNode('E2 forge: main without the template\'s') },
   { id: 'E2-check-team', fault: 'an existing repository not assigned to the team is taken over as ours', file: 'src/external/gitea-forge.ts',
-    replacements: [["[200, 404], signal)).status !== 200) {", "[200, 404], signal)).status === 500) {"]],
+    replacements: [["/repos/${this.#org}/${slug}`, [200, 404], signal)).status !== 200) {", "/repos/${this.#org}/${slug}`, [200, 404], signal)).status === 500) {"]],
     tests: [FORGE('^E2 forge: 409 —')], expected: testNode('E2 forge: 409 —') },
   { id: 'E2-409-public', fault: 'on 409, a public or template repository is taken over (and changed) as a tool', file: 'src/external/gitea-forge.ts',
     replacements: [["      if (d?.private !== true || d.template === true || d.archived === true) throw", "      if (d === null) throw"]],
@@ -806,7 +808,7 @@ export const MUTATIONS: Mutation[] = [
     replacements: [['CODE_ROLES.filter((r) => k.rolesConcerned.includes(r) || !delivered.includes(r))', 'k.rolesConcerned']],
     tests: [`${CUKE} features/hardening-review.feature --name "^25\\\\. "`], expected: scenario('25\\. The agents') },
   { id: 'AR2a-stop', fault: 'a failed tests task no longer stops the round: the builder codes against a missing suite', file: 'src/workflows/toolCycle.ts',
-    replacements: [['      if (!all) break;\n', '']],
+    replacements: [["        break;\n      }\n    }\n    await transition(c, memory, all ? 'task:done'", "      }\n    }\n    await transition(c, memory, all ? 'task:done'"]],
     tests: [`${CUKE} features/hardening-review.feature --name "^A-R2a\\\\. A failed or blocked tests task"`], expected: scenario('A-R2a\\. A failed or blocked tests task') },
   { id: 'AR2a-findings', fault: 'the builder\'s findings for tests are ignored by the evaluation again', file: 'src/workflows/toolCycle.ts',
     replacements: [["        if (t.role === 'builder') fromBuilder.push(", "        if (t.role === 'none') fromBuilder.push("]],
@@ -918,14 +920,16 @@ export const MUTATIONS: Mutation[] = [
   { id: 'ID-db-contact', fault: 'the engine can change every column of an actor (type included), not only the contact', file: 'migrations/0008_actors.sql',
     replacements: [['GRANT UPDATE (mail, display_name, directory_id, last_sign_in) ON actors TO orch_engine;', 'GRANT UPDATE ON actors TO orch_engine;']],
     tests: [DB('append-only')], expected: testNode('step 6: the engine can neither modify nor empty the append-only tables') },
-  // ── Measurement per cycle (migrations/0009) ─────────────────────────────────────────────────────
-  { id: 'MEAS-cost-cap', fault: 'unknown cost counted as 0: the cap of a failed task leaves the scoping sum', file: 'migrations/0009_cycle-measures.sql',
+  // ── Measurement per cycle (migrations/0009, view in force = migrations/0017, ADR-027) ─────────────
+  // The view of 0009 is replaced by 0017 (CREATE OR REPLACE): a mutation of 0009 is overwritten by the migrations and
+  // survives. The Down part of 0017 carries the same text (the view of 0009): both copies are mutated (`copies: 2`).
+  { id: 'MEAS-cost-cap', fault: 'unknown cost counted as 0: the cap of a failed task leaves the scoping sum', file: 'migrations/0017_cycle-measures-diagnosis.sql', copies: 2,
     replacements: [['sum(x.cost_usd) FILTER (WHERE x.scoping)', "sum(x.cost_usd) FILTER (WHERE x.scoping AND x.status = 'done')"]],
     tests: [DB('measure: unknown =')], expected: testNode('measure: unknown =') },
-  { id: 'MEAS-open-zero', fault: 'a scoping task still open counts $0 instead of making the cost unknown (NULL)', file: 'migrations/0009_cycle-measures.sql',
+  { id: 'MEAS-open-zero', fault: 'a scoping task still open counts $0 instead of making the cost unknown (NULL)', file: 'migrations/0017_cycle-measures-diagnosis.sql', copies: 2,
     replacements: [['bool_or(x.is_open AND x.scoping)', 'bool_or(false)']],
     tests: [DB('measure: unknown =')], expected: testNode('measure: unknown =') },
-  { id: 'MEAS-failed', fault: 'a failed task without a cost (never started) is not counted among the failures', file: 'migrations/0009_cycle-measures.sql',
+  { id: 'MEAS-failed', fault: 'a failed task without a cost (never started) is not counted among the failures', file: 'migrations/0017_cycle-measures-diagnosis.sql', copies: 2,
     replacements: [["count(*) FILTER (WHERE x.status = 'failed')", "count(*) FILTER (WHERE x.status = 'failed' AND x.cost_usd > 0)"]],
     tests: [DB('measure: values of a finished')], expected: testNode('measure: values of a finished') },
   // ── FU: actor merge (migration 0010) ────────────────────────────────────────────────────────────
@@ -1132,8 +1136,8 @@ export const MUTATIONS: Mutation[] = [
     replacements: [["const toMessage = (m) => ({ role: m.author_type === 'requester' ? 'user' : m.author_type, text: m.content });", "const toMessage = (m) => ({ role: m.author_type === 'requester' ? 'user' : m.author_type, html: m.content });"]],
     tests: [WEB('XSS payloads')], expected: testNode('XSS payloads') },
   // ── Acceptance on the Preview, S4: failure excerpt of a red suite ──────────────────────────────
-  { id: 'S4-acceptance-log-unread', fault: 'the log of a red acceptance job is no longer read: the hardening round gets the job name only', file: 'src/external/gitea-forge.ts',
-    replacements: [["if (k.check === 'acceptance' && k.result === 'red'", "if (k.check === 'acceptance-' && k.result === 'red'"]],
+  { id: 'S4-acceptance-log-unread', fault: 'the failing tests of a red acceptance job are no longer read in its log: the hardening round gets the job name (and log tail) only', file: 'src/external/gitea-forge.ts',
+    replacements: [["...(k.check === 'acceptance' ? { failures: acceptanceFailures(text) } : {}),", "...(k.check === 'acceptance-' ? { failures: acceptanceFailures(text) } : {}),"]],
     tests: [FORGE('3.7 red acceptance')], expected: testNode('3.7 red acceptance') },
   { id: 'S4-playwright-headers', fault: 'Playwright failure headers are no longer recognised in the log (only SEC-* would come through)', file: 'src/external/gitea-forge.ts',
     replacements: [["const m = /^\\s+\\d+\\) (.+?)[\\s─]*$/.exec(l) ?? ", "const m = "]],
@@ -1143,10 +1147,10 @@ export const MUTATIONS: Mutation[] = [
     tests: [ROB('3\\\\.7: a red acceptance job')], expected: testNode('3\\.7: a red acceptance job') },
   // ── Acceptance on the Preview, S5: the Preview controls run before the requester is told ───────
   { id: 'S5-link-at-deployment', fault: 'the requester gets the Preview link at deploy time, before its checks ran (a build that fails its own acceptance is shown)', file: 'src/workflows/toolCycle.ts',
-    replacements: [["if (await DBOS.patch(PATCH_CHECKS_BEFORE_FEEDBACK)) return void (await transition(c, memory, 'task:done', 'preview_pipeline'));", "if (await DBOS.patch(PATCH_CHECKS_BEFORE_FEEDBACK)) { await notifyRequester(c, { key: 'chat.previewAvailable', values: { url: r.url, digest } }); return void (await transition(c, memory, 'task:done', 'preview_pipeline')); }"]],
+    replacements: [["if (await DBOS.patch(PATCH_CHECKS_BEFORE_FEEDBACK)) return void (await transition(c, memory, 'task:done', 'preview_pipeline'));", "if (await DBOS.patch(PATCH_CHECKS_BEFORE_FEEDBACK)) { await notifyRequester(c, { key: 'chat.previewAvailable', values: { url: r.url, digest: shortDigest(digest) } }); return void (await transition(c, memory, 'task:done', 'preview_pipeline')); }"]],
     tests: [`${CUKE} features/delivery-gates.feature --name "36 bis"`], expected: scenario('36 bis\\.') },
   { id: 'S5-forgotten-link', fault: 'after a green Preview pipeline the requester is never told the Preview is available (the cycle waits for an opinion nobody asked for)', file: 'src/workflows/toolCycle.ts',
-    replacements: [["      await notifyRequester(c, { key: 'chat.previewAvailable', values: { url, digest } });\n", '']],
+    replacements: [["      await notifyRequester(c, { key: 'chat.previewAvailable', values: { url, digest: shortDigest(digest) } });\n", '']],
     tests: [`${CUKE} features/delivery-gates.feature --name "36 bis"`], expected: scenario('36 bis\\.') },
   { id: 'S5-replayed-pipeline', fault: 'a satisfied requester sends an already checked digest through the Preview pipeline again instead of Gate 2', file: 'src/workflows/toolCycle.ts',
     replacements: [["return void (await transition(c, memory, 'event:preview_feedback:satisfied', 'gate_2', m.actor_id));", "return void (await transition(c, memory, 'event:preview_feedback:satisfied', 'preview_pipeline', m.actor_id));"]],
@@ -1261,4 +1265,27 @@ export const MUTATIONS: Mutation[] = [
   { id: 'G1-entry-stale', fault: 'the entry no longer follows the durations typed by the admin: the pasted entry carries the defaults, not their choice', file: 'web/app.js',
     replacements: [["for (const [, input] of inputs) input.addEventListener('input', render);", '']],
     tests: ['node --test tests/web.test.ts'], expected: testNode('the admin decides') },
+  // ── ADR-027, blocked on the contract (paid cycle 9, rounds 7 to 23): a code role blocked with a finding owned by `contract` stops the round ──
+  { id: 'ADR027-contract-blocked-relaunched', fault: 'a role blocked by a defect of the contract is relaunched round after round (report:<role>, the gate only on stagnation)', file: 'src/workflows/toolCycle.ts',
+    replacements: [["find((x) => x.owner_role === 'contract');", "find((x) => x.owner_role === 'never');"]],
+    tests: [`${CUKE} features/hardening-review.feature --name "A-R2a quater"`], expected: scenario('A-R2a quater') },
+  { id: 'ADR027-plain-blocked-stops', fault: 'any blocked task opens the gate, finding or not: an open point the next round could have settled is escalated', file: 'src/workflows/toolCycle.ts',
+    replacements: [['  return f === undefined ? null : { rule:', "  if (f === undefined) return { rule: 'none', file: 'none', evidence: String((t.report as { blocked_reason?: unknown } | null)?.blocked_reason ?? '') };\n  return f === undefined ? null : { rule:"]],
+    tests: [`${CUKE} features/hardening-review.feature --name "^23 bis"`], expected: scenario('23 bis') },
+  { id: 'ADR027-early-after-reset', fault: 'the early diagnosis runs again on the round played before the reset: a second paid diagnosis after "scope change" for the situation the gate diagnosed', file: 'src/hardening/diagnosis.ts',
+    replacements: [['  if (round < since) return false;\n', '']],
+    tests: [`${CUKE} features/hardening-review.feature --name "A-R2a quater"`], expected: scenario('A-R2a quater') },
+  // ── ADR-030: the log tail of a red job goes to the builder's next task, redacted and capped; never to tests ──
+  { id: 'ADR030-tail-withheld', fault: 'the builder never receives the log tail of a red job: the round after a red `image` job gets the deviation alone (cycle 9: the YAML comma found at round 17)', file: 'src/workflows/toolCycle.ts',
+    replacements: [['ci_logs: k.lastRound >= k.since ? logFeedback(await lastRoundLogs(c, k.lastRound)) : [],', 'ci_logs: [] as unknown[],']],
+    tests: [`${CUKE} features/hardening-review.feature --name "^ADR-030\\. "`], expected: scenario('ADR-030\\. The log tail') },
+  { id: 'ADR030-tail-to-tests', fault: 'the log tail is given to every code role: the tests role reads stack traces of the code (ADR-021)', file: 'src/workflows/toolCycle.ts',
+    replacements: [["        ...(role === 'builder' ? { ci_logs: ciLogs } : {}),", '        ci_logs: ciLogs,']],
+    tests: [`${CUKE} features/hardening-review.feature --name "^ADR-030\\. "`], expected: scenario('ADR-030\\. The log tail') },
+  { id: 'ADR030-no-redaction', fault: 'the tail is written as the watcher stored it: credentials of a URL, bearer tokens and secret values reach the agent', file: 'src/hardening/log-feedback.ts',
+    replacements: [["    out.push(redact(l).replaceAll('```', \"'''\"));", "    out.push(l.replaceAll('```', \"'''\"));"]],
+    tests: ['node --test tests/log-feedback.test.ts', `${CUKE} features/hardening-review.feature --name "^ADR-030\\. "`], expected: testNode('ADR-030 feedback') },
+  { id: 'ADR030-uncapped', fault: 'the `ci_logs` field of a task has no size cap: twenty tails of forty lines go to the agent whole', file: 'src/hardening/log-feedback.ts',
+    replacements: [['    while (JSON.stringify(entries).length > max && e.log_tail.length > 0) {', '    while (JSON.stringify(entries).length > max && e.log_tail.length > 0 && false) {']],
+    tests: ['node --test tests/log-feedback.test.ts'], expected: testNode('ADR-030 cap') },
 ];

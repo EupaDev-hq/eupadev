@@ -106,6 +106,7 @@ Feature: Technical incident
   Scenario: D21 sexies. A task stopped while the launcher was still preparing it (no container started) costs 0 $, not the cap
     Given the fake engine is still preparing the "tests" tasks, their container not started
     And a creation cycle in state "hardening_execution"
+    And task "tests" of iteration 1 is in progress, its container not started
     When the admin cancels the cycle
     Then the cycle moves from "hardening_execution" to "end_cancellation" by "cancellation"
     And task "tests" of iteration 1 has status "failed"

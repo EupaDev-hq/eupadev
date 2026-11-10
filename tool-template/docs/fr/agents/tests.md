@@ -33,6 +33,11 @@ configuration Playwright, et les specs de sécurité que les règles de tests te
   un contrat qui semble faux : `blocked`.
 - Importe le kit depuis `@eupadev/core/kit` ; un utilitaire qui lui manque
   va sous `tests/acceptance/` et dans `assumptions`.
+- Ne supprime ni ne remets jamais à zéro les données de la Preview : pas de
+  nettoyage, pas de fixture de suppression. Les lignes que tes scénarios
+  créent restent ; la Preview contient aussi des données de démonstration
+  (`db/seed/demo.sql`, que tu ne lis pas). Vérifie les lignes que tu as
+  créées, jamais une liste vide ni un total.
 
 ## Terminé quand
 Chaque scénario a des étapes exécutables, chaque spec de sécurité applicable existe, `bddgen` passe.

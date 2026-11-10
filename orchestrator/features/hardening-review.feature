@@ -30,8 +30,10 @@ Feature: Hardening and review
     And the cycle's round counter is 2
     And the cycle has not passed through state "merge"
 
+  # A plain "blocked" (a reason, no finding owned by the contract) keeps this path: round failed, `report:<role>`, relaunch
+  # (ADR-027 diagnoses it before the next paid round). Only a finding owned by `contract` stops the round (A-R2a quater).
   @t:hardening_execution--task:failed-->hardening_evaluation
-  Scenario: 23 bis. A "blocked" agent is treated as failed and its reason is shown to the admin
+  Scenario: 23 bis. A "blocked" agent without a contract finding is treated as failed, relaunched, and its reason is shown to the admin
     Given a creation cycle in state "hardening_execution"
     When the fake engine returns state "blocked" for "builder" with reason "The contract requires a site_id column missing from the schema"
     And the fake engine returns a compliant report for roles "tests"
@@ -42,8 +44,10 @@ Feature: Hardening and review
 
   Scenario: A-R2a. A failed or blocked tests task stops the round: the builder is not started; the next round restarts tests, then the builder that has never delivered, and the reviewers only come after it
     Given a creation cycle in state "hardening_execution"
+    # Blocked with a reason only (no finding owned by the contract): relaunched, as 23 bis; see A-R2a quater for the stop.
     When the fake engine returns state "blocked" for "tests" with reason "The contract does not say who can read /tools"
     Then the cycle moves from "hardening_execution" to "hardening_evaluation" by "task:failed"
+    And table "deviations" contains for iteration 1 deviation "report:tests" on "report"
     And table "tasks" contains no "builder" task for iteration 1
     And the cycle moves from "hardening_evaluation" to "hardening_execution" by "guard:non_compliant"
     # Cycle 5 of the lab: a tests-only round followed by two reviews of a repository the builder had never touched.
@@ -211,6 +215,35 @@ Feature: Hardening and review
     When the fake engine returns a compliant report for "tests"
     Then task "builder" of iteration 2 receives deviation "report:builder" on "report"
     And task "builder" of iteration 2 does not receive deviation "tests.md#Execution" on "tests/acceptance/steps/list.js"
+
+  # ADR-027 (paid cycle 9, rounds 7 to 23 relaunched on a contract the roles could not change): a code role blocked by a
+  # defect of the frozen contract (finding owned by `contract`) is not relaunched; the gate opens at once with the finding
+  # and the "Change the scope" recommendation, after the gate's own diagnosis (one, never a second at the next round entry).
+  @t:hardening_execution--guard:escalation-->gate_hardening_blocked
+  @t:gate_hardening_blocked--gate:scope_change-->contract
+  Scenario: A-R2a quater. A builder blocked by a defect of the contract is not relaunched: the gate opens at once with the finding, the scope-change recommendation and one diagnosis
+    Given a creation cycle in state "hardening_execution"
+    When the fake engine returns a compliant report for "tests"
+    And the fake engine returns for "builder" state "blocked" with the deviations:
+      | rule     | file         | owner_role | message                                                            |
+      | SEC-IDOR | openapi.yaml | contract   | GET /tools/{id} has no site parameter: the IDOR check cannot pass |
+    And the fake engine returns for "diagnosis" the diagnosis "unclear_request" explaining "The contract does not bind the tools to a site."
+    Then the cycle moves from "hardening_execution" to "gate_hardening_blocked" by "guard:escalation"
+    And the cycle has not passed through state "hardening_evaluation"
+    And table "deviations" contains for iteration 1 no deviation "report:builder"
+    And table "tasks" contains no task for iteration 2
+    And table "tasks" contains exactly one "diagnosis" task for iteration 1
+    And the notification sent to the admin contains "the builder role is blocked by a defect of the contract (SEC-IDOR on openapi.yaml)"
+    And the notification sent to the admin contains "GET /tools/{id} has no site parameter: the IDOR check cannot pass"
+    And the notification sent to the admin contains "choose \"Change the scope\""
+    And the notification sent to the admin contains "Diagnosis — unclear request: The contract does not bind the tools to a site."
+    When the admin decides "scope_change" at gate "gate_hardening_blocked" with text "Bind every tool to a site"
+    Then the cycle moves from "gate_hardening_blocked" to "contract" by "gate:scope_change"
+    When the fake engine returns a compliant report for "contract"
+    And the fake engine returns a compliant report for roles "tests, builder"
+    Then the cycle moves from "hardening_execution" to "hardening_integration" by "task:done"
+    And table "tasks" contains exactly one "diagnosis" task for iteration 1
+    And table "tasks" contains no "diagnosis" task for iteration 2
 
   @t:hardening_integration--task:failed-->hardening_evaluation
   Scenario: 23 ter. An impossible integration makes the round non-compliant
@@ -608,6 +641,41 @@ Feature: Hardening and review
     Then the stagnation counter of deviation "ci:opengrep:c_0" on "web/detail.js" is 1
     And the cycle moves from "waiting_ci" to "hardening_execution" by "event:ci_finished:red"
     And the cycle has not passed through state "gate_hardening_blocked"
+
+  # ADR-030: the tail of a red job's log, as the watcher stored it, goes
+  # to the builder's next task as data (`ci_logs`, inside the JSON block of task.md) under the deviations it produced,
+  # secrets redacted, the field capped; never to the tests role (ADR-021); a red job without a tail leaves the deviation alone.
+  @t:waiting_ci--event:ci_finished:red-->hardening_execution
+  Scenario: ADR-030. The log tail of a red CI job reaches the builder's next task under its deviation, redacted; the tests role never gets it; a job without a tail leaves the deviation alone
+    Given a creation cycle in state "waiting_ci"
+    And the cycle's round counter is 1
+    And check "image" of the next pipeline carries the log:
+      """
+      2026-11-04T10:00:01.0000000Z boot-check.sh: strict mode: unknown keyword "first day of the loan."
+      2026-11-04T10:00:02.0000000Z registry: https://robot:pw-of-the-robot@forge.example.test/v2/
+      2026-11-04T10:00:03.0000000Z Authorization: Bearer header-of-the-robot
+      2026-11-04T10:00:04.0000000Z OIDC_CLIENT_SECRET=value-of-the-client npm start
+      """
+    When the forge signals "ci_finished" with result "red" and the failed checks:
+      | check | result |
+      | image | red    |
+      | lint  | red    |
+    Then the cycle moves from "waiting_ci" to "hardening_execution" by "event:ci_finished:red"
+    And task "tests" of iteration 2 receives deviation "ci:image" on "pipeline"
+    And task "tests" of iteration 2 does not have "ci_logs" in its context
+    And task "tests" of iteration 2 does not have "boot-check.sh" in its context
+    When the fake engine returns a compliant report for "tests"
+    Then task "builder" of iteration 2 receives deviation "ci:image" on "pipeline"
+    And task "builder" of iteration 2 receives deviation "ci:lint" on "pipeline"
+    And task "builder" of iteration 2 has "\"check\":\"image\",\"deviations\":[\"ci:image\"]" in its context
+    And task "builder" of iteration 2 has "boot-check.sh: strict mode: unknown keyword" in its context
+    And task "builder" of iteration 2 has "https://[REDACTED]@forge.example.test/v2/" in its context
+    And task "builder" of iteration 2 has "Bearer [REDACTED]" in its context
+    And task "builder" of iteration 2 has "OIDC_CLIENT_SECRET=[REDACTED]" in its context
+    And task "builder" of iteration 2 does not have "pw-of-the-robot" in its context
+    And task "builder" of iteration 2 does not have "header-of-the-robot" in its context
+    And task "builder" of iteration 2 does not have "value-of-the-client" in its context
+    And task "builder" of iteration 2 does not have "\"check\":\"lint\"" in its context
 
   @t:hardening_evaluation--guard:escalation-->gate_hardening_blocked
   Scenario: 28. The duration counted is the agents' work, not the wait in the queue nor the human wait

@@ -135,6 +135,10 @@ test('first failed round: once per situation — never when a diagnosis was crea
   // "Continue" at the gate: the counters count from round 2; the diagnosis of the gate predates the first task of round 2.
   assert.equal(earlyDiagnosisDue([...diagnosed, ...round1.map((t) => ({ ...t, iteration: 2 }))], 2, 2, [PIPELINE]), true);
   assert.equal(earlyDiagnosisDue([...diagnosed, ...round1.map((t) => ({ ...t, iteration: 2 })), task('diagnosis', 2, 'failed', 2, {})], 2, 2, [PIPELINE]), false, 'a failed diagnosis counts: one attempt per situation');
+  // "Scope change" at the gate: the counters count from round 2 while the last round played is still round 1, whose blocked
+  // task the gate already diagnosed; the contract task (iteration 2) is not a diagnosis. No second diagnosis before round 2.
+  const scopeChanged = [task('tests', 1, 'done', 1, {}), task('builder', 1, 'blocked', 3, { status: 'blocked', blocked_reason: 'GET /tools/{id} has no site parameter' }), task('diagnosis', 1, 'done', 1.5, {}), task('contract', 2, 'done', 1, {})];
+  assert.equal(earlyDiagnosisDue(scopeChanged, 2, 1, []), false, 'a round before the reset was diagnosed by the gate that reset the counters');
 });
 
 test('red checks: the task receives the red checks since the reset with the watcher\'s log tails, bounded (20 checks, 40 lines of 300 characters), and nothing from a check without a tail', () => {

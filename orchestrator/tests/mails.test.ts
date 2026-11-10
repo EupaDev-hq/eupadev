@@ -132,12 +132,12 @@ test('E1 resume: engine killed right after sending the Gate 1 mail (DBOS step no
   await mailpit.empty();
   const base = await migratedDatabase(postgres, 'mails_resume');
   writeFileSync(log, '');
-  const GATE = /\|Decision required: gate_1 /;
+  const GATE = /\|Decision required — Gate 1: /;
 
-  const first = launch({ MODE: 'create', KILL_AFTER: '^Decision required: gate_1 ' }, base, log);
+  const first = launch({ MODE: 'create', KILL_AFTER: '^Decision required — Gate 1: ' }, base, log);
   await waitUntil('the 1st engine kills itself after the Gate 1 mail', () => first.childProcess.signalCode === 'SIGKILL', first.output, 40_000);
   const key = calls().find((l) => GATE.test(l))!.split('|')[0]!;
-  const gate = () => mailpit.mails().then((ms) => ms.filter((m) => m.Subject.startsWith('Decision required: gate_1 ')));
+  const gate = () => mailpit.mails().then((ms) => ms.filter((m) => m.Subject.startsWith('Decision required — Gate 1: ')));
   assert.equal((await gate()).length, 1, 'the mail went out before the stop');
   assert.deepEqual(await engineDatabase(base, key), ['admin'], 'key kept before the stop');
 

@@ -26,13 +26,14 @@ import { DBOS, type WorkflowStatus } from '@dbos-inc/dbos-sdk';
 import type pg from 'pg';
 import { STATES, topUpEnvelope, gateOutcomes, type StateId, type GateOutcome } from '../machine/states.ts';
 import { opengrepDeviations, evaluate, SARIF_CHECK, type Counters as DeviationCounters, type Deviation } from '../hardening/stagnation.ts';
-import { diagnosisContext, diagnosisMessage, earlyDiagnosisDue, readDiagnosis } from '../hardening/diagnosis.ts';
+import { diagnosisContext, diagnosisMessage, earlyDiagnosisDue, readDiagnosis, redChecks } from '../hardening/diagnosis.ts';
+import { logFeedback } from '../hardening/log-feedback.ts';
 import { FORGE_ACTOR, ORCHESTRATOR_ACTOR, PermanentError, Database, type Cycle, type DeviationRow, type Memory, type Task } from '../db.ts';
 import { CODE_ROLES, REVIEW_ROLES, ownerRole, type Environment, type CoreUpdate, type Role, type RoleCode, type PublishedRole } from '../external/contracts.ts';
 import { transmissibleEvidence, type Finding, type Report } from '../agent-engine/report.ts';
 import { jargon } from '../agent-engine/jargon.ts';
 import type { Config } from '../config.ts';
-import { text, type Language, type Values } from '../i18n.ts';
+import { DICTIONARIES, text, type Language, type Values } from '../i18n.ts';
 import { MAILBOX, type PipelineCheck, type Message, type OperationResult } from '../messages.ts';
 import {
   stopChildren, isDbosEngineError, step, singleStep, requirePilot, CONTROL_QUEUE, TASK_QUEUE, currentGeneration, taskWorkflowId,
@@ -106,6 +107,17 @@ async function judgedTrees(base: Database, cycleId: number, round: number, given
  * top-level `findings`: nothing.
  */
 const findingsForTests = (t: Task): Finding[] => ((t.report as Partial<Report> | null)?.findings ?? []).filter((f) => f.owner_role === 'tests');
+
+/**
+ * ADR-027 (paid cycle 9, rounds 7 to 23): a code role `blocked` with a finding owned by `contract` names a defect of the
+ * frozen contract; relaunching the role cannot succeed, only the "scope change" exit of the gate can. The finding is
+ * quoted bounded, like `taskFact`: untrusted text, never interpreted. A plain `blocked` (no such finding) is not this.
+ */
+export function contractFinding(t: Pick<Task, 'status' | 'report'>): { rule: string; file: string; evidence: string } | null {
+  if (t.status !== 'blocked') return null;
+  const f = ((t.report as Partial<Report> | null)?.findings ?? []).find((x) => x.owner_role === 'contract');
+  return f === undefined ? null : { rule: String(f.rule).slice(0, 100), file: String(f.file).slice(0, 200), evidence: String(f.evidence).slice(0, 600) };
+}
 
 /** C: reviewers whose invalid report is the ONLY deviation of the round (no deviation targets the code); null otherwise. */
 export function reviewersOnly(deviations: readonly DeviationRow[]): ReviewRole[] | null {
@@ -229,7 +241,10 @@ export function createToolCycle(deps: Deps, agentTask: AgentTask) {
 
   /** End-user text of the dictionaries (`lang/*.json`), in the deployment's language. */
   const tr = (key: string, values?: Values): string => text(config.language, key, values);
-  const render = (m: Message_): string => tr(m.key, m.values);
+  /** A gate id among the values (`state`) also gives `{gate}`, its name in plain words (mail subjects); the key stays the id. */
+  const render = (m: Message_): string => tr(m.key, typeof m.values?.['state'] === 'string' && Object.hasOwn(DICTIONARIES.en, `gate.name.${m.values['state']}`) ? { ...m.values, gate: tr(`gate.name.${m.values['state']}`) } : m.values);
+  /** `sha256:abcdef123456…`: the digest as the requester reads it in the chat; the full one stays on the gate card and in the decision. */
+  const shortDigest = (digest: string): string => `${digest.slice(0, 19)}…`;
   /**
    * M9: idempotency key of an effect = workflow + step + the dictionary key of the subject and its values (identical from one
    * attempt of the same step to the next, and whatever the language, never the rendered text): an attempt that exceeded its
@@ -249,7 +264,7 @@ export function createToolCycle(deps: Deps, agentTask: AgentTask) {
   async function notifyRequester(c: Cycle, message: Message_, key?: string): Promise<void> {
     const content = render(message);
     await step('write orchestrator message', () => base.writeMessage(c, 'orchestrator', ORCHESTRATOR_ACTOR, content, key));
-    await step('notify requester', () => ext.notifications.notify('requester', c.id, tr('mail.requester.subject', { tool: c.name, summary: content.slice(0, 60) }), content, key ?? effectKey(message)));
+    await step('notify requester', () => ext.notifications.notify('requester', c.id, tr('mail.requester.subject', { tool: c.name, summary: tr(`${message.key}.subject`, message.values) }), content, key ?? effectKey(message)));
   }
   /** A human's text in the chat, under the hat chosen when sending (requester of the tool, or admin). */
   const writeHumanMessage = (c: Cycle, m: { actor_id: string; hat?: 'requester' | 'admin' }, content: string) =>
@@ -326,7 +341,7 @@ export function createToolCycle(deps: Deps, agentTask: AgentTask) {
     const end: Message_ = { key: 'chat.cycleEnd', values: { state: c.state } };
     const content = tr('chat.cycleEnd', { label });
     await action('write orchestrator message', () => base.writeMessage(c, 'orchestrator', ORCHESTRATOR_ACTOR, content));
-    await action('notify requester', () => ext.notifications.notify('requester', c.id, tr('mail.requester.subject', { tool: c.name, summary: content.slice(0, 60) }), content, effectKey(end)));
+    await action('notify requester', () => ext.notifications.notify('requester', c.id, tr('mail.requester.subject', { tool: c.name, summary: tr('chat.cycleEnd.subject', { label }) }), content, effectKey(end)));
     // G4: only the resources of THIS cycle (cycle id), never the mock-up or the Preview of a following cycle.
     await action('remove the mock-up', () => ext.deployer.remove('mockup', c.slug, c.id));
     await action('remove the Preview', () => ext.deployer.remove('preview', c.slug, c.id));
@@ -985,11 +1000,13 @@ export function createToolCycle(deps: Deps, agentTask: AgentTask) {
       ? await step('code roles delivered in the cycle', async () => (await base.cycleTasks(c.id, { roles: CODE_ROLES })).filter((t) => t.status === 'done').map((t) => t.role))
       : [...CODE_ROLES];
     const roles = k.rolesConcerned.length > 0 ? CODE_ROLES.filter((r) => k.rolesConcerned.includes(r) || !delivered.includes(r)) : CODE_ROLES;
-    const { builder_findings: builderFindings, ...common } = await context(c, memory, 'round context', async () => ({
+    const { builder_findings: builderFindings, ci_logs: ciLogs, ...common } = await context(c, memory, 'round context', async () => ({
       previous_reports: (await base.roundTasks(c.id, k.lastRound, REVIEW_ROLES)).filter((t) => t.status === 'done').map((t) => ({ role: t.role, iteration: t.iteration, report: t.report })),
       // A-R2a: what the builder holds against the suite, evidence included; never the rest of its report (tests does not read the code).
       // Like the deviations: nothing from a round before the last reset of the counters (admin's decision).
       builder_findings: (k.lastRound >= k.since ? await base.roundTasks(c.id, k.lastRound, ['builder']) : []).flatMap(findingsForTests).map((f) => ({ rule: f.rule, file: f.file, line: f.line, severity: f.severity, evidence: transmissibleEvidence(f.evidence) })),
+      // ADR-030: the log tails of the last round's red checks, redacted and capped, under their deviations; builder only (below).
+      ci_logs: k.lastRound >= k.since ? logFeedback(await lastRoundLogs(c, k.lastRound)) : [],
     }));
     // A-R2a (ADR-021): explicit wait, not a side effect of the queue — the builder only starts once `tests` is finished (it reads
     // the suite of THIS round); `tests` failed or blocked stops the round, the builder is not started.
@@ -998,13 +1015,22 @@ export function createToolCycle(deps: Deps, agentTask: AgentTask) {
       const ids = await launchTasks(c, round, [role], () => ({
         ...common,
         ...(role === 'tests' ? { builder_findings: builderFindings } : {}),
+        ...(role === 'builder' ? { ci_logs: ciLogs } : {}), // never the tests role (ADR-021): a job log carries code
         iteration: round,
         deviations: k.lastRoundDeviations.filter((l) => deviationRoles(l).includes(role)).map((l) => ({ rule: l.rule, file: l.file, category: l.category, text: deviationText(l) })),
       }));
       const r = await waitForTasks(c, ids);
       if (isCancellation(r)) return cancel(c, memory, r);
       all = [...r.values()].every((s) => s === 'done');
-      if (!all) break;
+      if (!all) {
+        // ADR-027: blocked by a defect of the contract → the gate at once (no `report:<role>`, no relaunch); the gate's own
+        // diagnosis runs there, once. `DBOS.patch`: a step added here; an older cycle replays its old path.
+        if (await DBOS.patch('blocked-on-contract')) {
+          const blocked = await step('blocked on the contract?', async () => { const t = await base.readTask(ids[0]!); const f = contractFinding(t); return f === null ? null : { role: t.role, ...f }; });
+          if (blocked !== null) return hardeningBlocked(c, memory, 'guard:escalation', tr('gate.blockedOnContract', { round, ...blocked }));
+        }
+        break;
+      }
     }
     await transition(c, memory, all ? 'task:done' : 'task:failed', all ? 'hardening_integration' : 'hardening_evaluation');
   }
@@ -1112,6 +1138,15 @@ export function createToolCycle(deps: Deps, agentTask: AgentTask) {
     return deviations;
   };
 
+  /**
+   * ADR-030: the red checks of `round` as the diagnosis reads them (`redChecks`: last 20, tails bounded), each with
+   * the deviations it produced in that round — the same mapping as the evaluation (`pipelineDeviations`), never a second one.
+   */
+  async function lastRoundLogs(c: Cycle, round: number) {
+    const rows = (await base.redChecksSince(c.id, round)).filter((r) => r.iteration === round).slice(-20);
+    return redChecks(rows).map((k, i) => ({ ...k, deviations: pipelineDeviations(rows[i]!.pipeline as 'ci' | 'preview', [{ check: k.check, result: 'red', details: rows[i]!.details }]).map((d) => d.rule) }));
+  }
+
   async function waitingCi(c: Cycle, memory: Memory): Promise<void> {
     const m = await receive(c, (x) => x.type === 'ci_finished', c.entry_ms + config.timeouts.ci_max_ms);
     if (isCancellation(m)) return cancel(c, memory, m);
@@ -1155,7 +1190,7 @@ export function createToolCycle(deps: Deps, agentTask: AgentTask) {
       // S5: the Preview controls run before the requester is told; a cycle recorded
       // before this change replays its old path (link sent at deploy time, then the requester's opinion).
       if (await DBOS.patch(PATCH_CHECKS_BEFORE_FEEDBACK)) return void (await transition(c, memory, 'task:done', 'preview_pipeline'));
-      await notifyRequester(c, { key: 'chat.previewAvailable', values: { url: r.url, digest } });
+      await notifyRequester(c, { key: 'chat.previewAvailable', values: { url: r.url, digest: shortDigest(digest) } });
       return void (await transition(c, memory, 'task:done', 'waiting_preview_feedback'));
     }
     let suite = '';
@@ -1215,7 +1250,7 @@ export function createToolCycle(deps: Deps, agentTask: AgentTask) {
     // S5: all green → the requester gets the link now (the Preview was never shown before its controls); the Gate 2
     // reason set above travels in the memory (D22) through the requester's opinion. Old cycles replay their path to Gate 2.
     if (await DBOS.patch(PATCH_CHECKS_BEFORE_FEEDBACK)) {
-      await notifyRequester(c, { key: 'chat.previewAvailable', values: { url, digest } });
+      await notifyRequester(c, { key: 'chat.previewAvailable', values: { url, digest: shortDigest(digest) } });
       return void (await transition(c, memory, 'event:preview_pipeline_finished:green', 'waiting_preview_feedback', FORGE_ACTOR));
     }
     await transition(c, memory, 'event:preview_pipeline_finished:green', 'gate_2', FORGE_ACTOR);

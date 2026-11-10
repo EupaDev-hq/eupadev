@@ -117,29 +117,29 @@ Feature: Known errors of v1
     And the notification sent to the admin contains "stagnation"
     And the notification sent to the admin contains "SEC-IDOR api/tools.js"
 
-  Scenario Outline: E10. Gate "<gate>" does send its notification to the admin
+  Scenario Outline: E10. Gate "<gate>" does send its notification to the admin, named in plain words
     Given a creation cycle in state "<before>"
     When the cycle enters gate "<gate>"
-    Then the fake mail server has sent the admin a message whose subject contains "<gate>"
+    Then the fake mail server has sent the admin a message whose subject contains "Decision required — <name>"
     And the message contains the link to the cycle's dashboard
 
     Examples:
-      | before                   | gate                  |
-      | overlap_search           | gate_overlap          |
-      | scoping                  | gate_scoping_budget   |
-      | scoping                  | gate_scoping_blocked  |
-      | contract                 | gate_contract_blocked |
-      | waiting_preview_feedback | gate_2                |
-      | waiting_ci               | gate_delivery_blocked |
-      | prod_deployment          | gate_prod_blocked     |
-      | scoping                  | gate_incident         |
+      | before                   | gate                  | name                               |
+      | overlap_search           | gate_overlap          | A similar tool may already exist   |
+      | scoping                  | gate_scoping_budget   | Scoping budget reached             |
+      | scoping                  | gate_scoping_blocked  | Scoping blocked                    |
+      | contract                 | gate_contract_blocked | Contract blocked                   |
+      | waiting_preview_feedback | gate_2                | Gate 2: go to production           |
+      | waiting_ci               | gate_delivery_blocked | Delivery blocked                   |
+      | prod_deployment          | gate_prod_blocked     | Production deployment failed       |
+      | scoping                  | gate_incident         | Technical incident                 |
 
     # Transient departures (see E15): the notification of these gates is checked by scenarios 34 and E1/E9.
     @to-wire
     Examples:
-      | before               | gate                   |
-      | hardening_evaluation | gate_hardening_blocked |
-      | candidate_image      | gate_1                 |
+      | before               | gate                   | name                                |
+      | hardening_evaluation | gate_hardening_blocked | Hardening blocked                   |
+      | candidate_image      | gate_1                 | Gate 1: name and domain of the tool |
 
   Scenario: E10 bis. The orchestrator refuses to start if a mandatory configuration is missing
     Given a configuration without variable "ADMIN_ESCALATION_ADDRESS"

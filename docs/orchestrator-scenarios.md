@@ -70,7 +70,7 @@ transition never traced.
 
 ## Hardening and review
 23. A failed review task makes the round non-compliant.
-23 bis. A "blocked" agent is treated as failed and its reason is shown to the admin.
+23 bis. A "blocked" agent without a contract finding is treated as failed, relaunched, and its reason is shown to the admin (a finding owned by the contract stops the round at the gate instead: A-R2a quater, ADR-027).
 24. A review report invalid against the schema makes the task failed and the round non-compliant.
 25. The agents that write code receive the deviations of the previous round that concern them.
 26. Only the roles that own the deviations are restarted.

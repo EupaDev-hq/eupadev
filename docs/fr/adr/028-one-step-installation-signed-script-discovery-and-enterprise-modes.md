@@ -99,15 +99,16 @@ modes.
   Keycloak, ADR-017 inchangé.
 - **Le mode découverte exécute une image de moteur publiée** : le
   workflow de publication du dépôt public
-  (`.github/workflows/release-engine-image.yml`, sur une étiquette `v*`
-  seulement, jamais sur un push, actions épinglées par empreinte selon
-  l'ADR-005, permissions `contents: read`, `packages: write`, `id-token:
-  write`) construit `orchestrator/Dockerfile`, pousse l'image vers
-  `ghcr.io/eupadev-hq/eupadev-engine`, relève son empreinte et la signe
-  sans clé avec cosign : l'identité est ce workflow à cette étiquette,
-  l'émetteur du certificat est le service de jetons de GitHub, la
-  signature va dans le journal de transparence public. Le fichier Compose
-  de découverte nomme l'image par son empreinte, et l'installateur lance
+  (`.github/workflows/release.yml`, sur une étiquette `v*` seulement,
+  jamais sur un push, actions épinglées par empreinte selon l'ADR-005 ;
+  son premier job, permissions `contents: read`, `packages: write`,
+  `id-token: write`) construit `orchestrator/Dockerfile`, pousse l'image
+  vers `ghcr.io/eupadev-hq/eupadev-engine`, relève son empreinte et la
+  signe sans clé avec cosign : l'identité est ce workflow à cette
+  étiquette, l'émetteur du certificat est le service de jetons de GitHub,
+  la signature va dans le journal de transparence public. Le second job
+  estampille cette empreinte dans le script qu'il signe, le fichier
+  Compose recevant le nom de l'image du script ; l'installateur lance
   `cosign verify` contre l'identité du workflow avant `docker compose
   up` ; une signature qui ne se vérifie pas arrête l'installation. Une
   seule identité à vérifier, pour le script et pour l'image. **Le mode

@@ -87,15 +87,16 @@ the release pipeline, that installs EupaDev in one of two modes.
   installation is thrown away by `uninstall`. Enterprise mode keeps
   Keycloak, ADR-017 unchanged.
 - **Discovery runs a published engine image**: the release workflow of
-  the public repository (`.github/workflows/release-engine-image.yml`,
-  on a `v*` tag only, never on a push, actions pinned by digest per
-  ADR-005, permissions `contents: read`, `packages: write`, `id-token:
+  the public repository (`.github/workflows/release.yml`, on a `v*` tag
+  only, never on a push, actions pinned by digest per ADR-005; its first
+  job, permissions `contents: read`, `packages: write`, `id-token:
   write`) builds `orchestrator/Dockerfile`, pushes the image to
   `ghcr.io/eupadev-hq/eupadev-engine`, records its digest and signs it
   keyless with cosign: the identity is that workflow at that tag, the
   certificate issuer is GitHub's token service, the signature goes to the
-  public transparency log. The discovery Compose file names the image by
-  digest, and the installer runs `cosign verify` against the workflow
+  public transparency log. The second job stamps that digest into the
+  script it signs, the Compose file receiving the image name from the
+  script; the installer runs `cosign verify` against the workflow
   identity before `docker compose up`; a signature that does not verify
   stops the installation. One identity to check, for the script and for
   the image. **Enterprise mode keeps building and signing its own

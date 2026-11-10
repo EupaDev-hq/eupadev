@@ -275,9 +275,20 @@ def variables(conf, env, slug, cycle, image, name, network, e=None):
     return v
 
 
-def migrate(conf, env, slug, cycle, image, name, network, e):
-    return launch([DOCKER, "compose", "-p", name, *compose_files(e), "run", "--rm", "migrate"],
+def compose_run(service, conf, env, slug, cycle, image, name, network, e):
+    """One-shot service of the core model (migrate, seed), same image as the tool."""
+    return launch([DOCKER, "compose", "-p", name, *compose_files(e), "run", "--rm", service],
                   env=variables(conf, env, slug, cycle, image, name, network, e), timeout=600)
+
+
+def migrate(conf, env, slug, cycle, image, name, network, e):
+    return compose_run("migrate", conf, env, slug, cycle, image, name, network, e)
+
+
+def seed(conf, env, slug, cycle, image, name, network, e):
+    """Demo data of the Preview (ADR-032): the tool's db/seed/demo.sql, applied by the platform's seed.mjs with the
+    owner account (same privileges as the migration, never the superuser of empty_db). Nothing to do without the file."""
+    return compose_run("seed", conf, env, slug, cycle, image, name, network, e)
 
 
 def empty_db(slug):
@@ -291,18 +302,21 @@ def empty_db(slug):
 
 def prepare_core(conf, env, slug, cycle, image, name, network, empty=False):
     """d5, before any traffic change: a core image needs its Gate 1 entry, then its migration runs once with the
-    same image (owner account), on an emptied database when `empty` (new digest on Preview). Returns (entry or None,
-    failure answer or None); on failure nothing else moved."""
+    same image (owner account), on an emptied database when `empty` (new digest on Preview), which then gets the
+    tool's demo data (ADR-032: seed only where the schema was just emptied, so never on Prod). Returns (entry or
+    None, failure answer or None); on failure nothing else moved."""
     if not is_core(image):
         return None, None
     e = entry(slug)
     create_network(env, network, core=True)
     if empty:
         empty_db(slug)
-    m = migrate(conf, env, slug, cycle, image, name, network, e)
-    if m.returncode != 0:
-        return e, {"digest": image.split("@", 1)[1], "url": f"https://{host(conf, env, slug)}", "health": "failed",
-                   "reason": ("migration failed: " + (m.stdout + m.stderr).strip())[-500:]}
+    steps = [("migration", migrate)] + ([("demo seed", seed)] if empty else [])
+    for step, run in steps:
+        r = run(conf, env, slug, cycle, image, name, network, e)
+        if r.returncode != 0:
+            return e, {"digest": image.split("@", 1)[1], "url": f"https://{host(conf, env, slug)}", "health": "failed",
+                       "reason": (f"{step} failed: " + (r.stdout + r.stderr).strip())[-500:]}
     return e, None
 
 

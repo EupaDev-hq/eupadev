@@ -435,7 +435,7 @@ class Core(unittest.TestCase):
         vm = FakeVM(core=True)
         self.assertEqual(self.execute(vm)["health"], "ok")
         calls = compose(vm)
-        self.assertEqual([(c[0], c[1]) for c in calls], [("run", "migrate"), ("up", None)])
+        self.assertEqual([(c[0], c[1]) for c in calls], [("run", "migrate"), ("run", "seed"), ("up", None)])
         for _, _, env, argv in calls:
             self.assertIn(deployer.CORE_MODEL, argv)
             self.assertEqual({k: env[k] for k in ("HOST", "ISSUER", "CLIENT", "TRUST_PROXY")},
@@ -473,6 +473,36 @@ class Core(unittest.TestCase):
         self.assertEqual(self.execute(vm)["health"], "ok")
         self.assertIn("compose", vm.commands())
         self.assertNotIn("exec", vm.commands())
+        self.assertEqual([(c[0], c[1]) for c in compose(vm)], [("run", "migrate"), ("up", None)])  # no seed: data kept
+
+    def test_new_digest_preview_seeded_after_migration(self):
+        self.register()
+        vm = FakeVM(containers=[container(image=f"{REG}/eupadev/leave@sha256:{'c' * 64}")], core=True)
+        self.assertEqual(self.execute(vm)["health"], "ok")
+        self.assertEqual([(c[0], c[1]) for c in compose(vm)], [("run", "migrate"), ("run", "seed"), ("up", None)])
+        seeded = next(c for c in compose(vm) if c[1] == "seed")
+        self.assertEqual((seeded[2]["IMAGE"], seeded[2]["TOOL"]), (IMAGE, "leave"))  # same image, same model
+        self.assertIn(deployer.CORE_MODEL, seeded[3])
+        emptied = next(i for i, (a, _) in enumerate(vm.calls) if a[1:3] == ["exec", deployer.DB])
+        self.assertLess(emptied, next(i for i, (a, _) in enumerate(vm.calls) if a[1:2] == ["compose"]))
+
+    def test_failed_seed_preview_intact(self):
+        self.register()
+        old = container(image=f"{REG}/eupadev/leave@sha256:{'c' * 64}")
+        vm = FakeVM(containers=[old], core=True)
+        real = vm.__call__
+        vm_failing = lambda argv, env=None, timeout=300: (  # noqa: E731
+            (vm.calls.append((argv, env)), subprocess.CompletedProcess(argv, 1, "", "demo.sql refused"))[1] if argv[-1] == "seed"
+            else real(argv, env, timeout))
+        vm_failing.calls = vm.calls
+        r = self.execute(vm_failing)
+        self.assertEqual((r["health"], r["digest"]), ("failed", f"sha256:{DIGEST}"))
+        self.assertIn("demo seed failed: demo.sql refused", r["reason"])
+        # Same path as a failed migration: no `up`, the old Preview keeps serving on its own rebuilt schema.
+        self.assertEqual([(c[0], c[1], c[2]["IMAGE"]) for c in compose(vm)],
+                         [("run", "migrate", IMAGE), ("run", "seed", IMAGE), ("run", "migrate", old["Config"]["Image"])])
+        self.assertNotIn("stop", vm.commands())
+        self.assertNotIn("rm", vm.commands())
 
     def test_failed_reset_nothing_started(self):
         self.register()
@@ -490,6 +520,7 @@ class Core(unittest.TestCase):
         core = CoreProd(FakeProd(served=IMAGE))
         self.assertEqual(self.execute(core, f"deploy prod leave 4 {IMAGE_B}", {**CONF_PROD, "issuer": "https://i"})["health"], "ok")
         self.assertIn("migrate", [a[-1] for a in core.calls])
+        self.assertNotIn("seed", [a[-1] for a in core.calls])  # demo data never reach Prod
         self.assertEqual([a for a in core.calls if a[1:3] == ["exec", deployer.DB]], [])
 
     def test_failed_migration_prod_old_serves(self):

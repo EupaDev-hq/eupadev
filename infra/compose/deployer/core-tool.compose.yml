@@ -11,6 +11,9 @@
 #           run once by `docker compose run --rm migrate` before any traffic;
 #   purge: node node_modules/@eupadev/core/bin/purge.js (purge account,
 #           RETENTION_* added by the script from the Gate 1 entry), Prod only;
+#   seed:  the platform's seed.mjs (owner account) applies the tool's
+#           db/seed/demo.sql, Preview only, right after the migration of a
+#           schema the script has just emptied (ADR-032);
 #   tool:  the image's own CMD, GET /health on port 3000 (needs the database).
 x-core: &core
   image: ${IMAGE:?}
@@ -63,6 +66,19 @@ services:
       DATABASE_URL_FILE: /run/secrets/db_purge
       DATABASE_CA_FILE: /run/secrets/db_ca
     secrets: [db_purge, db_ca]
+
+  # Demo data of the Preview (ADR-032): the platform's script, installed by
+  # Ansible and mounted read-only, with the image's own node, core and `pg`;
+  # same account as the migration, never the superuser that emptied the schema.
+  seed:
+    <<: *core
+    command: [node, /etc/eupadev/seed.mjs]
+    environment:
+      DATABASE_URL_FILE: /run/secrets/db_owner
+      DATABASE_CA_FILE: /run/secrets/db_ca
+    secrets: [db_owner, db_ca]
+    volumes:
+      - /etc/eupadev/seed.mjs:/etc/eupadev/seed.mjs:ro
 
 secrets:
   oidc:

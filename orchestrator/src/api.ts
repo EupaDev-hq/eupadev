@@ -47,9 +47,11 @@ import { buildStatic, cspPage, staticFile, serveStatic, type StaticFile } from '
 import { allowedIntents, INTENT_RATE, needsClick, RateLimiter, replyOf, revalidate, UNCLEAR, wordsReader, type Intent, type IntentReader } from './intent.ts';
 import { invisibleCharacter } from './text.ts';
 import { DBOS } from '@dbos-inc/dbos-sdk';
+import { LOOPBACK_HOSTS } from './config.ts';
 
-const HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
 const MAX_BODY = 64 * 1024;
+/** What `/health` says in discovery mode (ADR-028); the page says the same in the viewer's language (`discovery.notice`). */
+export const DISCOVERY_NOTICE = 'discovery mode, not for production';
 const KEY = /^"?([A-Za-z0-9._~:-]{1,200})"?$/;
 const GATES = new Set<string>(STATES.filter((e) => e.kind === 'gate').map((e) => e.id));
 
@@ -255,7 +257,7 @@ async function handleAuth(orch: Orchestrator, auth: Authenticator, web: WebSignI
 
 /** Loopback names plus the page's own name (`DASHBOARD_URL`, chat step 5); nothing else, ever. */
 function acceptedHosts(dashboardUrl: string): Set<string> {
-  const hosts = new Set(HOSTS);
+  const hosts = new Set(LOOPBACK_HOSTS);
   if (URL.canParse(dashboardUrl)) hosts.add(new URL(dashboardUrl).hostname.toLowerCase());
   return hosts;
 }
@@ -344,7 +346,8 @@ async function handle(orch: Orchestrator, auth: Authenticator, web: WebSignIn | 
     route('GET');
     const reason = await orch.health();
     if (reason !== null) throw new Problem(503, reason);
-    return respond(res, 200, { status: 'ok', pause_agents: orch.config.pauseAgents });
+    // ADR-028: the discovery notice is readable by a script too (the installer's CI job), not only on the page.
+    return respond(res, 200, { status: 'ok', pause_agents: orch.config.pauseAgents, ...(orch.config.discovery ? { discovery: true, notice: DISCOVERY_NOTICE } : {}) });
   }
   const actor = await authenticate(orch, auth, req);
   if (path === '/requests') {
@@ -400,7 +403,7 @@ interface Page { files: Map<string, StaticFile>; csp: string }
  */
 export function createApi(orch: Orchestrator, auth = new Authenticator(orch.config.oidc), reader: IntentReader = wordsReader): http.Server {
   const web = orch.config.oidcWeb === null ? null : new WebSignIn(orch.config.oidcWeb, orch.config.oidc.issuer);
-  const page: Page = { files: buildStatic(orch.config.webPath, orch.config.deepChatPath), csp: cspPage(new URL(orch.config.oidc.issuer).origin) };
+  const page: Page = { files: buildStatic(orch.config.webPath, orch.config.deepChatPath, orch.config.discovery), csp: cspPage(new URL(orch.config.oidc.issuer).origin) };
   const hosts = acceptedHosts(orch.config.dashboardUrl);
   const intents = { reader, limiter: new RateLimiter() };
   return http.createServer((req, res) => {

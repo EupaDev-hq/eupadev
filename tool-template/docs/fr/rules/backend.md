@@ -21,6 +21,15 @@ Les handlers et les données du builder. L'outil de référence (`api/`, `db/`) 
 - L'historique est en ajout seul et écrit par la base ; la suppression est
   logique (`deleted_at`) avec une restauration ; `db/purge.sql` efface ce que la conservation permet.
 - Les migrations sont des fichiers SQL numérotés sous `db/migrations/`.
+- `db/seed/demo.sql` : données de démonstration de la Preview seulement,
+  chargées par la plateforme après les migrations avec le compte
+  propriétaire ; aucun handler ni test unitaire ne s'appuie dessus. Le
+  préambule du jeu de référence (un acteur `machine` `demo-seed`,
+  `app.actor_id` et `app.request_id` posés localement), puis 10 à 20 lignes
+  par entité principale, chaque statut passé par les déclencheurs de
+  transition, des dates relatives à `now()`. INSERT et UPDATE seulement ;
+  personnes fictives (`@example.com`). La vérification de démarrage est rouge
+  si une table de l'outil n'a aucune ligne.
 
 ## Configuration
 - Les réglages propres à l'outil sont des variables d'environnement, aucune

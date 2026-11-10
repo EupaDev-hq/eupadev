@@ -128,10 +128,12 @@ const HARDENING = new Set<string>(['contract', ...CODE_ROLES, ...REVIEW_ROLES]);
  * failure the agents did not produce — a red check of the CI or of the Preview pipeline (`file = 'pipeline'`), a task that
  * failed without being capped or refused by the schema (launcher, engine, container), or a task `blocked` on an open
  * point (unclear request, cycle 5 of the lab). Once per situation: never when a `diagnosis` task was created since the
- * first hardening task of the round `since` (the first round counted since the last reset of the counters). `tasks` in
- * creation order, as `cycleTasks` returns them.
+ * first hardening task of the round `since` (the first round counted since the last reset of the counters); never for a
+ * round played before that reset (the gate that reset the counters already diagnosed it: a second diagnosis before the
+ * first round of the new scope would pay for the same situation twice). `tasks` in creation order, as `cycleTasks` returns them.
  */
 export function earlyDiagnosisDue(tasks: readonly Pick<Task, 'role' | 'iteration' | 'status' | 'report'>[], since: number, round: number, roundDeviations: readonly Pick<DeviationRow, 'rule' | 'file'>[]): boolean {
+  if (round < since) return false;
   const first = tasks.findIndex((t) => HARDENING.has(t.role) && t.iteration >= since);
   if (first >= 0 && tasks.slice(first).some((t) => t.role === 'diagnosis')) return false;
   if (roundDeviations.some((l) => l.file === 'pipeline')) return true;

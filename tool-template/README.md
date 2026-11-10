@@ -43,7 +43,7 @@ Gate 1. Add every variable of the tool's own to this section, mirrored in
 |---|---|---|
 | `openapi.yaml` | the contract: routes, roles, schemas; frozen after Scoping | contract |
 | `api/` | one handler per `operationId`; `api/lib/` for the tool's shared code | builder |
-| `db/` | versioned migrations (`db/migrations/`), purge (`db/purge.sql`) | builder |
+| `db/` | versioned migrations (`db/migrations/`), demo data of the Preview (`db/seed/demo.sql`), purge (`db/purge.sql`) | builder |
 | `web/` | pages, scripts, styles, no build step | builder |
 | `tests/unit/` | unit tests | the role that owns the code |
 | `tests/acceptance/` | Gherkin features, steps, security specs | contract (features), tests |

@@ -25,6 +25,22 @@ test('i18n: every key named by the code exists, the end of each final state incl
   for (const s of STATES.filter((e) => e.kind === 'end')) assert.ok(Object.hasOwn(DICTIONARIES.en, `end.${s.id}`), `end.${s.id}`);
 });
 
+test('i18n: mail subjects name the gate in plain words (every gate has a name) and each chat message notified to the requester has its own subject, URL and digest left to the body', () => {
+  const gates = STATES.filter((e) => e.kind === 'gate').map((e) => e.id);
+  for (const l of LANGUAGES) for (const g of gates) assert.ok(Object.hasOwn(DICTIONARIES[l], `gate.name.${g}`), `gate.name.${g} missing from lang/${l}.json`);
+  for (const k of ['mail.decision.subject', 'mail.decision.reminder.subject', 'mail.decision.weekly.subject']) assert.ok(!DICTIONARIES.en[k]!.includes('{state}'), `${k} still exposes the state id`);
+  assert.equal(text('en', 'mail.decision.subject', { gate: text('en', 'gate.name.gate_1'), tool: 'Equipment loans' }), 'Decision required — Gate 1: name and domain of the tool (Equipment loans)');
+  // The requester's subject is `<tool> — <subject of the message>`, never the message cut at 60 characters (a URL, a digest).
+  const workflow = readFileSync(new URL('../src/workflows/toolCycle.ts', import.meta.url), 'utf8');
+  const notified = [...workflow.matchAll(/notifyRequester\(c, \{ key: '([a-zA-Z0-9_.]+)'/g)].map((m) => m[1]!);
+  assert.ok(notified.length >= 6, `only ${notified.length} notified messages found: the scan is broken`);
+  for (const k of [...notified, 'chat.cycleEnd']) {
+    assert.ok(Object.hasOwn(DICTIONARIES.en, `${k}.subject`), `${k}.subject missing from lang/en.json`);
+    assert.ok(!/\{(url|digest)\}/.test(DICTIONARIES.en[`${k}.subject`]!), `${k}.subject carries a URL or a digest`);
+  }
+  assert.equal(text('en', 'mail.requester.subject', { tool: 'Equipment loans', summary: text('en', 'chat.mockupAvailable.subject') }), 'Equipment loans — Mock-up available');
+});
+
 test('i18n: values fill the placeholders; an unknown key is a bug', () => {
   assert.equal(text('en', 'mail.dashboardLink', { url: 'https://d/cycles/1' }), 'Dashboard: https://d/cycles/1');
   assert.equal(text('fr', 'mail.dashboardLink', { url: 'https://d/cycles/1' }), 'Tableau de bord : https://d/cycles/1');

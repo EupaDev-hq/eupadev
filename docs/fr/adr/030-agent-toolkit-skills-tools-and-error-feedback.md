@@ -1,73 +1,65 @@
 ---
 adr: 030
-title: Boîte à outils des agents, la vraie erreur d'une CI rouge donnée au tour suivant, Bash en lecture seule pour les rôles qui lisent, mots d'état refusés
-status: proposed
-date:
+title: La vraie erreur d'une CI rouge, l'extrait de journal de l'observateur, donnée au constructeur du tour suivant
+status: accepted
+date: 2026-11-10
 decision-makers: Ilan
 supersedes:
-related: [ADR-018, ADR-020, ADR-021, ADR-027]
-check: planned
+related: [ADR-018, ADR-021, ADR-027, ADR-033]
+check: in-place
 ---
 > Traduction de `docs/adr/030-agent-toolkit-skills-tools-and-error-feedback.md` ; la version anglaise fait foi.
 
 ## Contexte
 Chaque agent de rôle exécute Claude Code sans interface, `claude --bare
---restricted -p` (`orchestrator/src/external/claude-engine.ts`), avec
-`--tools` nommant ce qui existe : `Bash,Read,Edit` pour les rôles de code,
-`Bash,Read` pour les relecteurs (Bash réduit à l'ensemble en lecture seule
-de Claude Code sous `dontAsk`, ADR-020), `Read` seul pour `overlap` et
-`diagnosis` (`READ_TOOLS`). Ce qu'un rôle sait, ce sont ses consignes,
-lues dans l'image du moteur (ADR-018), et son fichier de tâche, `task.md`,
-avec les écarts du tour précédent.
+--restricted -p` (`orchestrator/src/external/claude-engine.ts`). Ce qu'un
+rôle sait, ce sont ses consignes, lues dans l'image du moteur (ADR-018),
+et son fichier de tâche, `task.md`, avec les écarts du tour précédent.
 
-Le cycle 9 du labo (2026-11-04) a montré trois manques. L'agent de contrat
-a écrit du YAML que le validateur strict du socle a refusé au démarrage de
-l'outil, dans le job `image` de la CI ; le tour de durcissement suivant a
-reçu l'écart `ci:image` et rien d'autre, parce que le moteur transforme un
-job rouge en `ci:<check>` et ne lit les détails d'un job que pour deux
-d'entre eux (échecs d'`acceptance`, SARIF d'`analysis` ; `toolCycle.ts`,
+Cycle 9 du labo (2026-11-04) : l'agent de contrat a écrit du YAML que le
+validateur strict du socle a refusé au démarrage de l'outil, dans le job
+`image` de la CI ; le tour de durcissement suivant a reçu l'écart
+`ci:image` et rien d'autre, parce que le moteur transforme un job rouge en
+`ci:<check>` et ne lit les détails d'un job que pour deux d'entre eux
+(échecs d'`acceptance`, SARIF d'`analysis` ; `toolCycle.ts`,
 `pipelineDeviations`) : le constructeur ne pouvait pas savoir quoi
-corriger. Depuis l'ADR-027, l'observateur de la forge garde la fin du
-journal de chaque job rouge (`logTail()` de `gitea-forge.ts` : les 40
-dernières lignes non vides, couleurs, horodatages et caractères de
-contrôle retirés, chacune coupée à 300 caractères, `LOG_TAIL`), rangée
-dans `pipeline_results.details.log_tail` et lue par le seul diagnostic ;
-le diagnostic, avec `Read` seul, ne peut pas faire `grep` dans le clone
-sur lequel on l'interroge. Et l'agent de cadrage a dit au demandeur que la
-maquette était « approuvée » quand le demandeur avait écrit « Mockup is
-good » et n'avait cliqué sur rien : le contrôle des mots refusés
-(`agent-engine/jargon.ts`, `jargon.words` de `lang/*.json`) attrape les
-mots techniques, pas les mots qui affirment un état du moteur, et rien
-d'autre dans le moteur ne le fait.
+corriger, et la virgule fautive a été trouvée au tour 17. Depuis
+l'ADR-027, l'observateur de la forge garde la fin du journal de chaque job
+rouge (`logTail()` de `gitea-forge.ts` : les 40 dernières lignes non
+vides, couleurs, horodatages et caractères de contrôle retirés, chacune
+coupée à 300 caractères, `LOG_TAIL`), rangée dans
+`pipeline_results.details.log_tail` et lue par le seul diagnostic. Un
+journal de job est un texte écrit par les dépendances et les contrôles de
+l'outil : il peut porter des secrets (identifiants de registre dans une
+URL, un jeton dans une ligne d'environnement) et des traces de pile
+d'`api/`, que le rôle tests ne doit jamais lire (ADR-021). Les deux autres
+manques montrés par le cycle 9, un diagnostic sans Bash et un agent de
+cadrage qui affirme un état du moteur, sont décidés dans l'ADR-033.
 
 ## Décision
-Trois petits changements, chacun réutilisant un mécanisme que le moteur a
-déjà.
-- **La vraie erreur d'une CI rouge va au tour suivant.** L'extrait de
-  journal que l'observateur range déjà pour chaque job rouge (ADR-027 :
-  `logTail()`, `details.log_tail`, 40 lignes de 300 caractères, une seule
-  règle, pas de seconde taille) est écrit dans le `task.md` du tour de
-  durcissement suivant, comme donnée, sous l'écart `ci:<check>` ou
-  `preview:<check>` auquel il appartient, pour les rôles de code de ce
-  tour. Rien de nouveau n'est récupéré ni rangé ; un contrôle sans extrait
-  se lit comme aujourd'hui.
-- **Bash en lecture seule pour chaque rôle qui lit.** `READ_TOOLS`
-  disparaît : `overlap` et `diagnosis` reçoivent la liste des relecteurs,
-  `Bash,Read` sans permission (ADR-020 : Bash réduit à l'ensemble en
-  lecture seule, écritures refusées par le harnais et jetées par le
-  lanceur). Le diagnostic peut faire `grep` dans le contrat et `git log`
-  dans son clone au lieu de deviner ; `overlap` tourne dans un dossier
-  vide et n'y gagne qu'une liste de moins.
-- **Les mots d'état appartiennent au moteur.** Une seconde liste de mots
-  refusés, `state.words` dans `lang/*.json` (approuvé, validé, accepté,
-  envoyé, déployé, fusionné, publié, et leurs formes anglaises), vérifiée
-  par le même mécanisme de mot entier que `jargon.words` sur chaque texte
-  qu'un agent écrit pour le demandeur (`requester_message` du rôle de
-  cadrage) ; une correspondance fait échouer la tâche avec le mot pour
-  raison, comme un mot de jargon, et les compteurs d'échec du cadrage la
-  comptent. Les consignes disent quoi écrire à la place : ce que le
-  demandeur peut faire ensuite (le bouton, le lien), jamais ce que le
-  moteur a fait.
+Donner au constructeur du tour de durcissement suivant l'extrait de
+journal que l'observateur range déjà pour chaque job rouge, comme donnée,
+sous les écarts que ce job a produits.
+- **Un seul extrait, celui de l'observateur** (ADR-027 : `logTail()`,
+  `details.log_tail`, 40 lignes de 300 caractères, une seule règle, pas de
+  seconde taille) : rien de nouveau n'est récupéré ni rangé ; un contrôle
+  rouge sans extrait se lit comme aujourd'hui, l'écart seul.
+- **Le constructeur seul** (ADR-021 : le rôle tests ne lit jamais le code,
+  et un journal de job porte des traces de pile d'`api/`) ; les contrôles
+  rouges du dernier tour seulement, chaque entrée nommant le contrôle et
+  les écarts qu'il a produits (`ci:<check>`, `ci:<check>:<test>`,
+  `ci:opengrep:<id>`, `preview:<check>`, la correspondance de l'évaluation
+  elle-même).
+- **Les secrets masqués avant toute écriture**
+  (`hardening/log-feedback.ts`) : identifiants dans une URL, jetons bearer,
+  la valeur de tout nom ressemblant à token/password/secret/key en forme
+  `=`, `:` ou JSON, blocs de clé privée.
+- **Plafonné** : le champ `ci_logs` entier d'une tâche à 20 Ko de JSON, les
+  lignes les plus anciennes retirées d'abord et marquées `truncated` ; un
+  plafond sur le champ de la tâche, pas une seconde taille d'extrait.
+- **Écrit comme donnée** dans le bloc JSON de `task.md` ; une clôture de
+  bloc (trois accents graves) dans une ligne de journal est neutralisée
+  d'abord.
 
 ## Alternatives rejetées
 - Une seconde taille pour l'extrait donné au constructeur (80 lignes,
@@ -80,53 +72,33 @@ déjà.
   lit en premier de toute façon.
 - Laisser l'agent récupérer le journal sur la forge — les conteneurs
   d'agents ne peuvent pas atteindre la forge, à dessein (ADR-016).
-- Un modèle qui juge si un message affirme un état du moteur — payant et
-  non reproductible ; une liste de mots est un changement relu et un test
-  unitaire, comme `jargon.words`.
-- Reporté, **les compétences de rôle** (fichiers Markdown de savoir-faire
-  dans l'image du moteur, lus à la demande, ou chargés nativement par
-  `Skill`) — le chargement natif n'est pas testé sous `--bare
-  --restricted` (que `Skill` survive à `--restricted` et à `--tools` n'est
-  pas documenté), et une lecture explicite depuis `/tmp/task` est un
-  second chemin non testé ; à décider après un essai dans la CI de l'image
-  des agents, dans son propre ADR.
-- Reporté, **un banc d'évaluation des agents** rejouant de vraies archives
-  de tâches à la main et noté par du code — à fusionner plus tard avec les
-  cas de non-régression du diagnostic que l'ADR-027 ajoute par cycle
-  bloqué, pour qu'un seul banc tienne les deux.
-- Abandonner `--bare` pour que les compétences et CLAUDE.md soient
-  découverts — la découverte lirait le clone de l'outil, qu'un agent
-  écrit ; `--bare --restricted` est la cage que l'ADR-018 a mesurée.
+- Donner l'extrait à tous les rôles de code — le rôle tests lirait les
+  traces de pile du code, que l'ADR-021 lui interdit.
 
 ## Conséquences
 Une CI rouge dit au tour suivant ce qui a échoué, avec le texte que le
-diagnostic lit déjà ; le diagnostic lit le clone au lieu de deviner ; un
-demandeur lit ce qu'il peut faire, jamais un état que le moteur n'a pas
-atteint. Le coût : quelques centaines de jetons d'entrée par extrait dans
-la tâche d'un constructeur ; deux listes d'outils au lieu de trois ; une
-nouvelle liste de mots à tenir en deux langues, avec les faux refus d'un
-mot employé innocemment (une tâche de cadrage renvoyée une fois avec le
-mot pour raison). Limites acceptées : un extrait de journal est un texte
-que l'agent lit comme donnée et peut encore mal lire ; la liste des mots
-d'état attrape les mots qu'elle connaît ; le manque de connaissance de
-l'agent de contrat (du YAML que le validateur strict refuse) n'est pas
-comblé par cet ADR.
+diagnostic lit déjà. Le coût : quelques centaines de jetons d'entrée par
+extrait dans la tâche d'un constructeur, et une liste de masquage à
+tenir. Limites acceptées : un extrait de journal est un texte que l'agent
+lit comme donnée et peut encore mal lire ; le masquage attrape les formes
+qu'il connaît ; le manque de connaissance de l'agent de contrat (du YAML
+que le validateur strict refuse) n'est pas comblé par cet ADR.
 
 ## Vérification
-La CI du moteur vérifiera : par `tests/claude-engine.test.ts`, que
-`roleOptions` renvoie `Bash,Read` sans permission pour `overlap`,
-`diagnosis` et les relecteurs et `Bash,Read,Edit` pour les rôles de code ;
-par les scénarios Gherkin de
-`orchestrator/features/hardening-review.feature`, avec le moteur factice,
-que le tour qui suit un job `image` rouge a l'extrait de journal de
-l'observateur sous `ci:image` dans le `task.md` du constructeur, borné
-comme le dit `LOG_TAIL`, et qu'un job rouge sans extrait laisse l'écart
-tel quel ; par `orchestrator/features/scoping.feature`, qu'un
-`requester_message` contenant « approved » renvoie la tâche de cadrage
-avec ce mot pour raison et compte dans les échecs du cadrage ; par
-`tests/a-r6.test.ts`, la liste des mots d'état dans les deux langues ; par
-`tests/mutations/mutations.ts`, une mutation tuée par chacun de ces tests.
-La CI de l'image des agents (`images/agent/check`) rejouera la ligne de
-commande générée avec les deux listes d'outils. Non vérifiable
-mécaniquement : le choix des mots d'état, et si un constructeur lit bien
-l'extrait.
+La CI du moteur (`.github/workflows/engine.yml`) vérifie : par le
+scénario « ADR-030 » de `orchestrator/features/hardening-review.feature`,
+avec le moteur factice, que le tour qui suit un job `image` rouge a
+l'extrait de journal de l'observateur sous `ci:image` dans le `task.md`
+du constructeur, masqué (identifiants d'URL, jeton bearer, variable
+d'allure secrète), jamais dans la tâche du rôle tests, et qu'un job rouge
+sans extrait (`lint`) n'a pas d'entrée ; par `tests/log-feedback.test.ts`,
+le masquage (identifiants d'URL, jetons bearer, clés d'allure secrète en
+forme `=`, `:` et JSON, blocs de clé privée ; lignes ordinaires intactes),
+la clôture de bloc neutralisée, et le plafond (les lignes les plus
+anciennes du contrôle le plus ancien d'abord, `truncated`, le contrôle le
+plus récent garde son extrait) ; par `tests/mutations/mutations.ts`,
+quatre mutations tuées par ces tests (extrait retenu, extrait donné au
+rôle tests, pas de masquage, pas de plafond). La borne de l'extrait
+lui-même est celle de l'observateur et se vérifie avec l'ADR-027. Non
+vérifiable mécaniquement : si un constructeur lit bien l'extrait, et un
+secret d'une forme que le masquage ne connaît pas.

@@ -104,7 +104,7 @@ function viewError(e) {
 /** The signed-in person (`GET /requests`): their hats decide what the page offers (the admin's gates). */
 let me = { roles: [] };
 const isAdmin = () => me.roles.includes('admin');
-/** The left column: "New request", for an admin the requests waiting at a gate, then my requests (the open one marked as the current page). */
+/** The left column: "New request", for an admin the requests waiting at a gate, then my requests — all of them for an admin (`GET /requests`), titled so (the open one marked as the current page). */
 function renderSide(requests, currentId) {
   const nav = document.getElementById('requests');
   const link = (r) => el('a', { href: `/cycles/${r.cycle_id}`, ...(r.cycle_id === currentId ? { 'aria-current': 'page' } : {}) }, [
@@ -116,7 +116,7 @@ function renderSide(requests, currentId) {
   nav.replaceChildren(
     el('a', { href: '/', class: 'new', text: t['new.title'], ...(currentId === undefined ? { 'aria-current': 'page' } : {}) }),
     ...(waiting === null ? [] : [el('h2', { text: t['list.waiting'] }), ...(waiting.length > 0 ? waiting.map(link) : [el('p', { class: 'empty', text: t['list.nothingWaiting'] })])]),
-    el('h2', { text: t['list.title'] }),
+    el('h2', { text: t[isAdmin() ? 'list.all' : 'list.title'] }),
     ...(links.length > 0 ? links : [el('p', { class: 'empty', text: t['list.empty'] })]),
   );
   nav.hidden = false;
@@ -424,15 +424,16 @@ async function viewConversation(id) {
     const card = el('section', { class: 'card decision', 'aria-label': t['gate.title'] }, [
       el('h2', { text: t[`gate.${gate}`] ?? t['state.gate'] }),
       ...(state.gate_reason ? [el('p', { class: 'reason', text: state.gate_reason })] : []),
-      ...(gate === 'gate_2' && state.candidate_digest ? [el('p', { text: `${t['gate.digest']} ` }, [el('code', { text: state.candidate_digest.slice(0, 12), title: state.candidate_digest })])] : []),
+      ...(gate === 'gate_2' && state.candidate_digest ? [el('p', { text: `${t['gate.digest']} ` }, [el('code', { text: `${state.candidate_digest.slice(0, 19)}…`, title: state.candidate_digest })])] : []),
       el('label', { for: comment.id }, [el('span', { text: t[gate === 'gate_1' ? 'gate.comment.gate_1' : 'gate.comment'] }), comment]),
     ]);
     const topUp = el('input', { id: 'decision-top-up', type: 'number', min: '0', step: '1', inputmode: 'decimal' });
     if (TOP_UP_GATES.has(gate)) card.append(el('label', { for: topUp.id }, [el('span', { text: t['gate.topUp'] }), topUp]));
     // Gate 1: the admin may rename the tool with a correction (new name and/or new address); the engine refuses them elsewhere.
+    // Folded by default (native <details>), like the registration: the requester's need and the buttons stay on screen.
     const newName = el('input', { id: 'decision-name', type: 'text', maxlength: '200', placeholder: state.name });
     const newSlug = el('input', { id: 'decision-slug', type: 'text', maxlength: '63', pattern: '[a-z0-9]+(-[a-z0-9]+)*', autocapitalize: 'off', spellcheck: 'false', placeholder: state.slug });
-    if (gate === 'gate_1') card.append(el('label', { for: newName.id }, [el('span', { text: t['gate.rename.name'] }), newName]), el('label', { for: newSlug.id }, [el('span', { text: t['gate.rename.slug'] }), newSlug]));
+    if (gate === 'gate_1') card.append(el('details', { class: 'rename' }, [el('summary', { text: t['gate.rename.title'] }), el('label', { for: newName.id }, [el('span', { text: t['gate.rename.name'] }), newName]), el('label', { for: newSlug.id }, [el('span', { text: t['gate.rename.slug'] }), newSlug])]));
     if (gate === 'gate_1' && state.registration) card.append(registrationBlock(state.slug, state.registration));
     const decide = (outcome) => () => {
       const c = comment.value.trim();
