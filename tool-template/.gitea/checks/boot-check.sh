@@ -3,8 +3,9 @@
 # deployer runs it (ADR-022) — read-only root, tmpfs /tmp, no capability,
 # no-new-privileges, uid 1000 — against a throwaway PostgreSQL 18.6: the
 # core's roles (sql/roles.sql of the image's core), the migration by the
-# SAME image (bin/migrate.js, owner account), then the web process (app
-# account), which must answer 200 on /health (it reads the database) and on /
+# SAME image (bin/migrate.js, owner account), the demo seed of a tool with
+# migrations (db/seed/demo.sql, owner account, ADR-032), then the web process
+# (app account), which must answer 200 on /health (it reads the database) and on /
 # (web/index.html, the page the Preview's accessibility check reads).
 # The identity provider is a stub serving only the discovery document (the
 # core reads it at start); sign-in is not exercised here.
@@ -21,6 +22,7 @@ POSTURE="--read-only --tmpfs /tmp:uid=1000,gid=1000,mode=0700 --cap-drop ALL --s
 cleanup() {
   docker rm -f "$N-db" "$N-oidc" "$N-tool" > /dev/null 2>&1 || true
   docker network rm "$N" > /dev/null 2>&1 || true
+  [ -z "${SEED:-}" ] || rm -f "$SEED"
 }
 trap cleanup EXIT
 
@@ -46,6 +48,42 @@ echo "== migration (same image, owner account)"
 # shellcheck disable=SC2086
 docker run --rm --network "$N" $POSTURE -e DATABASE_URL=postgres://tool_owner:boot-owner@db:5432/tool -e DATABASE_TLS=off \
   "$IMAGE" node node_modules/@eupadev/core/bin/migrate.js
+
+# Demo data of the Preview (ADR-032): a tool with migrations ships db/seed/demo.sql,
+# applied here as the deployer will (owner account, one transaction, DML only);
+# afterwards every table of the tool holds at least one row.
+echo "== demo seed (db/seed/demo.sql, owner account)"
+SEED="$(mktemp)"
+if docker run --rm --network none --entrypoint sh "$IMAGE" -c 'ls -A db/migrations 2> /dev/null | grep -q .'; then
+  if ! docker run --rm --network none --entrypoint cat "$IMAGE" db/seed/demo.sql > "$SEED" 2> /dev/null; then
+    echo "demo seed missing: a tool with migrations ships db/seed/demo.sql (demo data of the Preview, ADR-032)."
+    exit 1
+  fi
+  # Same refusal as the platform's seed step (infra, roles/deployer/files/seed.mjs):
+  # comments and quoted texts set aside, INSERT and UPDATE only.
+  # shellcheck disable=SC2086
+  docker run --rm -i --network none $POSTURE --entrypoint node "$IMAGE" -e '
+    const code = require("fs").readFileSync(0, "utf8").replace(/--[^\n]*|\/\*[\s\S]*?\*\/|\x27(?:[^\x27]|\x27\x27)*\x27/g, "");
+    const m = code.match(/\\|\$[A-Za-z_]*\$|\b(CREATE|ALTER|DROP|GRANT|REVOKE|TRUNCATE|DELETE|MERGE|COPY|DO)\b/i);
+    if (m) { console.log(`demo seed refused: "${m[0]}" in db/seed/demo.sql (INSERT and UPDATE only; schema changes belong in db/migrations, deletions never)`); process.exit(1); }' < "$SEED"
+  docker exec -i "$N-db" psql -q -o /dev/null -v ON_ERROR_STOP=1 --single-transaction -U tool_owner -d tool -f - < "$SEED"
+  # The tool's own tables: schema app less the core's (CREATE TABLE of the image's core migrations), the two
+  # migration ledgers and the *_history tables.
+  CORE_TABLES="$(docker run --rm --network none --entrypoint sh "$IMAGE" -c 'cat node_modules/@eupadev/core/migrations/*.sql' \
+    | sed -n "s/^CREATE TABLE \([a-z_]*\).*/'\1',/p" | tr -d '\n')"
+  EMPTY="$(docker exec "$N-db" psql -qtA -v ON_ERROR_STOP=1 -U postgres -d tool -c "
+    SELECT string_agg(table_name, ', ' ORDER BY table_name) FROM information_schema.tables
+    WHERE table_schema = 'app' AND table_type = 'BASE TABLE' AND table_name NOT LIKE '%\_history'
+      AND table_name NOT IN (${CORE_TABLES} 'core_migrations', 'pgmigrations')
+      AND (xpath('/row/n/text()', query_to_xml(format('SELECT count(*) AS n FROM app.%I', table_name), false, true, '')))[1]::text = '0'")"
+  if [ -n "$EMPTY" ]; then
+    echo "demo seed leaves tables without a row: $EMPTY (10 to 20 rows per entity, ADR-032)."
+    exit 1
+  fi
+  echo "demo seed applied; every table of the tool holds a row."
+else
+  echo "no migrations: no demo seed expected."
+fi
 
 echo "== web process (image's own command, app account)"
 # shellcheck disable=SC2086

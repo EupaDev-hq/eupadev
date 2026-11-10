@@ -391,6 +391,11 @@ test('the admin decides from the page: "Waiting for you", the decision card, a c
     const card = p.getByRole('region', { name: 'Your decision' });
     await card.getByRole('heading', { name: 'Gate 1: name and domain of the tool' }).waitFor({ timeout: 15_000 });
     await card.getByRole('button', { name: 'Refuse' }).waitFor({ timeout: 5_000 });
+    // The admin's list is every request (`GET /requests`), titled so; the rename fields are folded until asked for.
+    await p.getByRole('heading', { name: 'All requests' }).waitFor({ timeout: 5_000 });
+    assert.equal(await p.getByRole('heading', { name: 'My requests' }).count(), 0);
+    assert.equal(await card.locator('details.rename[open]').count(), 0, 'rename folded by default');
+    assert.ok(!(await card.getByLabel('New name of the tool', { exact: false }).isVisible()));
     assert.equal(await p.locator('.opinions button').count(), 5, 'approve, correction, scope change, refuse, copy the entry; no abandon for the admin');
     assert.equal(await card.locator('#decision-top-up').count(), 0, 'no budget top-up at Gate 1 (no envelope in the delivery phase)');
     await collect(p);
@@ -430,6 +435,7 @@ test('the admin decides from the page: "Waiting for you", the decision card, a c
     await card.getByRole('alert').getByText('Write a comment, then click again.').waitFor({ timeout: 5_000 });
     assert.deepEqual(sent, []);
     // Gate 1 only: a new name and a new address go out with a correction (the engine's answer is simulated: the cycle stays here).
+    await card.locator('details.rename summary').click();
     await card.getByLabel('New name of the tool', { exact: false }).fill('Key Loans');
     await card.getByLabel('New address', { exact: false }).fill('Key Loans');
     await card.getByLabel('Short description of the tool for the catalogue', { exact: false }).fill('Fix the name');
@@ -511,8 +517,9 @@ test('Preview: a text asks "wrong, new or fine?", a few words of acceptance are 
     await p.getByRole('link', { name: 'Sign in' }).click();
     const card = p.getByRole('region', { name: 'Your decision' });
     await card.getByRole('heading', { name: 'Gate 2: go to production' }).waitFor({ timeout: 15_000 });
-    // The short digest is shown, the full one sent.
-    await card.locator('code', { hasText: digest!.slice(0, 12) }).waitFor({ timeout: 5_000 });
+    // The short digest is shown (sha256: and 12 hexadecimal digits, the full one in the title), the full one sent.
+    await card.locator('code', { hasText: `${digest!.slice(0, 19)}…` }).waitFor({ timeout: 5_000 });
+    assert.equal(await card.locator('code').first().getAttribute('title'), digest);
     // Irreversible (a refusal read by the reader, simulated here): what was understood, one button, nothing posted before the click.
     await p.route('**/intent', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ cycle_id: cycle, state: 'gate_2', hat: 'admin', allowed: ['approved', 'correction', 'refused'], intent: 'refused', needs_click: true, fallback: false }) }));
     await type(p, 'no way, refuse it');

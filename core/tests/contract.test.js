@@ -8,6 +8,8 @@ import { parse } from 'yaml';
 import { connection } from '../bin/migrate.js';
 import { ContractError, parseContract, loadHandlers, dbConfigFromEnv, start } from '../src/index.js';
 import { EXAMPLE } from './helpers/server.js';
+import { SCHEMA_KEYWORDS } from '../src/contract-lint.js';
+import { ajvBody } from '../src/validation.js';
 
 const text = readFileSync(`${EXAMPLE}openapi.yaml`, 'utf8');
 /** @param {(doc: any) => void} [mutation] */
@@ -41,6 +43,10 @@ describe('the example contract', () => {
     assert.deepEqual([...(c.operations[3]?.responses ?? [])], [[204, null]]);
     assert.equal(c.operations[0]?.responses.get(200)?.properties.items.items.properties.id.format, 'uuid', 'nested $ref dereferenced');
   });
+});
+
+test('the linter knows exactly the keywords of the core\'s Ajv', () => {
+  assert.deepEqual([...SCHEMA_KEYWORDS].sort(), Object.keys(ajvBody.RULES.keywords).sort());
 });
 
 describe('the linter refuses', () => {
@@ -84,6 +90,8 @@ describe('the linter refuses', () => {
     refuse((d) => { d.components.schemas.NewItem.properties.note = { type: 'object', properties: { a: { type: 'string', maxLength: 1 } } }; }, /note: object without additionalProperties/);
     refuse((d) => { delete d.components.schemas.NewItem.properties.name.maxLength; }, /name: string without maxLength/);
     refuse((d) => { d.components.schemas.NewItem.properties.tags = { type: 'array', items: { type: 'string', maxLength: 1 } }; }, /tags: array without maxItems/);
+    // Cycle 9: an unquoted comma in a YAML flow mapping became a stray key, refused by Ajv only at start.
+    refuse((d) => { d.components.schemas.NewItem.properties.note = parse('{ type: string, maxLength: 10, description: Pick-up date, first day }'); }, /note: unknown keyword "first day"/);
     refuse((d) => { d.components.schemas.NewItem.properties.name.pattern = '^(a+)+$'; }, /pattern/);
     refuse((d) => { d.components.schemas.NewItem.properties.name.pattern = '^(a)\\1$'; }, /pattern/);
     refuse((d) => { d.components.schemas.NewItem.patternProperties = {}; }, /patternProperties/);

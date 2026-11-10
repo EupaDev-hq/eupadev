@@ -11,12 +11,14 @@
 <script src="__DEEP_CHAT__" type="module"></script>
 <script src="/app.js" type="module"></script>
 </head>
-<body>
+<!-- data-discovery: filled by the engine at startup (static.ts), "1" in discovery mode: the notice below is then shown (app.css). -->
+<body data-discovery="__DISCOVERY__">
 <aside class="side">
   <a href="/" class="brand" data-i18n="app.title">EupaDev</a>
   <nav id="requests" class="requests" hidden></nav>
 </aside>
 <div class="column">
+  <p class="discovery" role="status" data-i18n="discovery.notice">Discovery mode: made-up agents, this machine only, not for production.</p>
   <header class="top">
     <span id="account" class="account"></span>
     <label><span class="sr-only" data-i18n="lang.label">Language</span>
@@ -28,7 +30,8 @@
     <form method="post" action="/auth/logout" id="logout" hidden><button type="submit" data-i18n="auth.logout">Sign out</button></form>
   </header>
   <main id="main" class="main"></main>
-  <footer class="notice"><p data-i18n="ai.notice"></p></footer>
+  <!-- One of the two, by data-discovery (app.css): the AI notice, or in discovery mode "made-up agents, nothing leaves this machine". -->
+  <footer class="notice"><p class="ai" data-i18n="ai.notice"></p><p class="made-up" data-i18n="discovery.footer"></p></footer>
 </div>
 </body>
 </html>

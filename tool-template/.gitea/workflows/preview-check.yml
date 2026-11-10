@@ -90,11 +90,14 @@ jobs:
               # actions to that navigation on a slow first start. It opens the server
               # sign-in redirect itself, signs in as the first Preview persona and audits
               # the tool once back on its home.
+              # Ignored rule NoSuchID: a hash-route link (href="#/requests/new", the
+              # menu of the example tool) points to no id by design; only skip links, which
+              # the tools do not use, lose that check.
               node -e "
                 const p = JSON.parse(process.env.PREVIEW_PERSONAS || \"[]\")[0];
                 const actions = p ? [\"wait for element #username to be visible\", \"set field #username to \" + p.name, \"set field #password to \" + p.password, \"click element #kc-login\", \"wait for path to be /\"] : [];
-                require(\"fs\").writeFileSync(\"/tmp/pa11y.json\", JSON.stringify({ defaults: { chromeLaunchConfig: { executablePath: \"/usr/bin/chromium\", args: [\"--no-sandbox\"] }, timeout: 60000 }, urls: [{ url: process.argv[1] + (p ? \"/auth/login?next=%2F\" : \"\"), actions }] }), { mode: 0o600 })" "$PREVIEW_URL"
-              npx --yes pa11y-ci --config /tmp/pa11y.json'
+                require(\"fs\").writeFileSync(\"/tmp/pa11y.json\", JSON.stringify({ defaults: { ignore: [\"WCAG2AA.Principle2.Guideline2_4.2_4_1.G1,G123,G124.NoSuchID\"], chromeLaunchConfig: { executablePath: \"/usr/bin/chromium\", args: [\"--no-sandbox\"] }, timeout: 60000 }, urls: [{ url: process.argv[1] + (p ? \"/auth/login?next=%2F\" : \"\"), actions }] }), { mode: 0o600 })" "$PREVIEW_URL"
+              npx --yes pa11y-ci@5.0.0 --config /tmp/pa11y.json'
 
   # ZAP and the acceptance suite hammer the Preview (sign-ins, rate limits): they start once
   # the read-only controls are done, so a 429 never lands in pa11y's or k6's page.

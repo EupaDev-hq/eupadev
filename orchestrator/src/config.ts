@@ -99,6 +99,12 @@ export interface Config {
    * from the agents queue (DBOS: `agent-tasks` removed from `listenQueues`); the cycles go on (messages, gates) and the tasks stay queued.
    */
   pauseAgents: boolean;
+  /**
+   * Discovery mode (ADR-028): `EUPADEV_DISCOVERY=1` on the one-machine installation with made-up agents. The page and
+   * `/health` carry a visible "discovery mode, not for production" notice, and startup refuses a `DASHBOARD_URL` that is
+   * not a loopback name or an `API_ADDRESS` that is neither loopback nor the unspecified address of a container.
+   */
+  discovery: boolean;
   /** Local API (§8.16 M8): listen address (127.0.0.1 by default; 0.0.0.0 in a container whose port is published on 127.0.0.1) and port. */
   api: { address: string; port: number };
   /** Role of the process (`EUPADEV_ROLE`): see `ROLES`. */
@@ -138,6 +144,14 @@ export type ProcessRole = (typeof ROLES)[number];
 export const EXECUTOR_VMID = 'agent-executor';
 
 const REQUIRED = ['ADMIN_ESCALATION_ADDRESS', 'TOOL_DOMAIN', 'DASHBOARD_URL'] as const;
+
+/** Loopback names as a browser writes them in `Host` and as `DASHBOARD_URL` names them (ADR-024 host check, ADR-028 discovery). */
+export const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(['localhost', '127.0.0.1', '[::1]']);
+/**
+ * Listen addresses allowed in discovery mode: loopback, or the unspecified address, which in a container is the only way
+ * to receive a port Compose publishes on 127.0.0.1 of the machine (the `Host` check keeps the page on its loopback name).
+ */
+const DISCOVERY_API_ADDRESSES: ReadonlySet<string> = new Set(['127.0.0.1', 'localhost', '::1', '0.0.0.0', '::']);
 
 /**
  * Secret (ROADMAP §8.16 M1): read either from `NAME` or from the file named by `NAME_FILE` (Compose secret decrypted by
@@ -218,6 +232,14 @@ export function readConfig(env: Record<string, string | undefined> = process.env
     oidcWeb = { clientId: webClientId, clientSecret: readSecret(env, 'OIDC_WEB_CLIENT_SECRET'), redirectUrl, tokenUrl: oidc.jwksUrl.replace(/certs$/, 'token') };
   }
   const timeout = (key: Exclude<keyof Timeouts, 'task_ms'>, variable: string) => integer(variable, env[variable], DEFAULT_TIMEOUTS[key], TIMERS.has(key) ? MAX_TIMEOUT_MS : undefined);
+  const apiAddress = env['API_ADDRESS'] || '127.0.0.1';
+  const discovery = flag('EUPADEV_DISCOVERY', env['EUPADEV_DISCOVERY']);
+  if (discovery) {
+    // ADR-028: discovery mode lives on one machine; a domain or a public address is refused at startup, not documented away.
+    const page = env['DASHBOARD_URL']!;
+    if (!URL.canParse(page) || !LOOPBACK_HOSTS.has(new URL(page).hostname.toLowerCase())) throw new Error(`DASHBOARD_URL: a loopback URL (${[...LOOPBACK_HOSTS].join(', ')}) is expected in discovery mode (EUPADEV_DISCOVERY=1)`);
+    if (!DISCOVERY_API_ADDRESSES.has(apiAddress.toLowerCase())) throw new Error(`API_ADDRESS: a loopback address (or 0.0.0.0 in a container whose port is published on 127.0.0.1) is expected in discovery mode (EUPADEV_DISCOVERY=1)`);
+  }
   return {
     databaseUrl,
     adminEscalationAddress: env['ADMIN_ESCALATION_ADDRESS']!,
@@ -248,7 +270,8 @@ export function readConfig(env: Record<string, string | undefined> = process.env
     thresholds: DEFAULT_THRESHOLDS,
     models: MODELS_BY_ROLE,
     pauseAgents: flag('PAUSE_AGENTS', env['PAUSE_AGENTS']),
-    api: { address: env['API_ADDRESS'] || '127.0.0.1', port: integer('API_PORT', env['API_PORT'], 8080, 65_535) },
+    discovery,
+    api: { address: apiAddress, port: integer('API_PORT', env['API_PORT'], 8080, 65_535) },
     role,
     language,
     oidc,

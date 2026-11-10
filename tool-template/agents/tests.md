@@ -31,6 +31,10 @@ Playwright configuration, and the security specs the test rules give to you.
   wrong: `blocked`.
 - Import the kit from `@eupadev/core/kit`; a helper it lacks goes under
   `tests/acceptance/` and into `assumptions`.
+- Never delete or reset data on the Preview: no teardown, no cleanup fixture.
+  The rows your scenarios create stay; the Preview also holds demo data
+  (`db/seed/demo.sql`, not yours to read). Assert on the rows you created,
+  never on an empty list or a total.
 
 ## Done when
 Every scenario has runnable steps, every applicable security spec exists, `bddgen` passes.

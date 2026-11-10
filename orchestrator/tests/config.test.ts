@@ -65,6 +65,20 @@ test('local API and pause of the agents: safe defaults, checked values', () => {
   assert.throws(() => readConfig({ ...OTHERS, ORCH_DATABASE_URL: VALUE, API_PORT: '70000' }), /API_PORT invalid/);
 });
 
+test('ADR-028: discovery mode is off by default; on, it refuses a page URL off the loopback and a listen address beyond loopback or 0.0.0.0', () => {
+  const base = { ...OTHERS, ORCH_DATABASE_URL: VALUE };
+  assert.equal(readConfig(base).discovery, false);
+  const local = { ...base, EUPADEV_DISCOVERY: '1', DASHBOARD_URL: 'http://localhost:8080' };
+  assert.equal(readConfig(local).discovery, true);
+  for (const url of ['http://127.0.0.1:8080', 'http://[::1]:8080', 'http://LOCALHOST']) assert.equal(readConfig({ ...local, DASHBOARD_URL: url }).discovery, true);
+  for (const url of ['https://t.example.test', 'http://10.42.0.12:8080', 'http://eupadev.local', 'localhost:8080']) assert.throws(() => readConfig({ ...local, DASHBOARD_URL: url }), /DASHBOARD_URL: a loopback URL/, url);
+  for (const address of ['0.0.0.0', '::', '::1', 'localhost']) assert.equal(readConfig({ ...local, API_ADDRESS: address }).api.address, address);
+  assert.throws(() => readConfig({ ...local, API_ADDRESS: '10.42.0.12' }), /API_ADDRESS: a loopback address/);
+  assert.throws(() => readConfig({ ...base, EUPADEV_DISCOVERY: 'yes' }), /EUPADEV_DISCOVERY invalid/);
+  // Not in discovery mode: a public page URL and address stay allowed (the lab, a company).
+  assert.equal(readConfig({ ...base, API_ADDRESS: '0.0.0.0' }).api.address, '0.0.0.0');
+});
+
 test('role of the process: all-in-one by default, checked value, executor id reserved', () => {
   assert.equal(readConfig({ ...OTHERS, ORCH_DATABASE_URL: VALUE }).role, 'all-in-one');
   assert.equal(readConfig({ ...OTHERS, ORCH_DATABASE_URL: VALUE, EUPADEV_ROLE: 'executor' }).role, 'executor');

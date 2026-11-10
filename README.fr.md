@@ -12,7 +12,42 @@
 
 </div>
 
-<!-- screenshots: requester page, mock-up, Preview -->
+<!-- screenshots: taken from the discovery mode by `node tests/install/screenshots.mjs`, 1280x800, light theme -->
+| ![Le formulaire de nouvelle demande : nom de l'outil, nom court, service propriétaire et le besoin en quelques mots.](docs/assets/screenshots/request.fr.png) | ![Le chat du demandeur : le lien de la maquette de l'agent de cadrage, le bouton « Valider cette maquette ».](docs/assets/screenshots/mockup.fr.png) |
+|:--:|:--:|
+| Un salarié décrit l'outil dont il a besoin | L'agent de cadrage répond par une maquette à valider ou corriger |
+| ![La carte Gate 1 de l'admin : nom et adresse de l'outil, description pour le catalogue, Approuver, correction, refuser.](docs/assets/screenshots/gate1.fr.png) | ![Le chat du demandeur à la fin : maquette, Preview avec son empreinte, « outil en production », badge En production.](docs/assets/screenshots/production.fr.png) |
+| Gate 1 : la DSI nomme l'outil et le laisse continuer | Preview acceptée, Gate 2 approuvée : l'outil est en production |
+
+<sub>Écrans du [mode découverte](docs/install.md) : des agents fictifs sur une seule machine, comme le bandeau le dit ; [les mails de ce cycle](docs/assets/screenshots/mails.fr.png) tombent dans un piège à mails local.</sub>
+
+## Essayer en dix minutes (mode découverte)
+
+Une machine Linux avec Docker
+Engine et son greffon Compose, environ 2 Gio de RAM libre, les ports 8080,
+8081 et 8025 libres, Chrome ou Firefox. Agents factices, pas de clé d'IA,
+rien ne quitte la machine :
+
+```sh
+git clone https://github.com/EupaDev-hq/eupadev.git
+cd eupadev
+sh install.sh check
+sh install.sh discovery
+```
+
+`check` ne change rien ; `discovery` construit l'image du moteur la première
+fois (plusieurs minutes), la démarre sur `127.0.0.1` et affiche **une seule
+fois** les mots de passe des deux comptes, `requester` et `admin` : notez-les.
+Ouvrez ensuite `http://localhost:8080/`, connectez-vous en `requester` pour
+demander un outil, puis en `admin` pour décider aux portes ; les mails des
+portes arrivent dans `http://localhost:8025/`. Tout retirer :
+`sh install.sh uninstall`.
+
+Jusqu'à la première release signée, cela tourne depuis une copie du dépôt et
+affiche « signature not checked ». À partir de la première release,
+téléchargez le script et vérifiez d'abord sa signature :
+[`docs/fr/install.md`](docs/fr/install.md), qui couvre aussi la recette
+entreprise.
 
 ## Pourquoi EupaDev existe
 
@@ -86,8 +121,11 @@ a coûté est écrit dans l'ADR-027 et [`docs/ai-error-log.md`](docs/ai-error-lo
 Rien n'a encore tourné chez un client. Le tableau de bord et les pages de gate
 ne sont pas construits : pour l'instant, les gates se décident par l'API locale
 du moteur.
-Il n'y a pas d'installation en une commande ; le labo, ce sont cinq VM décrites
-en code dans [`infra/`](infra/README.md). Le statut pièce par pièce, avec les
+L'installation en une commande n'existe que pour le mode découverte, depuis un
+clone de ce dépôt jusqu'à la première release signée
+([`docs/fr/install.md`](docs/fr/install.md)) ; la plateforme elle-même, ce sont
+cinq VM décrites en code dans [`infra/`](infra/README.md). Le statut pièce par
+pièce, avec les
 tests qui le prouvent : [`docs/fr/architecture.md`](docs/fr/architecture.md).
 
 ## Comment un outil se construit
@@ -156,7 +194,7 @@ l'UE via Amazon Bedrock ou Google Vertex AI. Détails :
 
 ## Démarrer
 
-Il n'y a pas encore d'installation rapide. Ce qui existe, c'est le labo :
+Jusqu'à la première release, la vraie plateforme tourne sur le labo :
 cinq VM (forge, CI, orchestrateur, agents, outils) créées par Terraform,
 configurées par Ansible, lancées avec Docker Compose, et prouvées par de vrais
 tests qui nettoient derrière eux. Rien n'est configuré à la main ; si ce n'est
@@ -177,7 +215,7 @@ et [`docs/deployment.md`](docs/deployment.md).
 | [`examples/requests/`](examples/requests/) | Un outil complet écrit à la main sur le socle : la référence qu'imitent les agents. |
 | [`images/base-node/`](images/base-node/) | La golden image dont part chaque image d'outil : durcie, non-root, reconstruite et scannée chaque semaine par la CI de la forge. |
 | [`infra/`](infra/) | Le labo en code : VM (Terraform), forge, runners et comptes robots (Ansible), services (Compose), tests réels (`verify-*.yml`). |
-| [`docs/`](docs/) | [`architecture.md`](docs/architecture.md), [`governance.md`](docs/governance.md), [`deployment.md`](docs/deployment.md), les ADR dans [`adr/`](docs/adr/), les traductions françaises dans [`fr/`](docs/fr/). |
+| [`docs/`](docs/) | [`install.md`](docs/install.md), [`architecture.md`](docs/architecture.md), [`governance.md`](docs/governance.md), [`deployment.md`](docs/deployment.md), les ADR dans [`adr/`](docs/adr/), les traductions françaises dans [`fr/`](docs/fr/). |
 | [`ROADMAP.md`](ROADMAP.md) | La conception avec ses raisons : §1-6 les leçons de la v1, §8 la référence v2 (décisions, alternatives écartées, ordre de construction). |
 
 <details>

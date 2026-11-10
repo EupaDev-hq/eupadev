@@ -75,7 +75,7 @@ environment ("non-blocking IO").
 | VM | IP | Ansible roles |
 |---|---|---|
 | `eupadev-forge` | 10.42.0.10 | base, docker_disk, docker, gitea, gitea_org, backup, registry_cleanup, lab_ca (last: trusts its own Caddy, to pull the platform's Caddy image on the next pass) |
-| `eupadev-ci` | 10.42.0.11 | base, docker_disk, docker, lab_ca, runner (2 runners: `standard`, `image`), postgres_tools, deployer (mockup, preview), docker_prune (daily, 01:00 UTC) |
+| `eupadev-ci` | 10.42.0.11 | base, docker_disk, docker, lab_ca, runner (2 runners: `standard`, `image`), postgres_tools, deployer (mockup, preview), docker_prune (hourly; 6 h age from 80 % disk) |
 | `eupadev-orch` | 10.42.0.12 | base, docker_disk, docker, lab_ca, orchestrator, keycloak, backup (6 GiB: Keycloak) |
 | `eupadev-agents` | 10.42.0.13 | base, docker_disk, gvisor, docker, lab_ca, executor, agent_proxies |
 | `eupadev-tools` | 10.42.0.14 | base, docker_disk, docker, lab_ca, postgres_tools, deployer (prod), backup |

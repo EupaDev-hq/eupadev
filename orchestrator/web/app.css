@@ -45,6 +45,11 @@ a { color: var(--accent); }
 .main { flex: 1; min-height: 0; width: min(100%, 48rem); margin: 0 auto; padding: 1rem 1rem 0.5rem; display: flex; flex-direction: column; }
 .notice { padding: 0.25rem 1rem 0.75rem; color: var(--muted); font-size: 0.75rem; text-align: center; }
 .notice p { margin: 0 auto; max-width: 48rem; }
+/* Discovery mode (ADR-028): shown only when the engine filled data-discovery. */
+.discovery { display: none; margin: 0; padding: 0.4rem 1rem; background: var(--warn); color: var(--bg); font-size: 0.85rem; font-weight: 600; text-align: center; }
+body[data-discovery="1"] .discovery { display: block; }
+.notice .made-up, body[data-discovery="1"] .notice .ai { display: none; }
+body[data-discovery="1"] .notice .made-up { display: block; }
 
 h1 { font-size: 1.35rem; margin: 0 0 1rem; text-wrap: balance; }
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1rem; }
@@ -83,11 +88,11 @@ deep-chat { display: block; flex: 1; min-height: 0; width: 100%; }
 .decision .reason { white-space: pre-wrap; color: var(--muted); font-size: 0.92rem; }
 .decision label { display: grid; gap: 0.25rem; font-size: 0.9rem; color: var(--muted); }
 .decision textarea { min-height: 3.2rem; }
-/* Gate 1 of a core tool: the core-tools.yml entry to paste (monospace, read-only) and the command. */
-.registration { padding: 0.5rem 0.7rem; border: 1px solid var(--border); border-radius: 10px; }
-.registration summary { font-weight: 600; cursor: pointer; }
-.registration[open] summary { margin-bottom: 0.6rem; }
-.registration > :not(summary) { margin-top: 0.6rem; }
+/* Folded by default (native <details>): the rename of Gate 1, the core-tools.yml entry of a core tool (monospace, read-only) and the command. */
+.decision details { padding: 0.5rem 0.7rem; border: 1px solid var(--border); border-radius: 10px; }
+.decision summary { font-weight: 600; cursor: pointer; }
+.decision details[open] summary { margin-bottom: 0.6rem; }
+.decision details > :not(summary) { margin-top: 0.6rem; }
 .registration #registration-entry, .registration code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.85rem; white-space: pre; overflow-x: auto; }
 
 /* Phones and narrow windows: the list above the conversation, still one screen high, so the conversation scrolls inside

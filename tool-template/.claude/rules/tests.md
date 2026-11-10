@@ -13,7 +13,7 @@ paths:
 
 ## Execution
 - Against the deployed Preview (`ACCEPTANCE_BASE_URL`); people are found by role in `KIT_REALM_FILE`, never by name.
-- Each scenario makes its own data.
+- Each scenario makes its own data and never deletes Preview data.
 - Every page visited passes axe; page errors and CSP violations fail.
 
 ## Security scenario catalogue

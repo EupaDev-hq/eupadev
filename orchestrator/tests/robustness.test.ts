@@ -7,6 +7,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import pg from 'pg';
 import { DBOS } from '@dbos-inc/dbos-sdk';
 import { readConfig } from '../src/config.ts';
+import { text } from '../src/i18n.ts';
 import { Switchboard, compliantReport, overlapReport, type EngineResponse } from '../src/external/fakes.ts';
 import type { TaskInput } from '../src/external/contracts.ts';
 import type { Message } from '../src/messages.ts';
@@ -42,9 +43,12 @@ async function withBench(body: (b: Bench, p: Pilot, url: string) => Promise<void
 
 const statusW1 = async (cycle: number) => (await DBOS.getWorkflowStatus(cycleWorkflowId(cycle)))?.status;
 const lastAdminNotification = (b: Bench, cycle: number) => b.notifications.for(cycle, 'admin').at(-1);
+/** The gate in plain words (`gate.name.<state>`) and the subject of the decision asked at it, as the admin reads them. */
+const gateName = (gate: string) => text('en', `gate.name.${gate}`);
+const decision = (gate: string) => `Decision required — ${gateName(gate)}`;
 /** The state changes before the gate notification goes out: we wait for the notification itself. */
-const adminNotification = (b: Bench, p: Pilot, cycle: number, subject: RegExp) =>
-  p.wait(`admin notification ${subject}`, async () => { const n = lastAdminNotification(b, cycle); return n !== undefined && subject.test(n.subject) ? n : undefined; }, 10_000);
+const adminNotification = (b: Bench, p: Pilot, cycle: number, gate: string) =>
+  p.wait(`admin notification ${decision(gate)}`, async () => { const n = lastAdminNotification(b, cycle); return n !== undefined && n.subject.startsWith(decision(gate)) ? n : undefined; }, 10_000);
 const taskOrNothing = (b: Bench, id: string) => b.orch.base.readTask(id).catch(() => undefined);
 const history = async (p: Pilot, cycle: number) => (await p.history(cycle)).map((h) => `${h.previous_state ?? '∅'} --[${h.trigger}]--> ${h.state}`);
 const all = async (b: Bench) => { b.engine.switchboard.auto = async (_c, e) => happyResponse(e); b.forge.switchboard.auto = async () => ({ type: 'ok' }); b.deployer.switchboard.auto = async () => ({ type: 'ok' }); };
@@ -101,13 +105,13 @@ test('A2: an external service down beyond the retries (gate notification) opens 
   await withBench(async (b, p) => {
     const notify = b.notifications.notify.bind(b.notifications);
     b.notifications.notify = async (d, id, subject, content) => {
-      if (subject.startsWith('Decision required: gate_overlap')) throw new Error('SMTP 421: mail service unavailable');
+      if (subject.startsWith(decision('gate_overlap'))) throw new Error('SMTP 421: mail service unavailable');
       return notify(d, id, subject, content);
     };
     const cycle = await p.createCycle('a2-tool');
     await p.driveUntil(cycle, 'gate_overlap');
     await p.waitForState(cycle, 'gate_incident');
-    const n = await adminNotification(b, p, cycle, /Decision required: gate_incident/);
+    const n = await adminNotification(b, p, cycle, 'gate_incident');
     assert.match(n.content, /Technical incident in state gate_overlap/);
     assert.match(n.content, /SMTP 421: mail service unavailable/, 'the exact error is shown to the admin');
     assert.match(n.content, /exceeded its maximum of 3 retries/, 'after the automatic retries (A3)');
@@ -129,7 +133,7 @@ test('A5 (defence in depth): an invalid message that still reached the mailbox l
     // approvals_correction_commented.
     await DBOS.send(cycleWorkflowId(cycle), { type: 'decision', gate: 'gate_overlap', outcome: 'correction', actor_id: ADMIN.id, hat: 'admin', visit: c.visit } satisfies Message, 'mailbox');
     await p.waitForState(cycle, 'gate_incident');
-    assert.match((await adminNotification(b, p, cycle, /Decision required: gate_incident/)).content, /approvals_correction_commented/);
+    assert.match((await adminNotification(b, p, cycle, 'gate_incident')).content, /approvals_correction_commented/);
     assert.equal(await statusW1(cycle), 'PENDING');
   });
 });
@@ -192,7 +196,7 @@ test('A4: a result impossible to record (report refused by PostgreSQL): W2 ends 
     const t = await b.orch.base.readTask(`${c.tool_id}-${c.id}-1-contract`);
     assert.deepEqual([t.status, t.cost_usd], ['failed', 10]);
     assert.match((t.report as { reason: string }).reason, /task stopped without a recorded result \(workflow ERROR: .*unsupported Unicode escape sequence/);
-    assert.match((await adminNotification(b, p, cycle, /Decision required: gate_contract_blocked/)).content, /task stopped without a recorded result \(workflow ERROR/);
+    assert.match((await adminNotification(b, p, cycle, 'gate_contract_blocked')).content, /task stopped without a recorded result \(workflow ERROR/);
   });
 });
 
@@ -434,7 +438,7 @@ test('B8: the escalation reason of a red check is announced only once, in its te
       await p.sendWhenExpected(cycle, { type: 'preview_pipeline_finished', outcome: 'red', checks: [{ check: 'dast', result: 'red' }] });
     }
     await p.waitForState(cycle, 'gate_hardening_blocked');
-    const n = (await adminNotification(b, p, cycle, /Decision required: gate_hardening_blocked/)).content;
+    const n = (await adminNotification(b, p, cycle, 'gate_hardening_blocked')).content;
     assert.equal(n.split('preview:dast').length - 1, 1, n);
     assert.match(n, /stagnation: check preview:dast red for 3 rounds/);
   });
@@ -502,7 +506,7 @@ test('2nd round B1: a silent forge during the repository creation opens the plan
     await p.driveUntil(cycle, 'repo_creation'); // the forge never answers
     await p.waitForState(cycle, 'gate_scoping_blocked', 20_000);
     assert.ok((await history(p, cycle)).includes('repo_creation --[task:failed]--> gate_scoping_blocked'));
-    assert.match((await adminNotification(b, p, cycle, /Decision required: gate_scoping_blocked/)).content, /without an answer/);
+    assert.match((await adminNotification(b, p, cycle, 'gate_scoping_blocked')).content, /without an answer/);
   }, undefined, { OPERATION_TIMEOUT_MS: '2000' });
 });
 
@@ -512,7 +516,7 @@ test('2nd round B1: a silent service called in a step (stopping the mock-up duri
     const cycle = await p.createCycle('r2-b1-step');
     await p.driveUntil(cycle, 'scoping_pause');
     await p.waitForState(cycle, 'gate_incident', 20_000);
-    assert.match((await adminNotification(b, p, cycle, /Decision required: gate_incident/)).content, /timed out after 1000ms/);
+    assert.match((await adminNotification(b, p, cycle, 'gate_incident')).content, /timed out after 1000ms/);
     assert.equal(await p.statusW1(cycle), 'PENDING');
   }, undefined, { OPERATION_TIMEOUT_MS: '1000' });
 });
@@ -528,7 +532,7 @@ test('2nd round B5 + M5: a served digest different from the expected one is a fa
     await b.deployer.switchboard.reconsider();
     await p.waitForState(preview, 'gate_delivery_blocked');
     assert.ok((await history(p, preview)).includes('preview_deployment --[task:failed]--> gate_delivery_blocked'));
-    assert.match((await adminNotification(b, p, preview, /Decision required: gate_delivery_blocked/)).content, /different from the expected digest/);
+    assert.match((await adminNotification(b, p, preview, 'gate_delivery_blocked')).content, /different from the expected digest/);
     assert.equal(await b.orch.base.candidateDigest(preview), null, 'no candidate digest: the last Preview deployment failed');
     // Prod of a creation: the other image is recorded as is (failed), then removed; alert.
     b.deployer.switchboard.auto = undefined;
@@ -543,7 +547,7 @@ test('2nd round B5 + M5: a served digest different from the expected one is a fa
     assert.equal(b.deployer.running('prod', 'r2-b5-prod'), null, 'Prod removed');
     assert.ok((await history(p, creation)).includes('prod_deployment --[cleanup:prod_removed]--> prod_deployment'));
     assert.ok(b.notifications.for(creation, 'admin').some((n) => n.subject.startsWith('Alert: the Prod of r2-b5-prod served another digest')));
-    assert.match((await adminNotification(b, p, creation, /Decision required: gate_prod_blocked/)).content, /different from the expected digest.*Prod removed/s);
+    assert.match((await adminNotification(b, p, creation, 'gate_prod_blocked')).content, /different from the expected digest.*Prod removed/s);
     // Prod of an evolution: back to the last healthy digest in Prod.
     b.deployer.switchboard.auto = undefined;
     const tool = await p.createCycle('r2-b5-evolution');
@@ -558,7 +562,7 @@ test('2nd round B5 + M5: a served digest different from the expected one is a fa
     await p.waitForState(evolution, 'gate_prod_blocked');
     assert.equal(b.deployer.running('prod', 'r2-b5-evolution'), healthy, 'Prod restored to the last healthy digest');
     assert.ok((await history(p, evolution)).includes('prod_deployment --[cleanup:prod_restored]--> prod_deployment'));
-    assert.match((await adminNotification(b, p, evolution, /Decision required: gate_prod_blocked/)).content, /Prod restored to the last healthy digest/);
+    assert.match((await adminNotification(b, p, evolution, 'gate_prod_blocked')).content, /Prod restored to the last healthy digest/);
     assert.equal(await b.orch.base.lastHealthyProd((await b.orch.base.readCycle(evolution)).tool_id), healthy, 'the healthy reference stays the earlier one');
   });
 });
@@ -785,7 +789,7 @@ test('3rd round G3: failure, then success of the Preview deployment in the same 
     // Gate 2 presents and accepts only E2.
     b.orch.base.transition = transition;
     await p.driveUntil(cycle, 'gate_2', { timeoutMs: 60_000 });
-    assert.match((await adminNotification(b, p, cycle, /Decision required: gate_2/)).content, new RegExp(`Digest ${e2}`));
+    assert.match((await adminNotification(b, p, cycle, 'gate_2')).content, new RegExp(`Digest ${e2}`));
     await assert.rejects(b.orch.send(cycle, { type: 'decision', gate: 'gate_2', outcome: 'approved', actor_id: ADMIN.id, digest: e1! }, hats({ type: 'decision', gate: 'gate_2', outcome: 'approved', actor_id: ADMIN.id, digest: e1! })), /refused: the candidate digest of Gate 2 is/);
   }, undefined, { MONITORING_CRON: '0 0 0 1 1 *' });
 });
@@ -824,7 +828,7 @@ test('3rd round G5: reminders already sent at a gate kept after a resume of the 
     try {
       const cycle = await p.createCycle('g5-reminders');
       await p.driveUntil(cycle, 'gate_overlap');
-      const reminders = () => b.notifications.for(cycle, 'admin').filter((n) => n.subject.startsWith('Reminder') && n.subject.includes('gate_overlap')).map((n) => n.subject.slice(0, 'Reminder 1/3'.length));
+      const reminders = () => b.notifications.for(cycle, 'admin').filter((n) => n.subject.startsWith('Reminder') && n.subject.includes(gateName('gate_overlap'))).map((n) => n.subject.slice(0, 'Reminder 1/3'.length));
       const traces = async () => (await p.history(cycle)).filter((h) => h.state === 'gate_overlap' && h.previous_state === 'gate_overlap' && h.trigger === 'timeout_exceeded').length;
       await p.wait('2nd reminder notified, its trace held back', async () => (reminders().length === 2 && held ? true : undefined), 10_000);
       const wf = await p.workflowW1(cycle);
@@ -920,14 +924,14 @@ test('3rd round M9: a notification whose attempt exceeds its timeout but succeed
     const notify = b.notifications.notify.bind(b.notifications);
     let slow = true;
     b.notifications.notify = async (d, id, subject, content, key) => {
-      if (slow && subject.startsWith('Decision required: gate_overlap')) { slow = false; await sleep(1500); }
+      if (slow && subject.startsWith(decision('gate_overlap'))) { slow = false; await sleep(1500); }
       return notify(d, id, subject, content, key);
     };
     const cycle = await p.createCycle('m9-notification');
     await p.driveUntil(cycle, 'gate_overlap');
     await sleep(2500); // the 1st attempt (given up at 800 ms) succeeds at 1.5 s, after the retry
     assert.equal(slow, false);
-    assert.equal(b.notifications.for(cycle, 'admin').filter((n) => n.subject.startsWith('Decision required: gate_overlap')).length, 1);
+    assert.equal(b.notifications.for(cycle, 'admin').filter((n) => n.subject.startsWith(decision('gate_overlap'))).length, 1);
   }, undefined, { OPERATION_TIMEOUT_MS: '800', REMINDER_DELAY_MS: '60000', MONITORING_CRON: '0 0 0 1 1 *' });
 });
 
@@ -954,7 +958,7 @@ test('S4 + D21: an internal error while W1 waits for its tasks opens the inciden
     } finally {
       DBOS.waitAll = waitAll;
     }
-    assert.match((await adminNotification(b, p, cycle, /Decision required: gate_incident/)).content, /simulated fault: database unavailable during the wait/);
+    assert.match((await adminNotification(b, p, cycle, 'gate_incident')).content, /simulated fault: database unavailable during the wait/);
     await p.wait('container stopped', async () => (b.engine.inProgress().includes(first) ? undefined : true));
     const r = await b.orch.base.pool.query<{ role: string; status: string; cost: number }>(`SELECT role, status, cost_usd::float8 AS cost FROM tasks WHERE cycle_id = $1 AND iteration = 1 AND role IN ('security-reviewer','quality-reviewer') ORDER BY role`, [cycle]);
     assert.deepEqual(r.rows.map((x) => `${x.role}:${x.status}:${x.cost}`), ['quality-reviewer:failed:0', 'security-reviewer:failed:10']);

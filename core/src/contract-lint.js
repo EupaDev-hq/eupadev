@@ -46,6 +46,20 @@ const SCALARS = new Set(['string', 'integer', 'number', 'boolean']);
 /** Formats whose length is bounded by the format itself (no `maxLength` required). */
 const BOUNDED_FORMATS = new Set(['uuid', 'date', 'date-time', 'time', 'ipv4', 'ipv6']);
 /** Quantifier applied to a group that itself holds a quantifier, or a backreference: ReDoS. */
+/**
+ * Keywords a schema may hold: those the core's Ajv knows (strict mode refuses any other at start, a red image with
+ * no clue). Checked against Ajv by core/tests/contract.test.js. The usual stray key is the second half of an
+ * unquoted text in a YAML flow mapping: `{ description: Pick-up date, first day }` gives a key `first day`.
+ */
+export const SCHEMA_KEYWORDS = new Set(['$async', '$comment', '$defs', '$dynamicAnchor', '$dynamicRef', '$id', '$recursiveAnchor',
+  '$recursiveRef', '$ref', '$schema', '$vocabulary', 'additionalProperties', 'allOf', 'anyOf', 'const', 'contains',
+  'contentEncoding', 'contentMediaType', 'contentSchema', 'default', 'definitions', 'dependencies', 'dependentRequired',
+  'dependentSchemas', 'deprecated', 'description', 'discriminator', 'else', 'enum', 'example', 'examples',
+  'exclusiveMaximum', 'exclusiveMinimum', 'externalDocs', 'format', 'formatExclusiveMaximum', 'formatExclusiveMinimum',
+  'formatMaximum', 'formatMinimum', 'id', 'if', 'items', 'maxContains', 'maxItems', 'maxLength', 'maxProperties', 'maximum',
+  'minContains', 'minItems', 'minLength', 'minProperties', 'minimum', 'multipleOf', 'not', 'nullable', 'oneOf', 'pattern',
+  'patternProperties', 'prefixItems', 'properties', 'propertyNames', 'readOnly', 'required', 'then', 'title', 'type',
+  'unevaluatedItems', 'unevaluatedProperties', 'uniqueItems', 'writeOnly', 'xml']);
 const DANGEROUS_PATTERN = /\((?:[^()\\]|\\.)*[*+}](?:[^()\\]|\\.)*\)[*+{?]|\\[1-9]/;
 
 
@@ -233,6 +247,9 @@ export function parseContract(doc) {
  */
 function checkSchema(s, where, o) {
   if (!s || typeof s !== 'object') return;
+  for (const k of Object.keys(s)) {
+    if (!SCHEMA_KEYWORDS.has(k)) o.refuse(`${where}: unknown keyword "${k}" (an unquoted comma in a { … } line splits the text: quote it)`);
+  }
   const types = Array.isArray(s.type) ? s.type : [s.type];
   if (types.includes('object') || s.properties !== undefined) {
     if (s.additionalProperties !== false) o.refuse(`${where}: object without additionalProperties: false`);

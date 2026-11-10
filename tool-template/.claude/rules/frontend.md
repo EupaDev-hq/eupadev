@@ -36,3 +36,7 @@ paths:
   4.5:1, `prefers-reduced-motion` respected.
 - `lang`, one `<h1>`, landmarks, `alt` on images; main pages pass axe with no
   critical or serious violation.
+- The Preview's pa11y check ignores the rule NoSuchID (hash-route links such
+  as `#/requests/new` point to no id): an in-page link (`#main`, a skip link)
+  is not checked by it. If you add one, its target id must exist and an
+  acceptance test must follow it.

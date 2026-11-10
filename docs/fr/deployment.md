@@ -49,7 +49,15 @@ sensibles ou à profil renforcé (décision 12). Statut : décidé, pas construi
 Environ 14-16 vCPU, 42-46 Go de RAM, 700 Go de disque au total ; ce sont des
 estimations, à mesurer lors des premiers vrais passages (décision 3). Les
 tailles par VM sont dans `docs/fr/client-prerequisites.md` §1. Un outil sensible
-peut ajouter une cinquième VM (plus bas).
+peut ajouter une cinquième VM (plus bas). Mesuré au labo le 2026-11-07, les
+cinq VM du labo au repos utilisent environ 4,7 Go de RAM et environ 90 Go de
+disque au total : les chiffres ci-dessus sont les tailles données aux VM pour
+la charge d'une entreprise, pas ce dont la plateforme a besoin pour démarrer.
+Pendant un cycle gratuit complet le 2026-11-10 (agents fictifs, vraie forge,
+CI, Preview et contrôles ; mémoire utilisée dans chaque VM, relevée toutes les
+30 s), les pics étaient : forge 0,9 Go, CI 1,4 Go (contrôles de la Preview),
+moteur 1,4 Go, agents 0,6 Go, outils 0,7 Go, environ 5 Go au total. Les vrais
+agents IA ajoutent leurs conteneurs sur la VM agents ; ce pic reste à mesurer.
 
 ```mermaid
 flowchart LR
@@ -164,7 +172,9 @@ D'après `ROADMAP.md` §8.15 (bloquants relevés en écrivant les prérequis) :
   n'existe pas sur une VM fournie par la DSI.
 - **Certificats** : Caddy ne sait pas encore utiliser un certificat fourni par
   le client (aujourd'hui `internal` ou Let's Encrypt par DNS-01, qui n'expose
-  rien mais demande un accès API à l'hébergeur DNS, OVH seulement aujourd'hui).
+  rien mais demande un accès API à l'hébergeur DNS ; OVH est l'hébergeur DNS
+  du labo, Caddy a des modules DNS pour d'autres hébergeurs, aucun construit
+  ni testé ici).
 - **Réversibilité** : la remise du coffre de secrets au client en fin de
   contrat reste à prévoir.
 - **Questions ouvertes** : un Caddy central ou un par VM outils ; sens de la

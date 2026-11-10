@@ -42,6 +42,14 @@ text. Reading the red check's log and the round's reports together is what
 the diagnosis does; it has to run before the next paid round, not after
 three of them.
 
+The same cycle showed a third form: a code role that reports `blocked`
+with a finding it owns to the contract (`owner_role: contract`, the
+contract's YAML or a path of the frozen OpenAPI) was relaunched round
+after round (rounds 7, 11, 13, 15, 18, 23, about $17 and five diagnoses)
+because a `blocked` task counts as a missing report (`report:<role>`, D20
+M1) and the gate opens on stagnation only. No relaunch can fix the
+contract: only the "Change the scope" exit of the gate can.
+
 ## Decision
 Run one read-only `diagnosis` agent task before the hardening-blocked gate
 opens, and show its verdict on the gate; run it also after the first round
@@ -60,7 +68,21 @@ platform or unclear-request verdict before the next paid round.
   container), or a task `blocked` on an open point. Once per situation:
   never when a `diagnosis` task was created since the first hardening task
   of the first round counted since the last reset of the counters; after
-  it, the stagnation rule of D20 applies unchanged.
+  it, the stagnation rule of D20 applies unchanged. Never for a round
+  played before that reset: the gate that reset the counters diagnosed
+  it, a second diagnosis before the first round of the new scope would
+  pay twice for the same situation.
+- **Blocked on the contract** (2026-11-09): a code role that ends
+  `blocked` with at least one finding whose `owner_role` is `contract`
+  stops the round in the round itself: no `report:<role>` deviation, no
+  relaunch, `hardening_execution --[guard:escalation]-->
+  gate_hardening_blocked` at once; the gate's diagnosis runs there, once.
+  The reason quotes the finding (rule, file, evidence, each bounded as
+  `taskFact` bounds a report, untrusted text shown as text) and recommends
+  the "Change the scope" exit; the admin chooses, the engine pre-selects
+  nothing. A plain `blocked` (a reason, no such finding) keeps the path
+  above: the open point may be the agents' own, the next round or the
+  first-failed-round diagnosis settles it.
 - **Inputs, as data**: the cycle's tasks (step, role, round, status, cost,
   what the report says, bounded), the deviations per round, the escalation
   reason, the budget, the commits ahead of main on each code role's branch
@@ -110,6 +132,13 @@ platform or unclear-request verdict before the next paid round.
   launcher exceptions) — it fires zero times on cycle 9's three failures,
   which all appeared as red jobs of the template's CI, like a defect of
   the code would.
+- Stopping on every `blocked` task — a role blocked on a point of its own
+  (a test it reads differently) is relaunched today and often delivers at
+  the next round; the deterministic signal that no relaunch can help is
+  the finding the role itself owns to the contract.
+- Pre-selecting "Change the scope" on the gate page — the recommendation
+  is the engine's reading of an agent's finding; the admin keeps the
+  choice, the reason says what the engine would do.
 - A diagnosis at every gate — the other blocked gates (scoping, contract,
   delivery, prod) show a single technical failure the admin can read;
   only the hardening gate aggregates rounds, reports and deviations.
@@ -146,7 +175,7 @@ trigger of the first failed round (red check, task failed without a cap
 or an invalid report, blocked task; never on reviewer findings alone; once
 per situation, again after a reset) and the bounded red checks in the
 data; through the Gherkin scenarios of `features/hardening-review.feature`
-(ADR-027 to ADR-027 septies), with the fake engine, that the diagnosis
+(ADR-027 to ADR-027 septies, A-R2a quater), with the fake engine, that the diagnosis
 runs before the gate opens with the pre-check in its context, that its
 verdict reaches the admin's notification, that a failed diagnosis still
 opens the gate with the "unavailable" line, that its cost is outside the
@@ -156,8 +185,12 @@ opens the gate before any task of round 2 with the log tail in the
 diagnosis's context, that a blocked task at round 1 followed by an
 unclear-request verdict does the same with the question, that a
 slow-progress verdict lets round 2 start and pays no second early
-diagnosis at round 2, and that a failed early diagnosis lets round 2
-start; through `tests/instructions.test.ts`, that the role has its
+diagnosis at round 2, that a failed early diagnosis lets round 2
+start, that a builder blocked with a finding owned by the contract opens
+the gate from the round itself with the finding and the "Change the
+scope" recommendation, without a `report:builder` deviation nor a task of
+round 2, and that the scope change that follows pays no second diagnosis
+(23 bis and A-R2a keep the relaunch of a plain `blocked`); through `tests/instructions.test.ts`, that the role has its
 instructions under the word cap; through `tests/gitea-forge.test.ts`, that
 the forge counts the commits of each role branch and stores the bounded
 log tail of every red job; through `tests/mutations/mutations.ts`

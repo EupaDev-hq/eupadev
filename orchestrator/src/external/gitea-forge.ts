@@ -96,7 +96,7 @@ export function acceptanceFailures(log: string): string[] {
 export const LOG_TAIL = { lines: 40, line_chars: 300 };
 
 /**
- * The last lines of a red job's log, as DATA for the agents (the diagnosis today; the code roles if ADR-030 decides so):
+ * The last lines of a red job's log, as DATA for the agents (the diagnosis, ADR-027; the builder of the next round, ADR-030):
  * timestamps and colours removed, control characters dropped, empty lines left out, `LOG_TAIL.lines` at most, each cut at
  * `LOG_TAIL.line_chars`. Untrusted text, like a report: bounded, never interpreted by the engine.
  */

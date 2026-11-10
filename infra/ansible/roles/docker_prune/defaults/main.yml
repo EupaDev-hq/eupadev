@@ -1,8 +1,13 @@
-# Daily slot (systemd OnCalendar, UTC): 01:00, before the CI VM's maintenance
-# reboot (03:30) and the Monday golden images (04:00). A pipeline running at
-# that hour loses nothing: its images and its build cache are in use.
-docker_prune_hour: "*-*-* 01:00:00 UTC"
+# Every hour (systemd OnCalendar): cheap when there is nothing old to prune. A
+# pipeline running at that time loses nothing: its images and its build cache
+# are in use.
+docker_prune_hour: "hourly"
 # Age under which nothing is pruned (Docker `until` filter, counted from the
 # build or the pull): an unused image or cache younger than this stays — a
 # Preview about to be deployed, a cache a branch reuses.
 docker_prune_age: 72h
+# Disk use (percent of /var/lib/docker) from which the age drops to
+# docker_prune_pressure_age: the cache of the last hours goes before a build
+# fails for want of space.
+docker_prune_pressure: 80
+docker_prune_pressure_age: 6h

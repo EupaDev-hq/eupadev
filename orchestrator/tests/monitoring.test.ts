@@ -219,9 +219,9 @@ test('M2: `send` answers "transmitted" only if the message is at a live workflow
     assert.equal(r.transmitted, false);
     assert.match(r.transmitted === false ? r.reason : '', /stopped during the send.*send it again after "retry"/);
     await p.waitForState(cycle, 'gate_incident');
-    const before = b.notifications.for(cycle, 'admin').filter((n) => n.subject.startsWith('Decision required: gate_overlap')).length;
+    const before = b.notifications.for(cycle, 'admin').filter((n) => n.subject.startsWith('Decision required — A similar tool may already exist')).length;
     await p.sendWhenExpected(cycle, approve('gate_incident'));
-    await p.wait('decision asked again', async () => (b.notifications.for(cycle, 'admin').filter((n) => n.subject.startsWith('Decision required: gate_overlap')).length > before ? true : undefined));
+    await p.wait('decision asked again', async () => (b.notifications.for(cycle, 'admin').filter((n) => n.subject.startsWith('Decision required — A similar tool may already exist')).length > before ? true : undefined));
     assert.equal(await p.state(cycle), 'gate_overlap', 'the lost decision is not applied');
     await p.sendWhenExpected(cycle, approve('gate_overlap'));
     await p.wait('decision applied once sent again', async () => ((await history(p, cycle)).includes('gate_overlap --[gate:approved]--> repo_creation') ? true : undefined), 10_000);
@@ -298,7 +298,7 @@ test('beta: an external operation stopped without a result (cancelled from outsi
     const start = Date.now();
     await p.waitForState(cycle, 'gate_scoping_blocked', 15_000);
     assert.ok(Date.now() - start < 15_000);
-    const n = await p.wait('notification', async () => b.notifications.for(cycle, 'admin').find((x) => x.subject.startsWith('Decision required: gate_scoping_blocked')));
+    const n = await p.wait('notification', async () => b.notifications.for(cycle, 'admin').find((x) => x.subject.startsWith('Decision required — Scoping blocked')));
     assert.match(n.content, /stopped without a result \(workflow CANCELLED\)/);
   }, undefined, { ...NO_SWEEP, OPERATION_TIMEOUT_MS: '120000' });
 });

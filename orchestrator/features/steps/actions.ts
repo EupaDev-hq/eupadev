@@ -307,6 +307,14 @@ Given('the fake engine is still preparing the {string} tasks, their container no
   // Clone, image signature…: the task is in progress for W2 but no container (nothing paid) until the stop signal.
   this.bench.engine.preparing.add(role);
 });
+Given('task {string} of iteration {int} is in progress, its container not started', async function (this: World, role: string, iteration: number) {
+  // Taken by its workflow (in progress) but no launch counted yet: the state the cancellation must find it in.
+  const id = await this.taskId(role, iteration);
+  await this.wait(`task ${id} in progress without a container`, async () => {
+    const r = await this.base.pool.query<{ n: number }>(`SELECT executions AS n FROM tasks WHERE id = $1 AND status = 'in_progress'`, [id]);
+    return r.rows[0]?.n === 0 ? true : undefined;
+  });
+});
 When('the fake engine declares a work duration of {int} minutes per task', function (this: World, minutes: number) {
   this.bench.engine.defaultDuration_s = minutes * 60;
 });

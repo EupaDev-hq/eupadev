@@ -12,7 +12,40 @@
 
 </div>
 
-<!-- screenshots: requester page, mock-up, Preview -->
+<!-- screenshots: taken from the discovery mode by `node tests/install/screenshots.mjs`, 1280x800, light theme -->
+| ![The new-request form: tool name, short name, owning service and the need in plain words.](docs/assets/screenshots/request.png) | ![The requester's chat: the scoping agent's mock-up link, the "Approve this mock-up" button.](docs/assets/screenshots/mockup.png) |
+|:--:|:--:|
+| An employee describes the tool they need | The scoping agent answers with a mock-up to approve or correct |
+| ![The admin's Gate 1 card: the tool's name and address, the catalogue description, Approve, correction, refuse.](docs/assets/screenshots/gate1.png) | ![The requester's chat at the end: mock-up, Preview with its digest, "tool in production", badge In production.](docs/assets/screenshots/production.png) |
+| Gate 1: the IT department names the tool and lets it go on | Preview accepted, Gate 2 approved: the tool is in production |
+
+<sub>Screens of the [discovery mode](docs/install.md): made-up agents on one machine, as the banner says; [the mails of that cycle](docs/assets/screenshots/mails.png) land in a local mail catcher.</sub>
+
+## Try it in ten minutes (discovery mode)
+
+One Linux machine with Docker
+Engine and its Compose plugin, about 2 GiB of RAM free, ports 8080, 8081
+and 8025 free, Chrome or Firefox. Made-up agents, no AI key, nothing leaves
+the machine:
+
+```sh
+git clone https://github.com/EupaDev-hq/eupadev.git
+cd eupadev
+sh install.sh check
+sh install.sh discovery
+```
+
+`check` changes nothing; `discovery` builds the engine image the first time
+(several minutes), starts it on `127.0.0.1` and prints the passwords of the
+two accounts, `requester` and `admin`, **once**: write them down. Then open
+`http://localhost:8080/`, sign in as `requester` to ask for a tool, and as
+`admin` to decide at the gates; the gate mails land in
+`http://localhost:8025/`. Remove everything with `sh install.sh uninstall`.
+
+Until the first signed release, this runs from a checkout and says
+"signature not checked". From the first release on, download the script and
+check its signature first: [`docs/install.md`](docs/install.md), which also
+covers the enterprise recipe.
 
 ## Why EupaDev exists
 
@@ -74,8 +107,11 @@ along the way; what went wrong and what it cost is written down in ADR-027 and
 [`docs/ai-error-log.md`](docs/ai-error-log.md). Nothing has run at a client
 yet. The dashboard and gate pages are not built: gates are decided through the
 engine's local API for now.
-There is no one-command install; the lab is five VMs described as code in
-[`infra/`](infra/README.md). Piece-by-piece status with the tests that prove it:
+The one-command install exists for discovery mode only, from a checkout of
+this repository until the first signed release
+([`docs/install.md`](docs/install.md)); the platform itself is five VMs
+described as code in [`infra/`](infra/README.md). Piece-by-piece status with
+the tests that prove it:
 [`docs/architecture.md`](docs/architecture.md).
 
 ## How a tool gets built
@@ -139,7 +175,7 @@ AI. Details: [`docs/governance.md`](docs/governance.md).
 
 ## Getting started
 
-There is no quick start yet. What exists is the lab: five VMs (forge, CI,
+Until the first release, the real platform runs on the lab: five VMs (forge, CI,
 orchestrator, agents, tools) created by Terraform, configured by Ansible, run
 with Docker Compose, and proven by real tests that clean up after themselves.
 Nothing is configured by hand; if it is not in `infra/`, it does not exist.
@@ -159,7 +195,7 @@ and [`docs/deployment.md`](docs/deployment.md).
 | [`examples/requests/`](examples/requests/) | A complete tool written by hand on the core: the reference the agents imitate. |
 | [`images/base-node/`](images/base-node/) | The golden image every tool image starts from: hardened, non-root, rebuilt and scanned weekly by the forge's CI. |
 | [`infra/`](infra/) | The lab as code: VMs (Terraform), forge, runners and robot accounts (Ansible), services (Compose), real tests (`verify-*.yml`). |
-| [`docs/`](docs/) | [`architecture.md`](docs/architecture.md), [`governance.md`](docs/governance.md), [`deployment.md`](docs/deployment.md), the ADRs in [`adr/`](docs/adr/), French translations in [`fr/`](docs/fr/). |
+| [`docs/`](docs/) | [`install.md`](docs/install.md), [`architecture.md`](docs/architecture.md), [`governance.md`](docs/governance.md), [`deployment.md`](docs/deployment.md), the ADRs in [`adr/`](docs/adr/), French translations in [`fr/`](docs/fr/). |
 | [`ROADMAP.md`](ROADMAP.md) | Design with reasons: §1-6 the lessons of v1, §8 the v2 reference (decisions, rejected alternatives, build order). |
 
 <details>

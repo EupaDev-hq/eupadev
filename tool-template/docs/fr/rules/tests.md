@@ -10,7 +10,7 @@
 
 ## Exécution
 - Face à l'image dans la pile du socle, en se connectant par le vrai formulaire de connexion.
-- Chaque scénario crée ses propres données.
+- Chaque scénario crée ses propres données et ne supprime jamais celles de la Preview.
 - Chaque page visitée passe axe ; erreurs de page et violations de CSP font échouer.
 
 ## Catalogue des scénarios de sécurité

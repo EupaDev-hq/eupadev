@@ -46,7 +46,7 @@ Gate 1. Ajouter à cette section chaque variable propre à l'outil, reprise dans
 |---|---|---|
 | `openapi.yaml` | le contrat : routes, rôles, schémas ; figé après le Cadrage | contract |
 | `api/` | un handler par `operationId` ; `api/lib/` pour le code partagé de l'outil | builder |
-| `db/` | migrations versionnées (`db/migrations/`), purge (`db/purge.sql`) | builder |
+| `db/` | migrations versionnées (`db/migrations/`), données de démonstration de la Preview (`db/seed/demo.sql`), purge (`db/purge.sql`) | builder |
 | `web/` | pages, scripts, styles, sans étape de build | builder |
 | `tests/unit/` | tests unitaires | le rôle propriétaire du code |
 | `tests/acceptance/` | features Gherkin, étapes, specs de sécurité | contract (features), tests |

@@ -69,7 +69,22 @@ n'ont pas produite, et arrêter le cycle sur un verdict « plateforme » ou
   ouvert. Une fois par situation : jamais quand une tâche `diagnosis` a
   été créée depuis la première tâche de durcissement du premier tour
   compté depuis la dernière remise à zéro des compteurs ; ensuite, la
-  règle de stagnation de D20 s'applique telle quelle.
+  règle de stagnation de D20 s'applique telle quelle. Jamais pour un tour
+  joué avant cette remise à zéro : la porte qui a remis les compteurs à
+  zéro l'a diagnostiqué, un second diagnostic avant le premier tour du
+  nouveau périmètre paierait deux fois la même situation.
+- **Bloqué sur le contrat** (2026-11-09) : un rôle de code qui finit
+  `blocked` avec au moins un constat dont l'`owner_role` est `contract`
+  arrête le tour dans le tour lui-même : pas d'écart `report:<role>`, pas
+  de relance, `hardening_execution --[guard:escalation]-->
+  gate_hardening_blocked` aussitôt ; le diagnostic de la porte y tourne,
+  une fois. La raison cite le constat (règle, fichier, preuve, chacun
+  borné comme `taskFact` borne un rapport, texte non fiable montré comme
+  du texte) et recommande la sortie « Changer le périmètre » ; l'admin
+  choisit, le moteur ne présélectionne rien. Un simple `blocked` (une
+  raison, pas de tel constat) garde le chemin ci-dessus : le point ouvert
+  peut être celui des agents, le tour suivant ou le diagnostic du premier
+  tour échoué le tranche.
 - **Entrées, en données** : les tâches du cycle (étape, rôle, tour,
   statut, coût, ce que dit le rapport, borné), les écarts par tour, la
   raison de l'escalade, le budget, les commits en avance sur main de la

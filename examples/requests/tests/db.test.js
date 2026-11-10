@@ -3,7 +3,7 @@
 // append-only history written by the trigger alone, audit of the tables keyed by `code` and `request_id`.
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { promisify } from 'node:util';
 import { after, before, describe, test } from 'node:test';
 import { createDb } from '@eupadev/core';
@@ -223,5 +223,31 @@ describe('purge (ADR-003, the core\'s bin/purge.js on db/purge.sql)', () => {
     const left = (await query(s.owner, 'SELECT id FROM requests WHERE id = ANY($1)', [[abandoned, active]])).rows.map((r) => r.id);
     assert.deepEqual(left, [active]);
     assert.equal((await query(s.owner, 'SELECT count(*)::int n FROM request_details WHERE request_id = $1', [abandoned])).rows[0].n, 0);
+  });
+});
+
+describe('demo seed (ADR-032, db/seed/demo.sql: the Preview\'s data, loaded by the platform after the migrations)', () => {
+  const DEMO = "id::text LIKE 'd0000000-%'";
+  test('applies as the owner in one transaction; every status, every category and every table of the tool gets rows', async () => {
+    const sql = readFileSync(new URL('../db/seed/demo.sql', import.meta.url), 'utf8');
+    // Same refusal as the platform's seed step: comments and quoted texts set aside, INSERT and UPDATE only.
+    const code = sql.replace(/--[^\n]*|\/\*[\s\S]*?\*\/|'(?:[^']|'')*'/g, '');
+    assert.doesNotMatch(code, /\\|\$[A-Za-z_]*\$|\b(CREATE|ALTER|DROP|GRANT|REVOKE|TRUNCATE|DELETE|MERGE|COPY|DO)\b/i);
+    assert.ok(/@example\.com/.test(sql) && !/@(?!example\.com)[a-z-]+\.(com|fr|org|net)/i.test(sql), 'fictional mails only');
+    await query(s.owner, `BEGIN; SET LOCAL lock_timeout = '5s'; SET LOCAL statement_timeout = '60s';\n${sql}\n; COMMIT;`);
+    const statuses = (await query(s.owner, `SELECT status, count(*)::int n FROM requests WHERE ${DEMO} GROUP BY status ORDER BY status`)).rows;
+    assert.deepEqual(statuses.map((r) => r.status), ['cancelled', 'draft', 'in_progress', 'rejected', 'resolved', 'submitted']);
+    assert.equal(statuses.reduce((n, r) => n + r.n, 0), 15);
+    assert.equal((await query(s.owner, `SELECT count(*)::int n FROM requests WHERE ${DEMO} AND deleted_at IS NOT NULL`)).rows[0].n, 2);
+    assert.deepEqual((await query(s.owner, 'SELECT code FROM categories c WHERE NOT EXISTS (SELECT FROM requests r WHERE r.category_code = c.code)')).rows, []);
+    assert.ok((await query(s.owner, `SELECT count(*)::int n FROM request_history h JOIN requests r ON r.id = h.request_id WHERE r.${DEMO}`)).rows[0].n >= 15 + 12);
+    // The boot check's rule: no table of the tool (schema app less the core's, the ledgers and *_history) left empty.
+    const migrations = new URL('../node_modules/@eupadev/core/migrations/', import.meta.url);
+    const core = readdirSync(migrations).map((f) => readFileSync(new URL(f, migrations), 'utf8')).join('\n');
+    const excluded = [...core.matchAll(/^CREATE TABLE ([a-z_]+)/gm)].map((m) => m[1]).concat('core_migrations', 'pgmigrations');
+    const empty = (await query(s.owner, `SELECT string_agg(table_name, ', ') FROM information_schema.tables
+      WHERE table_schema = 'app' AND table_type = 'BASE TABLE' AND table_name NOT LIKE '%\\_history' AND table_name <> ALL($1)
+      AND (xpath('/row/n/text()', query_to_xml(format('SELECT count(*) AS n FROM app.%I', table_name), false, true, '')))[1]::text = '0'`, [excluded])).rows[0].string_agg;
+    assert.equal(empty, null);
   });
 });

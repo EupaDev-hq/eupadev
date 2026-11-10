@@ -169,11 +169,11 @@ test('A2: W1 dead and resumed at a gate after a correction by the admin → inst
     await p.wait('back to the budget gate', async () => ((await history(p, cycle)).filter((h) => h.endsWith('--> gate_scoping_budget')).length === 2 ? true : undefined));
     await dieAndResume(b, p, cycle, 'gate_scoping_budget');
     // Reason given after the resume (D21): the gate shows its own reason again, not the incident.
-    const n = await p.wait('notification of the resumed gate', async () => b.notifications.for(cycle, 'admin').filter((x) => x.subject.startsWith('Decision required: gate_scoping_budget')).at(-1));
+    const n = await p.wait('notification of the resumed gate', async () => b.notifications.for(cycle, 'admin').filter((x) => x.subject.startsWith('Decision required — Scoping budget reached')).at(-1));
     assert.match(n.content, /Scoping budget reached/);
     // Second incident in the same cycle, from the same gate: the resume again returns to the right origin.
     await dieAndResume(b, p, cycle, 'gate_scoping_budget');
-    assert.match(b.notifications.for(cycle, 'admin').filter((x) => x.subject.startsWith('Decision required: gate_scoping_budget')).at(-1)!.content, /Scoping budget reached/);
+    assert.match(b.notifications.for(cycle, 'admin').filter((x) => x.subject.startsWith('Decision required — Scoping budget reached')).at(-1)!.content, /Scoping budget reached/);
     all(b);
     await p.sendWhenExpected(cycle, approve('gate_scoping_budget', { budget_top_up_usd: 5 }));
     const c = await b.orch.base.readCycle(cycle);
@@ -203,7 +203,7 @@ test('A2: W1 dead and resumed during a scoping after two identical failures → 
     await p.wait('scoping run again, cut container stopped', async () => (b.engine.inProgress().includes(task(4)) && !b.engine.inProgress().includes(task(3)) ? true : undefined));
     b.engine.answer('scoping', failure, 'a2-counters');
     await p.wait('escalation', async () => ((await history(p, cycle)).includes('scoping --[guard:escalation]--> gate_scoping_blocked') ? true : undefined));
-    const n = await p.wait('notification of the gate', async () => b.notifications.for(cycle, 'admin').find((x) => x.subject.startsWith('Decision required: gate_scoping_blocked')));
+    const n = await p.wait('notification of the gate', async () => b.notifications.for(cycle, 'admin').find((x) => x.subject.startsWith('Decision required — Scoping blocked')));
     assert.match(n.content, /same error 3 times in a row/);
     all(b);
     await toTheEnd(b, p, cycle, 'a2-counters');

@@ -1,0 +1,181 @@
+# EupaDev discovery mode (ADR-028): the whole cycle on ONE machine, with
+# made-up agents, no AI key, no cost. Not for production: the page and
+# /health say so, and the engine refuses a page URL off the loopback.
+#   db           — PostgreSQL of the engine; the accounts of
+#                  orchestrator/sql/roles.sql are created at the first start
+#                  (init-roles.sh). Never published.
+#   migrate      — one-off: versioned migrations then the DBOS schema, with the
+#                  owner account; run again on every `up` (idempotent).
+#   signin       — the discovery mode's OIDC issuer (orchestrator/src/local-signin.ts,
+#                  same image as the engine): two accounts, requester and admin,
+#                  whose passwords install.sh generates and shows ONCE on the
+#                  terminal (ADR-028); handed over by variables, never logged.
+#   engine       — the conductor and the requester's page, outside world faked
+#                  (forge, deployer and agents answer "all is well" by
+#                  themselves; only the humans answer) except the mails.
+#   mailpit      — mail trap, nothing goes out; read at http://localhost:8025.
+#                  EUPADEV_EXTERNAL=notifications=smtp (the default here) sends
+#                  the gate mails to it; fake-auto writes them to the engine's log.
+# Every published port is bound to 127.0.0.1 of the machine; inside the
+# containers the services listen on 0.0.0.0, which the engine allows in
+# discovery mode because the Host check keeps the page on its loopback name.
+#
+# Variables, from a .env file beside this file written by install.sh (ADR-028;
+# no secret in this file, nothing ever committed). These names are the
+# contract with install.sh: change both or neither (tests/install/install.test.sh).
+#   required, random, URL-safe (letters, digits, - and _; they are put in a URL):
+#     ORCH_DB_PASSWORD        superuser of the PostgreSQL container (initdb only)
+#     ORCH_OWNER_PASSWORD     orch_owner, applies the migrations
+#     ORCH_ENGINE_PASSWORD    orch_engine, the engine day to day
+#     OIDC_WEB_CLIENT_SECRET  password of the web client eupadev-web, shared by
+#                             the engine and signin
+#     SIGNIN_REQUESTER_PASSWORD, SIGNIN_ADMIN_PASSWORD  the two accounts of signin
+#   optional:
+#     EUPADEV_ADDRESS (localhost)  host name of the page and issuer URLs in the
+#                   browser: localhost or 127.0.0.1 (the engine refuses any other)
+#     ENGINE_PORT (8080), SIGNIN_PORT (8081), MAILPIT_PORT (8025)  ports on 127.0.0.1
+#     EUPADEV_EXTERNAL (notifications=smtp), EUPADEV_LANGUAGE (en)
+#     ENGINE_IMAGE  the engine image, written by install.sh: a released
+#                   script names the image of its tag on GHCR by digest,
+#                   signed keyless and verified before `up` (ADR-028); a
+#                   `dev` script, run from a checkout, builds
+#                   eupadev-engine:discovery (the default here) from
+#                   orchestrator/Dockerfile. No `build:` here: this file is
+#                   copied to the install directory, where a relative build
+#                   context would point at the user's home.
+# Files beside this one, all written by install.sh: .env, init-roles.sh,
+# roles.sql (a copy of orchestrator/sql/roles.sql; in the repository, a
+# symbolic link to it).
+# Validate: docker compose --env-file <file> -f compose.yml config
+# Pinned versions: an upgrade is a deliberate change.
+name: eupadev-discovery
+
+# One image for migrate, engine and signin (ponytail: the issuer rides in
+# the engine image, src/ and node_modules included; its own image the day the
+# engine image is published and the issuer is not).
+x-engine: &engine
+  image: ${ENGINE_IMAGE:-eupadev-engine:discovery}
+  pull_policy: missing
+
+# What the engine (ADR-024 web sign-in) and the issuer share: the public issuer
+# as the browser sees it, the confidential client and its registered callback.
+x-oidc: &oidc
+  OIDC_ISSUER: http://${EUPADEV_ADDRESS:-localhost}:${SIGNIN_PORT:-8081}/realms/eupadev
+  OIDC_AUDIENCE: eupadev-api
+  OIDC_WEB_CLIENT_ID: eupadev-web
+  OIDC_WEB_CLIENT_SECRET: ${OIDC_WEB_CLIENT_SECRET:?missing}
+  OIDC_WEB_REDIRECT_URL: http://${EUPADEV_ADDRESS:-localhost}:${ENGINE_PORT:-8080}/auth/callback
+
+x-hardened: &hardened
+  read_only: true
+  tmpfs: [/tmp]
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+
+services:
+  db:
+    image: postgres:18.6-alpine@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: orchestrator
+      POSTGRES_USER: postgres
+      # Superuser (rescue account, never used by the engine): a password, so
+      # that no container of the network can open a session without one.
+      POSTGRES_PASSWORD: ${ORCH_DB_PASSWORD:?missing}
+      # Read by init-roles.sh at the first start only.
+      ORCH_OWNER_PASSWORD: ${ORCH_OWNER_PASSWORD:?missing}
+      ORCH_ENGINE_PASSWORD: ${ORCH_ENGINE_PASSWORD:?missing}
+    command: ["postgres", "-c", "password_encryption=scram-sha-256"]
+    volumes:
+      - db:/var/lib/postgresql
+      - ./init-roles.sh:/docker-entrypoint-initdb.d/10-roles.sh:ro
+      # Outside initdb.d on purpose: a .sql file there would run without its
+      # psql variables; the hook reads it with them.
+      - ./roles.sql:/eupadev/roles.sql:ro
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "orchestrator"]
+      interval: 10s
+      retries: 6
+    mem_limit: 512m
+
+  migrate:
+    <<: [*engine, *hardened]
+    command: ["node", "src/migrate.ts"]
+    restart: "no"
+    environment:
+      ORCH_MIGRATION_DATABASE_URL: postgres://orch_owner:${ORCH_OWNER_PASSWORD:?missing}@db:5432/orchestrator
+    depends_on:
+      db: { condition: service_healthy }
+    mem_limit: 256m
+
+  signin:
+    <<: [*engine, *hardened]
+    command: ["node", "src/local-signin.ts"]
+    restart: unless-stopped
+    environment:
+      <<: *oidc
+      # In the container; the port is published on 127.0.0.1 only. The issuer
+      # itself refuses a non-loopback OIDC_ISSUER or OIDC_WEB_REDIRECT_URL.
+      API_ADDRESS: 0.0.0.0
+      # Generated and shown once by install.sh; hashed in memory, nothing on disk.
+      SIGNIN_REQUESTER_PASSWORD: ${SIGNIN_REQUESTER_PASSWORD:?missing}
+      SIGNIN_ADMIN_PASSWORD: ${SIGNIN_ADMIN_PASSWORD:?missing}
+    ports: ["127.0.0.1:${SIGNIN_PORT:-8081}:8080"]
+    # The image's own check calls the engine's /health: this process serves the realm's JWKS instead.
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/realms/eupadev/protocol/openid-connect/certs').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    mem_limit: 128m
+
+  engine:
+    <<: [*engine, *hardened]
+    restart: unless-stopped
+    environment:
+      <<: *oidc
+      # ADR-028: the notice on the page and in /health, loopback-only page URL.
+      EUPADEV_DISCOVERY: "1"
+      # The mails are real and land in Mailpit; forge, deployer and agents are fakes.
+      EUPADEV_EXTERNAL: ${EUPADEV_EXTERNAL:-notifications=smtp}
+      EUPADEV_ROLE: all-in-one
+      EUPADEV_LANGUAGE: ${EUPADEV_LANGUAGE:-en}
+      ORCH_DATABASE_URL: postgres://orch_engine:${ORCH_ENGINE_PASSWORD:?missing}@db:5432/orchestrator
+      # In the container; the port is published on 127.0.0.1 only.
+      API_ADDRESS: 0.0.0.0
+      DASHBOARD_URL: http://${EUPADEV_ADDRESS:-localhost}:${ENGINE_PORT:-8080}
+      # Made-up: no tool is really served (fake deployer); .invalid never resolves.
+      TOOL_DOMAIN: tools.eupadev.invalid
+      ADMIN_ESCALATION_ADDRESS: admin@eupadev.invalid
+      # JWKS through the Compose network; the token endpoint is derived from it.
+      OIDC_JWKS_URL: http://signin:8080/realms/eupadev/protocol/openid-connect/certs
+      # Mailpit, through the Compose network.
+      SMTP_URL: smtp://mailpit:1025
+      MAIL_FROM: eupadev@eupadev.invalid
+      HOME: /tmp
+    ports: ["127.0.0.1:${ENGINE_PORT:-8080}:8080"]
+    depends_on:
+      db: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
+      signin: { condition: service_healthy }
+      mailpit: { condition: service_healthy }
+    mem_limit: 512m
+    # Time for DBOS.shutdown; the "single engine" lock is given back last.
+    stop_grace_period: 60s
+
+  # Same service as the lab's (infra/compose/orchestrator): root → nobody,
+  # mails in memory (lost at restart: a trap, not a mailbox), no version check
+  # (otherwise /api/v1/info asks GitHub).
+  mailpit:
+    <<: *hardened
+    image: axllent/mailpit:v1.31.5@sha256:94f6b70c1436defae6799d9ac7ff0eeff9540465b842026d5cdb018f1c0234ea
+    restart: unless-stopped
+    user: "65534:65534"
+    environment:
+      MP_DISABLE_VERSION_CHECK: "true"
+    ports: ["127.0.0.1:${MAILPIT_PORT:-8025}:8025"]
+    mem_limit: 128m
+
+volumes:
+  db:

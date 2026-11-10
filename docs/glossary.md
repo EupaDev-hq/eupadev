@@ -134,7 +134,7 @@ these concepts (prose, identifiers and wire values alike).
 | `maquette` | `mock-up` (prose), `mockup` (names) | `deploiement_maquette`, `maquette.<domain>` | |
 | `chevauchement` | `overlap` | `gate_chevauchement`, role `overlap` | |
 | `extrait de journal` | `log tail` | `pipeline_results.details.log_tail`, ADR-027, ADR-030 | the bounded end of a red CI job's log (`logTail()`, 40 lines, 300 characters each), stored by the forge watcher for every red job; given as data to the diagnosis and to the next hardening round |
-| `mots d'état` | `state words` | `state.words` of `lang/*.json`, ADR-030 | words that claim an engine state (approved, sent…), refused in an agent's text for the requester like the jargon words |
+| `mots d'état` | `state words` | `state.words` of `lang/*.json`, ADR-033 | words that claim an engine state (approved, sent…), refused in an agent's text for the requester like the jargon words |
 | `contrat` | `contract` | state `contrat`, `contrat.js` | OpenAPI + Gherkin contract of a tool |
 | `durcissement` | `hardening` | `durcissement_*` | |
 | `livraison` | `delivery` | phase `livraison` | |
@@ -172,6 +172,11 @@ these concepts (prose, identifiers and wire values alike).
 | `acteur` | `actor` | `acteurs` | |
 | `identité` | `identity` | `acteurs_identites` | |
 | `émetteur` / `sujet` | `issuer` / `subject` | OIDC | |
+| `mode découverte` | `discovery mode` | ADR-028, `infra/compose/discovery/`, `EUPADEV_DISCOVERY` | one machine, made-up agents, loopback only, never production |
+| `connexion locale` | `local sign-in` | `orchestrator/src/local-signin.ts`, Compose service `signin` | the discovery mode's OIDC issuer, derived from the test helper `fake-oidc.ts` (ADR-028) |
+| `service de connexion` (découverte) | `signin` | Compose service `signin`, `SIGNIN_PORT`, `SIGNIN_REQUESTER_PASSWORD`, `SIGNIN_ADMIN_PASSWORD` | the service name and its variables; the module stays `local-signin.ts` (the feature is the local sign-in) |
+| `adresse` (découverte) | `EUPADEV_ADDRESS` | `install.sh --address`, `infra/compose/discovery/compose.yml` | host name of the discovery URLs: `localhost` (default) or `127.0.0.1`, the two names the engine accepts (`LOOPBACK_HOSTS`) |
+| `installeur` | `installer` | `install.sh`, ADR-028 | the script and the person running it |
 | `fusion` | `merge` | state `fusion`, `acteurs_fusions` | git merge and actor merge |
 | `intégration` | `integration` | `durcissement_integration` | unchanged |
 | `déploiement` | `deployment` | `deploiements` | |
@@ -197,6 +202,7 @@ these concepts (prose, identifiers and wire values alike).
 | `vert` / `rouge` | `green` / `red` | CI results | |
 | `golden image` | `golden image` | | unchanged |
 | `Gate 1`, `Gate 2`, `Preview`, `Prod` | unchanged | | |
+| `jeu de démonstration` | `demo seed` | ADR-032, `db/seed/demo.sql`, `seed.mjs` | the demo data a tool ships for its Preview, loaded by the platform after the migrations; `données de démonstration` → `demo data` |
 
 ## Words
 

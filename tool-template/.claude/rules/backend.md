@@ -26,6 +26,14 @@ The builder's handlers and data. The reference tool (`api/`, `db/`) shows each p
 - History is append-only and written by the database; deletion is logical
   (`deleted_at`) with a restore path; `db/purge.sql` erases what retention allows.
 - Migrations are numbered SQL files under `db/migrations/`.
+- `db/seed/demo.sql`: Preview-only demo data, loaded by the platform after
+  the migrations with the owner account; never relied on by a handler or a
+  unit test. The reference seed's preamble (one `machine` actor `demo-seed`,
+  `app.actor_id` and `app.request_id` set locally), then 10 to 20 rows per
+  main entity, every status walked through the
+  transition triggers, dates relative to `now()`. INSERT and UPDATE only;
+  fictional people (`@example.com`). The boot
+  check is red if a table of the tool has no row.
 
 ## Configuration
 - The tool's own settings are environment variables, none with a default for

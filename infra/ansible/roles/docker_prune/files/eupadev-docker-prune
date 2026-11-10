@@ -2,7 +2,10 @@
 # Managed by Ansible (role docker_prune). Daily prune of the CI VM's Docker
 # disk (40 GB filled during cycle 9 of the lab: one `check/<tool>:<sha>`
 # image per CI run, never removed). Argument: the age under which nothing is
-# pruned (Docker `until` filter, from the build or the pull).
+# pruned (Docker `until` filter, from the build or the pull). Second argument:
+# a disk use (percent) from which that age drops to the third argument: a night
+# of lab cycles filled the 40 GB in a few hours (2026-11-10), and run hourly
+# the prune frees space before a build fails for want of it.
 #
 # What goes, when older than that age:
 #   - the build cache (its garbage collector, role docker, only caps its size);
@@ -23,6 +26,11 @@
 # volume (trivy-cache, Preview databases).
 set -eu
 AGE="$1"
+USED=$(df --output=pcent /var/lib/docker | tail -1 | tr -dc 0-9)
+if [ "$USED" -ge "${2:-101}" ]; then
+  echo "== disk at $USED %: age lowered from $AGE to $3"
+  AGE="$3"
+fi
 echo "== build cache older than $AGE"
 docker builder prune -af --filter "until=$AGE"
 echo "== tool images (label eupadev.core) older than $AGE, used by no container"

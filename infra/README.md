@@ -153,9 +153,10 @@ containers came back: that is the job of the `verify-*` (and of Gatus, later).
 than 7 days (the slot no longer runs). At login, Ubuntu already shows
 "*** System restart required ***".
 
-**Docker disk of the CI VM (automatic)**: every night at 01:00 UTC, the
+**Docker disk of the CI VM (automatic)**: every hour, the
 timer `eupadev-docker-prune.timer` (role `docker_prune`) removes what is
-older than 72 h (`docker_prune_age`) and used by no container: the build
+older than 72 h (`docker_prune_age`; 6 h once the disk is 80 % full,
+`docker_prune_pressure`) and used by no container: the build
 cache, the tool images (one `check/<tool>:<sha>` per CI run, label
 `eupadev.core` of the fixed Dockerfile; also the Preview images the deployer
 pulled) and the dangling images. A Preview or mock-up in service or paused
