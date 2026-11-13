@@ -12,7 +12,7 @@
 
 </div>
 
-<!-- screenshots: taken from the discovery mode by `node tests/install/screenshots.mjs`, 1280x800, light theme -->
+<!-- screenshots: taken from the discovery mode by `node tests/install/screenshots.mjs`, 1280x800, dark theme -->
 | ![Le formulaire de nouvelle demande : nom de l'outil, nom court, service propriétaire et le besoin en quelques mots.](docs/assets/screenshots/request.fr.png) | ![Le chat du demandeur : le lien de la maquette de l'agent de cadrage, le bouton « Valider cette maquette ».](docs/assets/screenshots/mockup.fr.png) |
 |:--:|:--:|
 | Un salarié décrit l'outil dont il a besoin | L'agent de cadrage répond par une maquette à valider ou corriger |
@@ -20,6 +20,12 @@
 | Gate 1 : la DSI nomme l'outil et le laisse continuer | Preview acceptée, Gate 2 approuvée : l'outil est en production |
 
 <sub>Écrans du [mode découverte](docs/install.md) : des agents fictifs sur une seule machine, comme le bandeau le dit ; [les mails de ce cycle](docs/assets/screenshots/mails.fr.png) tombent dans un piège à mails local.</sub>
+
+| ![Le catalogue de l'outil généré : les articles en cartes avec leur catégorie, leur durée de prêt maximale et leur statut, filtres par catégorie, texte et disponibilité.](docs/assets/screenshots/tool-catalogue.png) | ![Son tableau de bord : articles sortis, en retard (en rouge) et disponibles, et les mêmes comptes par catégorie.](docs/assets/screenshots/tool-dashboard.png) | ![Son guichet de remise : réservations à remettre et prêts à reprendre, pour le gestionnaire du matériel.](docs/assets/screenshots/tool-pickups.png) |
+|:--:|:--:|:--:|
+| Un outil vraiment construit par les agents, en production au labo | Son tableau de bord, pour le gestionnaire et l'admin | Son guichet : remettre, reprendre avec l'état de l'objet |
+
+<sub>« Equipment Management » : construit par de vrais agents Claude Code sur le labo, de bout en bout (cadrage, maquette, contrat, tests, code, Preview, les deux gates), puis utilisé à la main.</sub>
 
 ## Essayer en dix minutes (mode découverte)
 

@@ -8,9 +8,9 @@ name: Engine — types, tests, mutations
 
 on:
   push:
-    paths: ["orchestrator/**", "tool-template/**", "examples/requests/**", ".github/workflows/engine.yml"]
+    paths: ["orchestrator/**", "core/src/**", "tool-template/**", "examples/requests/**", ".github/workflows/engine.yml"]
   pull_request:
-    paths: ["orchestrator/**", "tool-template/**", "examples/requests/**", ".github/workflows/engine.yml"]
+    paths: ["orchestrator/**", "core/src/**", "tool-template/**", "examples/requests/**", ".github/workflows/engine.yml"]
   schedule:
     - cron: "17 3 * * 1" # Monday 03:17 UTC
   workflow_dispatch:

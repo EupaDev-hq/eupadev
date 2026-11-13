@@ -5,7 +5,7 @@
 // gets its own cycle: the engine is restarted with EUPADEV_LANGUAGE (the chat lines come from it),
 // the browser speaks the language (the page follows navigator.language).
 //   node tests/install/screenshots.mjs [DIR]   (DIR: ~/.eupadev/discovery; Playwright from orchestrator/node_modules)
-// Writes docs/assets/screenshots/<shot>.png (English) and <shot>.fr.png (French), 1280x800, light theme.
+// Writes docs/assets/screenshots/<shot>.png (English) and <shot>.fr.png (French), 1280x800, dark theme.
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -35,7 +35,7 @@ const engineLanguage = (lang) => execFileSync('docker', ['compose', '-p', 'eupad
 
 /** Signs an account in through the page's own flow (the "Sign in" button, the issuer's form) and lands on `path`. */
 async function signIn(browser, account, lang, path = '/') {
-  const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, colorScheme: 'light', reducedMotion: 'reduce', locale: lang === 'fr' ? 'fr-FR' : 'en-US' });
+  const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, colorScheme: 'dark', reducedMotion: 'reduce', locale: lang === 'fr' ? 'fr-FR' : 'en-US' });
   const page = await context.newPage();
   await page.goto(`${PAGE}${path}`);
   await page.locator('a.button.primary').click(); // "Sign in"

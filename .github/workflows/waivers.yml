@@ -1,0 +1,88 @@
+# Checks and their exceptions. Every marker that silences a check (# noqa,
+# shellcheck disable, failed_when: false, || true…) needs a dated line in
+# .github/exceptions.txt, read on main so that a branch cannot approve its
+# own waiver (.github/scripts/check-waivers.py). And the linters those
+# markers speak to really run on the files that hold them: hadolint on the
+# engine's and the platform images' Dockerfiles, shellcheck on the tools'
+# check scripts, ruff on the Python.
+name: Checks and their exceptions
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  registry:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      # Credentials kept (read-only token): the next step fetches main.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Test of the registry reading
+        run: python3 .github/scripts/test_check_waivers.py
+      # Registry of main: this commit on main, main's otherwise. Only while
+      # main has no registry yet (the commit that creates it) is the
+      # branch's own read, and the log says so.
+      - name: Every waiver registered on main, unexpired
+        env:
+          ON_MAIN: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        run: |
+          rev=HEAD
+          if [ "$ON_MAIN" != true ]; then
+            git fetch -q --depth=1 origin main
+            if git cat-file -e FETCH_HEAD:.github/exceptions.txt 2> /dev/null; then rev=FETCH_HEAD
+            else echo "main has no registry yet: the branch's own is read (first commit only)"; fi
+          fi
+          python3 .github/scripts/check-waivers.py "$rev"
+
+  hadolint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Same image and digest as template-rules.yml; "hadolint ignore" is
+      # honoured here, each one is in the registry.
+      - name: hadolint of the engine's and the platform images' Dockerfiles
+        run: |
+          for f in orchestrator/Dockerfile images/*/Dockerfile; do
+            echo "== $f"
+            docker run --rm -i hadolint/hadolint:v2.15.1@sha256:32dac94127fd60b7b7e3fbfc65e1383b9b5e25c9bfd7b8536de7a539fe68a12d hadolint - < "$f"
+          done
+
+  shellcheck:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      # Same release and checksum as install-script.yml.
+      SHELLCHECK_VERSION: v0.11.0
+      SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Pinned shellcheck
+        run: |
+          curl -fsSLo "$RUNNER_TEMP/shellcheck.tar.xz" "https://github.com/koalaman/shellcheck/releases/download/$SHELLCHECK_VERSION/shellcheck-$SHELLCHECK_VERSION.linux.x86_64.tar.xz"
+          echo "$SHELLCHECK_SHA256  $RUNNER_TEMP/shellcheck.tar.xz" | sha256sum -c -
+          tar -xJf "$RUNNER_TEMP/shellcheck.tar.xz" -C "$RUNNER_TEMP" --strip-components=1 "shellcheck-$SHELLCHECK_VERSION/shellcheck"
+      - name: shellcheck of the tools' check scripts
+        run: '"$RUNNER_TEMP/shellcheck" -S warning tool-template/.gitea/checks/*.sh'
+
+  ruff:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Default rules plus bugbear and blind except: errors, not style.
+      - name: ruff (pinned version)
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet ruff==0.14.0
+          git ls-files -z '*.py' | xargs -0 "$RUNNER_TEMP/venv/bin/ruff" check --extend-select B,BLE --output-format concise

@@ -10,7 +10,6 @@
  * dependency on the published core, whose version the tool chooses — this check is the engine's, the CI's stays.
  */
 import { parse } from 'yaml';
-// @ts-expect-error -- JavaScript module of the core, without type declarations (like the template's in fixed-image.test.ts)
 import { parseContract } from '../../../core/src/contract-lint.js';
 
 /** Why the core would refuse this `openapi.yaml`, or null when it reads it. Pure: tested without Git. */

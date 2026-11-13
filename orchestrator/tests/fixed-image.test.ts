@@ -8,7 +8,6 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-// @ts-expect-error -- JavaScript module of the template, without type declarations
 import { findings, lockfileFindings as lockfile } from '../../tool-template/.gitea/checks/package.mjs';
 
 const TEMPLATE = new URL('../../tool-template/', import.meta.url);

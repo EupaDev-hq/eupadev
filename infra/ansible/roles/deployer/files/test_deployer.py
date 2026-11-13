@@ -491,9 +491,11 @@ class Core(unittest.TestCase):
         old = container(image=f"{REG}/eupadev/leave@sha256:{'c' * 64}")
         vm = FakeVM(containers=[old], core=True)
         real = vm.__call__
-        vm_failing = lambda argv, env=None, timeout=300: (  # noqa: E731
-            (vm.calls.append((argv, env)), subprocess.CompletedProcess(argv, 1, "", "demo.sql refused"))[1] if argv[-1] == "seed"
-            else real(argv, env, timeout))
+        def vm_failing(argv, env=None, timeout=300):
+            if argv[-1] != "seed":
+                return real(argv, env, timeout)
+            vm.calls.append((argv, env))
+            return subprocess.CompletedProcess(argv, 1, "", "demo.sql refused")
         vm_failing.calls = vm.calls
         r = self.execute(vm_failing)
         self.assertEqual((r["health"], r["digest"]), ("failed", f"sha256:{DIGEST}"))
@@ -508,8 +510,10 @@ class Core(unittest.TestCase):
         self.register()
         vm = FakeVM(core=True)
         real = vm.__call__
-        vm_failing = lambda argv, env=None, timeout=300: (  # noqa: E731
-            subprocess.CompletedProcess(argv, 1, "", "boom") if argv[1:2] == ["exec"] else real(argv, env, timeout))
+        def vm_failing(argv, env=None, timeout=300):
+            if argv[1:2] == ["exec"]:
+                return subprocess.CompletedProcess(argv, 1, "", "boom")
+            return real(argv, env, timeout)
         vm_failing.calls = vm.calls
         with self.assertRaisesRegex(RuntimeError, "reset failed"):
             self.execute(vm_failing)

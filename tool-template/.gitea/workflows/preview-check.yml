@@ -58,9 +58,11 @@ jobs:
           docker cp tests/perf/. "$K6:/scripts"
           trap 'docker rm -f "$K6" > /dev/null' EXIT
           docker start -a "$K6"
-      - name: no perf test
+      - name: no perf test (red, like a missing acceptance suite)
         if: hashFiles('tests/perf/load.k6.js') == ''
-        run: echo "No tests/perf/load.k6.js — skipping"
+        run: |
+          echo "No tests/perf/load.k6.js: this tool has no perf test (red)"
+          exit 1
 
   accessibility-preview:
     runs-on: ci-image

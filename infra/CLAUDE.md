@@ -311,7 +311,8 @@ secrets of the `core` repository only, `gitea_platform_repos[].badges`).
   referrers API); wrong key: "failed to verify signature".
 - Image pulled by digest (`docker pull name@sha256:…`): found again by
   `docker image inspect name@sha256:…` (containerd storage), hence checked
-  once, at download; `pull_policy: never` prevents Compose from pulling an
+  once, in the registry BEFORE the download (a refused image never reaches
+  the VM, so a later pass cannot skip the check); `pull_policy: never` prevents Compose from pulling an
   unchecked image by itself.
 - `docker compose kill engine`: the container stays stopped (no restart by
   `restart: unless-stopped` observed locally) → `docker compose start`.

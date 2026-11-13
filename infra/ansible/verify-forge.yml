@@ -162,18 +162,30 @@
         # holds the command, hence the credentials (never print it).
         - name: Keep the result of each trial, without the command
           ansible.builtin.set_fact:
-            # git's "remote: / fatal: / error:" lines give the reason of a refusal, without credentials.
+            # git's "remote: / fatal: / error:" and " ! [remote rejected] … (pre-receive hook declined)"
+            # lines give the reason of a refusal, without credentials.
             push_results: >-
               {{ push_results | default([]) + [item.item | combine({'rc': item.rc,
-                 'reason': item.stderr_lines | default([]) | select('match', '^(remote|fatal|error):') | join(' ')})] }}
+                 'reason': item.stderr_lines | default([]) | select('match', '^((remote|fatal|error):| ! \[)') | join(' ')})] }}
           loop: "{{ pushes.results }}"
           loop_control: { label: "{{ item.item.user }} → {{ item.item.branch }}" }
           no_log: true
 
+        # The forge hides a repository its reader may not see ("Repository
+        # not found"): a refusal only once the admin account sees it exists.
+        - name: The other repositories of the trials exist
+          ansible.builtin.uri:
+            url: "{{ gitea_api }}/repos/{{ gitea_org }}/{{ item }}"
+          loop: "{{ push_tests | selectattr('repo', 'defined') | map(attribute='repo') | unique }}"
+
         - name: Compare with the expected result
           ansible.builtin.assert:
+            # A refusal must come from the forge: a failed fetch, commit or
+            # connection is not a refusal (rc != 0 alone would count it).
             that: >-
               (item.rc != 0) == (item.expect == 'refused')
+              and (item.expect != 'refused'
+                   or item.reason is search('(?i)rejected|denied|declined|not allowed|protected|forbidden|40[13]|repository not found'))
             success_msg: "OK — {{ item.user }} → {{ item.repo | default(repo) }} {{ item.branch }} ({{ item.file }}): {{ item.expect }}"
             fail_msg: >-
               FAILED — {{ item.user }} → {{ item.repo | default(repo) }} {{ item.branch }}: expected {{ item.expect }},

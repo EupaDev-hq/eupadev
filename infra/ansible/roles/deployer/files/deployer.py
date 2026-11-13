@@ -521,7 +521,7 @@ def answer(conf, env, slug, url):
 def lock(env, slug):
     """flock per (environment, tool): released by the kernel if the process dies."""
     os.makedirs(LOCKS, mode=0o700, exist_ok=True)
-    f = open(os.path.join(LOCKS, f"{env}-{slug}"), "w")  # noqa: SIM115 (kept open until the end)
+    f = open(os.path.join(LOCKS, f"{env}-{slug}"), "w")  # kept open until the end: the caller closes it
     deadline = time.monotonic() + 300
     while True:
         try:
@@ -529,7 +529,7 @@ def lock(env, slug):
             return f
         except BlockingIOError:
             if time.monotonic() > deadline:
-                raise RuntimeError("lock held for more than 300 s")
+                raise RuntimeError("lock held for more than 300 s") from None
             time.sleep(1)
 
 

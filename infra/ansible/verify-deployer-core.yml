@@ -346,9 +346,13 @@
           failed_when: check_secrets.stat.size | default(0) == 0
 
         # No pipefail: grep -q exits at the first match (docker would die of SIGPIPE).
-        - name: No secret in docker inspect  # noqa: risky-shell-pipe
-          ansible.builtin.shell: >-
-            docker inspect preview-{{ check_tool }} | grep -qF -f /run/eupadev/tools/tool-{{ check_tool }}-{{ item }}
+        # The container is read first: a missing one is red (rc 2), never "no secret".
+        - name: No secret in docker inspect
+          ansible.builtin.shell:
+            cmd: |
+              out=$(docker inspect --type container preview-{{ check_tool }}) || exit 2
+              grep -qF -f /run/eupadev/tools/tool-{{ check_tool }}-{{ item }} <<<"$out"
+            executable: /bin/bash
           loop: [oidc, db-app]
           register: check_inspect
           changed_when: false

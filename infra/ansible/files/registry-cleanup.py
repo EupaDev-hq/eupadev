@@ -230,7 +230,7 @@ def main(p):
             f = forge.files(name, v["version"])
             erased_blobs.update(f)
             r.setdefault("_blobs", {}).update(f)
-    for name, r in result.items():
+    for r in result.values():
         blobs = r.pop("_blobs", {})
         r["freed_bytes"] = sum(t for h, t in blobs.items() if h not in kept_blobs)
     total = sum(t for h, t in erased_blobs.items() if h not in kept_blobs)

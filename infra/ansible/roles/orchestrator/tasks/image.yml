@@ -80,12 +80,8 @@
       changed_when: false
       no_log: true
 
-    - name: Download the image by its digest
-      ansible.builtin.command:
-        argv: [docker, pull, -q, "{{ orchestrator_image }}"]
-      environment: { DOCKER_CONFIG: "{{ orchestrator_docker_config }}" }
-      changed_when: orchestrator_local_image.rc != 0
-
+    # Checked in the registry BEFORE the download: an image that fails never
+    # reaches the VM, so "present on the VM" always means "signature checked".
     # Key, no transparency log: the signature was made without Rekor (empty
     # signing configuration, pipeline of the engine repository).
     - name: Check the cosign signature (failure = no deployment)
@@ -95,6 +91,12 @@
       environment: { DOCKER_CONFIG: "{{ orchestrator_docker_config }}" }
       register: orchestrator_signature
       changed_when: false
+
+    - name: Download the image by its digest
+      ansible.builtin.command:
+        argv: [docker, pull, -q, "{{ orchestrator_image }}"]
+      environment: { DOCKER_CONFIG: "{{ orchestrator_docker_config }}" }
+      changed_when: orchestrator_local_image.rc != 0
 
     # verify-engine.yml only: the check is not void, another key (throwaway,
     # in memory) is indeed refused.
@@ -118,13 +120,6 @@
           failed_when: orchestrator_other_key.rc == 0 or orchestrator_other_key.stderr is not search('failed to verify signature')
 
   rescue:
-    - name: Remove the unchecked image
-      ansible.builtin.command:
-        argv: [docker, image, rm, "{{ orchestrator_image }}"]
-      when: orchestrator_local_image.rc != 0
-      changed_when: true
-      failed_when: false
-
     - name: Stop here
       ansible.builtin.fail:
         msg: >-
