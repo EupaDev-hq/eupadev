@@ -1,0 +1,7 @@
+# This directory is a test fixture: verify-template.yml checks that the scanner
+# refuses a tool depending on a known-vulnerable minimist. Never installed,
+# never shipped. The exception covers this directory only (osv-scanner reads
+# the osv-scanner.toml next to each lockfile; OpenSSF Scorecard uses it too).
+[[IgnoredVulns]]
+id = "GHSA-xvch-5gv4-984h"
+reason = "Deliberately vulnerable test fixture (CVE-2021-44906), never installed or shipped."
