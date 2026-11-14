@@ -105,6 +105,8 @@ jobs:
       id-token: write # keyless signature
     env:
       IMAGE_REF: ${{ needs.image.outputs.ref }}
+      # gh runs in $RUNNER_TEMP/out, outside the checkout: it cannot read the repository from git there.
+      GH_REPO: ${{ github.repository }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
