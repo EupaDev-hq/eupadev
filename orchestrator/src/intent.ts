@@ -14,7 +14,6 @@
 import type { Hat } from './auth.ts';
 import { TRANSITIONS, gateOutcomes, topUpEnvelope, type GateOutcome, type StateId } from './machine/states.ts';
 import { MAX_TOP_UP_USD } from './messages.ts';
-// @ts-expect-error -- JavaScript module shared with the page, without type declarations (like the core's in contract.ts)
 import * as shared from '../web/words.js';
 
 /** The page's word lists, typed here: one list for the browser's degraded mode and the fake reader. */

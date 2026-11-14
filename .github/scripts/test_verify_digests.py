@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Guard of the guard: fails if the reading of `uses:` or images loosens."""
 import importlib.util
+import pathlib
 import sys
 
 sys.dont_write_bytecode = True  # no __pycache__ in .github/scripts
-import pathlib
 
 spec = importlib.util.spec_from_file_location('v', pathlib.Path(__file__).with_name('verify-digests.py'))
 v = importlib.util.module_from_spec(spec)

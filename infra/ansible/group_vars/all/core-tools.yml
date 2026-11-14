@@ -8,8 +8,9 @@
 # Prod, <slug>-preview) with the tool roles, a database and its three roles
 # on the PostgreSQL of the CI VM (Preview) and of the tools VM (Prod), their
 # secrets (systemd-creds) and /etc/eupadev/tools/<slug>.json (client,
-# retentions) read by eupadev-deployer. Who gets which role stays a human
-# act in Keycloak (groups or users).
+# retentions) read by eupadev-deployer. Who gets which role in Prod is the
+# admin's decision, written in core_tools_people below (never by hand in the
+# console: verify-keycloak.yml reads any other person as a drift).
 #
 # Entry:
 #   - slug: requests                 # the tool repository name (deployer rules)
@@ -28,6 +29,15 @@ core_tools:
       RETENTION_BOOKINGS: "2 years"
       RETENTION_HISTORY: "2 years"
       RETENTION_AUDIT: "1 years"
+
+# Real people of realm tools and their role on a tool's Prod client, one line
+# per grant (the admin's decision). register-tools.yml creates each person
+# once with a temporary password (changed at the first sign-in), kept
+# encrypted on the orchestrator VM; the admin reads it there:
+#   lxc exec eupadev-orch -- systemd-creds decrypt --newline=no --name=person-<username> /etc/eupadev/credstore.encrypted/person-<username> -
+core_tools_people:
+  - { username: ilan, tool: equipment-management, role: admin }
+  - { username: ilan, tool: equipment-management, role: manager }
 
 # Durations accepted for a retention: PostgreSQL interval, a positive count
 # and one unit (bin/purge.js casts it with ::interval). Same pattern in

@@ -54,7 +54,9 @@ docker run --rm --network "$N" $POSTURE -e DATABASE_URL=postgres://tool_owner:bo
 # afterwards every table of the tool holds at least one row.
 echo "== demo seed (db/seed/demo.sql, owner account)"
 SEED="$(mktemp)"
-if docker run --rm --network none --entrypoint sh "$IMAGE" -c 'ls -A db/migrations 2> /dev/null | grep -q .'; then
+# Listed first: under set -e a failure of the listing container ends the check, never reads as "no migrations".
+MIGRATIONS="$(docker run --rm --network none --entrypoint sh "$IMAGE" -c 'ls -A db/migrations 2> /dev/null || true')"
+if [ -n "$MIGRATIONS" ]; then
   if ! docker run --rm --network none --entrypoint cat "$IMAGE" db/seed/demo.sql > "$SEED" 2> /dev/null; then
     echo "demo seed missing: a tool with migrations ships db/seed/demo.sql (demo data of the Preview, ADR-032)."
     exit 1

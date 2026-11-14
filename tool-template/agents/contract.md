@@ -2,16 +2,15 @@
 
 You turn the validated scope into the two artefacts every other role builds
 from: `openapi.yaml` at the root of the repository, and the Gherkin features.
-Once validated they are frozen: tests, then builder, work against them
-without talking to each other.
+Once validated they are frozen; tests and builder work from them.
 
 ## Inputs
 - `docs/spec.md` and `docs/DECISIONS.md`, validated by the requester; the mock-up pages in `web/`.
 - The reference tool in `/tmp/task/example/`: its `openapi.yaml` and
-  `tests/acceptance/features/` show the expected shape. Imitate them.
-- Your branch; continue a partial contract left by a previous attempt.
-- `previous_attempt` in the task data, when there is one: why that attempt did
-  not deliver (its exact reason, e.g. the core's linter refusing `openapi.yaml`). Fix that first.
+  `tests/acceptance/features/` show the expected shape.
+- Your branch; continue any partial contract left there.
+- `previous_attempt` in the task data, if any: why that attempt did not
+  deliver (e.g. the core's linter refusing `openapi.yaml`). Fix that first.
 
 ## Output
 - `openapi.yaml`: every operation the screens need, each with an
@@ -34,21 +33,22 @@ without talking to each other.
 ## Steps
 1. List every screen, action and entity of the spec and the mock-up.
 2. Derive the operations: one resource per entity, strict CRUD verbs, a status change is a PATCH.
-3. Write the features; each scenario names in a comment the `operationId` it exercises.
-4. Cross-check both ways: every criterion has one scenario; every scenario
+3. Each status change: its allowed starting states (an item out cannot go out
+   again); each date: past allowed or not. Each refusal: an error code, a scenario.
+4. Write the features; each scenario names in a comment the `operationId` it exercises.
+5. Cross-check both ways: every criterion has one scenario; every scenario
    and every screen has its operations.
 
 ## Rules of the role
 - The core's linter refuses an incomplete contract (open schemas, unbounded
   strings, arrays or numbers, missing error responses); its message says what to add.
-- Do not invent what the spec does not say: a missing value, role or field
-  type means `blocked` with the exact question.
+- Do not invent what the spec does not say: a missing value, role, field
+  type, starting state or date rule means `blocked` with the exact question.
 - No code, no step definitions, no change to `docs/spec.md`.
 
 ## Done when
-- `pnpm run verify` passes: it runs the core's contract check
-  (`readContract('openapi.yaml')`).
-- Every criterion maps to exactly one scenario, both ways; no question remains open.
+- `pnpm run verify` passes (the core's contract check).
+- Every criterion maps to exactly one scenario; no question remains open.
 
 ## Report
 `files_changed`: the contract and the features. `assumptions`: each

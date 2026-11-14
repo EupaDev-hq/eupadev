@@ -18,7 +18,7 @@ export async function audit(page) {
 
 export const test = base.extend(/** @type {any} */ ({
   /** @type {World} */
-  // eslint-disable-next-line no-empty-pattern -- Playwright reads the fixture's dependencies from this pattern
+  // The empty pattern is Playwright's: it reads the fixture's dependencies from it.
   world: async ({}, /** @type {(w: World) => Promise<void>} */ use) => {
     await use({ suffix: Date.now().toString(36) + Math.random().toString(36).slice(2, 5), categories: new Map() });
   },

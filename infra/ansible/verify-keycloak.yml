@@ -278,16 +278,18 @@
           vars:
             c: "{{ (container.stdout | from_json) | first }}"
 
-        # No pipefail: grep -q stops at the first match (infra/CLAUDE.md).
-        - name: The database password appears neither in docker inspect nor in the environment  # noqa: risky-shell-pipe
+        # The container's configured environment and labels. An exec'd
+        # printenv shows the same data, so it proved nothing more; the
+        # password is in PID 1's environment by design (compose.yml:
+        # KC_DB_PASSWORD=… exec kc.sh). inspect is read first: a failed
+        # read is red, never "absent".
+        - name: The database password does not appear in docker inspect
           ansible.builtin.shell:
             cmd: |
               f=/run/eupadev/secrets/keycloak_db_password
               test -s "$f" || { echo "empty secret"; exit 2; }
-              if docker inspect orchestrator-keycloak-1 | grep -qF -f "$f"; then echo "found in inspect"; exit 1; fi
-              if docker compose -f /opt/eupadev/orchestrator/compose.yml exec -T keycloak printenv | grep -qF -f "$f"; then
-                echo "found in the environment of the entrypoint shell"; exit 1
-              fi
+              out=$(docker inspect --type container orchestrator-keycloak-1) || { echo "inspect failed"; exit 2; }
+              if grep -qF -f "$f" <<<"$out"; then echo "found in inspect"; exit 1; fi
               echo absent
             executable: /bin/bash
           register: hidden_secret
@@ -553,7 +555,9 @@
     clients_outside_file: [account, account-console, admin-cli, broker, tools-config, realm-management, security-admin-console]
     # Registered core tools (Gate 1 registration): their clients and test personas are not in the file.
     tool_clients: "{{ core_tools | map(attribute='slug') | product(['', '-preview']) | map('join') | list }}"
-    people_read: "{{ read.results[4].json | rejectattr('username', 'in', core_tools_personas | map(attribute='name')) | list }}"
+    people_read: >-
+      {{ read.results[4].json | rejectattr('username', 'in', core_tools_personas | map(attribute='name'))
+         | rejectattr('username', 'in', core_tools_people | map(attribute='username')) | list }}
   module_defaults:
     ansible.builtin.uri:
       return_content: true
