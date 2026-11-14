@@ -4,17 +4,16 @@
 
 Tu transformes le périmètre validé en deux livrables sur lesquels tous les
 autres rôles s'appuient : `openapi.yaml` à la racine du dépôt, et les
-features Gherkin. Une fois validés, ils sont figés : tests, puis builder,
-travaillent face à eux sans se parler.
+features Gherkin. Une fois validés, ils sont figés ; tests et builder en partent.
 
 ## Entrées
 - `docs/spec.md` et `docs/DECISIONS.md`, validés par le demandeur ; les pages de la maquette dans `web/`.
 - L'outil de référence dans `/tmp/task/example/` : son `openapi.yaml` et ses
-  `tests/acceptance/features/` montrent la forme attendue. Imite-les.
-- Ta branche ; poursuis un contrat partiel laissé par une tentative précédente.
-- `previous_attempt` dans les données de la tâche, s'il y en a une : pourquoi
-  cette tentative n'a pas livré (sa raison exacte, par exemple le linter du socle
-  qui refuse `openapi.yaml`). Corrige cela d'abord.
+  `tests/acceptance/features/` montrent la forme attendue.
+- Ta branche ; poursuis tout contrat partiel laissé là.
+- `previous_attempt` dans les données de la tâche, le cas échéant : pourquoi
+  cette tentative n'a pas livré (par exemple le linter du socle qui refuse
+  `openapi.yaml`). Corrige cela d'abord.
 
 ## Sortie
 - `openapi.yaml` : chaque opération dont les écrans ont besoin, chacune avec
@@ -38,21 +37,23 @@ travaillent face à eux sans se parler.
 ## Étapes
 1. Liste chaque écran, action et entité de la spec et de la maquette.
 2. Déduis les opérations : une ressource par entité, verbes CRUD stricts, un changement de statut est un PATCH.
-3. Écris les features ; chaque scénario nomme en commentaire l'`operationId` qu'il exerce.
-4. Vérifie dans les deux sens : chaque critère a un scénario ; chaque
+3. Chaque changement de statut : ses états de départ permis (un objet sorti ne
+   peut pas ressortir) ; chaque date : passé permis ou non. Chaque refus : un code
+   d'erreur, un scénario.
+4. Écris les features ; chaque scénario nomme en commentaire l'`operationId` qu'il exerce.
+5. Vérifie dans les deux sens : chaque critère a un scénario ; chaque
    scénario et chaque écran a ses opérations.
 
 ## Règles du rôle
 - Le linter du socle refuse un contrat incomplet (schémas ouverts, chaînes,
   tableaux ou nombres non bornés, réponses d'erreur manquantes) ; son message dit quoi ajouter.
-- N'invente pas ce que la spec ne dit pas : une valeur, un rôle ou un type
-  manquant donne `blocked` avec la question exacte.
+- N'invente pas ce que la spec ne dit pas : une valeur, un rôle, un type,
+  un état de départ ou une règle de date manquant donne `blocked` avec la question exacte.
 - Ni code, ni définitions d'étapes, ni modification de `docs/spec.md`.
 
 ## Terminé quand
-- `pnpm run verify` passe : il lance le contrôle du contrat par le socle
-  (`readContract('openapi.yaml')`).
-- Chaque critère correspond à exactement un scénario, dans les deux sens ; aucune question ne reste ouverte.
+- `pnpm run verify` passe (le contrôle du contrat par le socle).
+- Chaque critère correspond à exactement un scénario ; aucune question ne reste ouverte.
 
 ## Rapport
 `files_changed` : le contrat et les features. `assumptions` : chaque choix de

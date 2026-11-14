@@ -12,14 +12,14 @@
 
 </div>
 
-<!-- screenshots: taken from the discovery mode by `node tests/install/screenshots.mjs`, 1280x800, dark theme -->
+<!-- screenshots: taken from the discovery mode by `node tests/install/screenshots.mjs`, 1280x800, dark theme, discovery banner hidden -->
 | ![The new-request form: tool name, short name, owning service and the need in plain words.](docs/assets/screenshots/request.png) | ![The requester's chat: the scoping agent's mock-up link, the "Approve this mock-up" button.](docs/assets/screenshots/mockup.png) |
 |:--:|:--:|
 | An employee describes the tool they need | The scoping agent answers with a mock-up to approve or correct |
 | ![The admin's Gate 1 card: the tool's name and address, the catalogue description, Approve, correction, refuse.](docs/assets/screenshots/gate1.png) | ![The requester's chat at the end: mock-up, Preview with its digest, "tool in production", badge In production.](docs/assets/screenshots/production.png) |
 | Gate 1: the IT department names the tool and lets it go on | Preview accepted, Gate 2 approved: the tool is in production |
 
-<sub>Screens of the [discovery mode](docs/install.md): made-up agents on one machine, as the banner says; [the mails of that cycle](docs/assets/screenshots/mails.png) land in a local mail catcher.</sub>
+<sub>[The mails of that cycle](docs/assets/screenshots/mails.png): each step and each gate reaches the requester and the admin by mail.</sub>
 
 | ![The catalogue of the generated tool: items as cards with their category, maximum loan and status, filters by category, text and availability.](docs/assets/screenshots/tool-catalogue.png) | ![Its dashboard: items out, late (in red) and available, and the same counts per category.](docs/assets/screenshots/tool-dashboard.png) | ![Its pick-up desk: bookings to hand over and loans to take back, for the equipment manager.](docs/assets/screenshots/tool-pickups.png) |
 |:--:|:--:|:--:|

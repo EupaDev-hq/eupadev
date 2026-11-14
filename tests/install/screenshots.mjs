@@ -5,7 +5,7 @@
 // gets its own cycle: the engine is restarted with EUPADEV_LANGUAGE (the chat lines come from it),
 // the browser speaks the language (the page follows navigator.language).
 //   node tests/install/screenshots.mjs [DIR]   (DIR: ~/.eupadev/discovery; Playwright from orchestrator/node_modules)
-// Writes docs/assets/screenshots/<shot>.png (English) and <shot>.fr.png (French), 1280x800, dark theme.
+// Writes docs/assets/screenshots/<shot>.png (English) and <shot>.fr.png (French), 1280x800, dark theme, discovery banner hidden.
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -36,6 +36,9 @@ const engineLanguage = (lang) => execFileSync('docker', ['compose', '-p', 'eupad
 /** Signs an account in through the page's own flow (the "Sign in" button, the issuer's form) and lands on `path`. */
 async function signIn(browser, account, lang, path = '/') {
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, colorScheme: 'dark', reducedMotion: 'reduce', locale: lang === 'fr' ? 'fr-FR' : 'en-US' });
+  // The yellow discovery banner is hidden on the README images; their caption says they come from discovery mode.
+  await context.addInitScript(() => document.addEventListener('DOMContentLoaded', () =>
+    document.head.append(Object.assign(document.createElement('style'), { textContent: '.discovery { display: none !important; }' }))));
   const page = await context.newPage();
   await page.goto(`${PAGE}${path}`);
   await page.locator('a.button.primary').click(); // "Sign in"
@@ -54,7 +57,11 @@ async function stateIs(page, id, state) {
     await new Promise((f) => setTimeout(f, 1000));
   }
 }
-const shot = (page, name, lang) => page.screenshot({ path: join(OUT, `${name}${lang === 'fr' ? '.fr' : ''}.png`) });
+// The yellow discovery banner is removed right before each README image (the page's CSP refuses an injected style).
+const shot = async (page, name, lang) => {
+  await page.evaluate(() => document.querySelector('.discovery')?.remove());
+  return page.screenshot({ path: join(OUT, `${name}${lang === 'fr' ? '.fr' : ''}.png`) });
+};
 
 async function cycle(browser, lang) {
   const req = REQUESTS[lang];

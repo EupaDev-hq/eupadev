@@ -12,14 +12,14 @@
 
 </div>
 
-<!-- screenshots: taken from the discovery mode by `node tests/install/screenshots.mjs`, 1280x800, dark theme -->
+<!-- screenshots: taken from the discovery mode by `node tests/install/screenshots.mjs`, 1280x800, dark theme, discovery banner hidden -->
 | ![Le formulaire de nouvelle demande : nom de l'outil, nom court, service propriétaire et le besoin en quelques mots.](docs/assets/screenshots/request.fr.png) | ![Le chat du demandeur : le lien de la maquette de l'agent de cadrage, le bouton « Valider cette maquette ».](docs/assets/screenshots/mockup.fr.png) |
 |:--:|:--:|
 | Un salarié décrit l'outil dont il a besoin | L'agent de cadrage répond par une maquette à valider ou corriger |
 | ![La carte Gate 1 de l'admin : nom et adresse de l'outil, description pour le catalogue, Approuver, correction, refuser.](docs/assets/screenshots/gate1.fr.png) | ![Le chat du demandeur à la fin : maquette, Preview avec son empreinte, « outil en production », badge En production.](docs/assets/screenshots/production.fr.png) |
 | Gate 1 : la DSI nomme l'outil et le laisse continuer | Preview acceptée, Gate 2 approuvée : l'outil est en production |
 
-<sub>Écrans du [mode découverte](docs/install.md) : des agents fictifs sur une seule machine, comme le bandeau le dit ; [les mails de ce cycle](docs/assets/screenshots/mails.fr.png) tombent dans un piège à mails local.</sub>
+<sub>[Les mails de ce cycle](docs/assets/screenshots/mails.fr.png) : chaque étape et chaque gate arrive par mail au demandeur et à l'admin.</sub>
 
 | ![Le catalogue de l'outil généré : les articles en cartes avec leur catégorie, leur durée de prêt maximale et leur statut, filtres par catégorie, texte et disponibilité.](docs/assets/screenshots/tool-catalogue.png) | ![Son tableau de bord : articles sortis, en retard (en rouge) et disponibles, et les mêmes comptes par catégorie.](docs/assets/screenshots/tool-dashboard.png) | ![Son guichet de remise : réservations à remettre et prêts à reprendre, pour le gestionnaire du matériel.](docs/assets/screenshots/tool-pickups.png) |
 |:--:|:--:|:--:|
