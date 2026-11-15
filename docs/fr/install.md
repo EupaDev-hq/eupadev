@@ -1,17 +1,13 @@
 # Installer EupaDev
 
-> **État (2026-11-09).** Le mode découverte tourne de bout en bout **depuis
-> un clone du dépôt** : installation, connexion des deux comptes, une demande
-> jusqu'à son premier mail de gate, relance, désinstallation, le tout joué
-> pour de vrai sur une machine et par le job CI
-> `.github/workflows/install.yml` à chaque push. Reste à venir
-> ([ADR-028](../adr/028-one-step-installation-signed-script-discovery-and-enterprise-modes.md)) :
-> la première release `v*` (script signé, section 1) et l'image publiée et
-> signée du moteur ; d'ici là le script dit « signature non vérifiée » et
-> construit l'image lui-même. Le mode entreprise reste la recette du labo,
-> [`infra/README.md`](../../infra/README.md) (section 3 plus bas). Le détail
-> du chemin « depuis un clone » est dans la version anglaise,
-> [`docs/install.md`](../install.md), section 2.
+> **État (2026-11-14).** La release `v0.1.0` est publiée : le script signé
+> (section 1) et l'image signée du moteur qu'il nomme, tous deux vérifiés par
+> le workflow de release comme cette page vous le demande. Le mode découverte
+> tourne de bout en bout, joué pour de vrai sur une machine et par le job CI
+> `.github/workflows/install.yml` à chaque push. Lancer depuis un clone reste
+> possible pour contribuer ([`docs/install.md`](../install.md), section 2).
+> Le mode entreprise reste la recette du labo,
+> [`infra/README.md`](../../infra/README.md) (section 3 plus bas).
 
 EupaDev s'installe par un seul script, `install.sh`, publié signé avec
 chaque release. Il a deux modes : **découverte**, une machine avec Docker,

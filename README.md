@@ -5,7 +5,7 @@
 **Your experts describe the tool they need. AI agents build it properly. Your IT department approves every release. Everything runs on your own servers.**
 
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-2ff3d6)](LICENSE)
-[![Status: pre-release](https://img.shields.io/badge/status-pre--release-ff4fa3)](#status)
+[![Release: v0.1.0](https://img.shields.io/badge/release-v0.1.0-ff4fa3)](https://github.com/EupaDev-hq/eupadev/releases/tag/v0.1.0)
 [![DCO required](https://img.shields.io/badge/contributions-DCO%20sign--off-7fa9b3)](CONTRIBUTING.md)
 
 [Architecture](docs/architecture.md) · [Governance](docs/governance.md) · [Roadmap](ROADMAP.md) · [Build the lab](infra/README.md) · [Lire en français](README.fr.md)
@@ -35,23 +35,28 @@ and 8025 free, Chrome or Firefox. Made-up agents, no AI key, nothing leaves
 the machine:
 
 ```sh
-git clone https://github.com/EupaDev-hq/eupadev.git
-cd eupadev
+gh release download v0.1.0 -R EupaDev-hq/eupadev   # or the three files from the release page
+sha256sum -c install.sh.sha256
+cosign verify-blob --bundle install.sh.sigstore.json \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity https://github.com/EupaDev-hq/eupadev/.github/workflows/release.yml@refs/tags/v0.1.0 \
+  install.sh
 sh install.sh check
 sh install.sh discovery
 ```
 
-`check` changes nothing; `discovery` builds the engine image the first time
-(several minutes), starts it on `127.0.0.1` and prints the passwords of the
+The script is signed by this repository's release workflow (keyless,
+Sigstore): verify it, read it, then run it. `check` changes nothing;
+`discovery` pulls the signed engine image (checked before it starts), starts
+it on `127.0.0.1` and prints the passwords of the
 two accounts, `requester` and `admin`, **once**: write them down. Then open
 `http://localhost:8080/`, sign in as `requester` to ask for a tool, and as
 `admin` to decide at the gates; the gate mails land in
 `http://localhost:8025/`. Remove everything with `sh install.sh uninstall`.
 
-Until the first signed release, this runs from a checkout and says
-"signature not checked". From the first release on, download the script and
-check its signature first: [`docs/install.md`](docs/install.md), which also
-covers the enterprise recipe.
+Step by step, with where to get cosign:
+[`docs/install.md`](docs/install.md), which also covers the enterprise
+recipe.
 
 ## Why EupaDev exists
 
@@ -104,17 +109,17 @@ Open core, Apache 2.0: the engine is here; organisation-specific extras
 
 ## Status
 
-**Pre-release.** On the lab VMs, a complete cycle runs end to end with a
+**v0.1.0, first signed release.** On the lab VMs, a complete cycle runs end to end with a
 scripted agent and no AI cost: the Git forge and its real CI, the DBOS engine
 and its gates, a signed image, a Preview with its checks, then Production.
 One real tool (an equipment-loan tracker) has been taken by the model from
 request to Production on the lab, in November 2026, with human corrections
 along the way; what went wrong and what it cost is written down in ADR-027 and
 [`docs/ai-error-log.md`](docs/ai-error-log.md). Nothing has run at a client
-yet. The dashboard and gate pages are not built: gates are decided through the
-engine's local API for now.
-The one-command install exists for discovery mode only, from a checkout of
-this repository until the first signed release
+yet. In discovery mode the admin decides the gates in the chat; on the
+platform, the dashboard and gate pages are not built yet and gates are
+decided through the engine's local API.
+The one-command install covers discovery mode
 ([`docs/install.md`](docs/install.md)); the platform itself is five VMs
 described as code in [`infra/`](infra/README.md). Piece-by-piece status with
 the tests that prove it:
@@ -181,7 +186,7 @@ AI. Details: [`docs/governance.md`](docs/governance.md).
 
 ## Getting started
 
-Until the first release, the real platform runs on the lab: five VMs (forge, CI,
+The real platform runs on the lab: five VMs (forge, CI,
 orchestrator, agents, tools) created by Terraform, configured by Ansible, run
 with Docker Compose, and proven by real tests that clean up after themselves.
 Nothing is configured by hand; if it is not in `infra/`, it does not exist.

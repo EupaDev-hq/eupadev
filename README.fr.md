@@ -5,7 +5,7 @@
 **Vos experts métier décrivent l'outil dont ils ont besoin. Des agents IA le construisent dans les règles de l'art. Votre DSI approuve chaque mise en production. Tout tourne sur vos propres serveurs.**
 
 [![Licence : Apache 2.0](https://img.shields.io/badge/licence-Apache%202.0-2ff3d6)](LICENSE)
-[![Statut : pré-publication](https://img.shields.io/badge/statut-pr%C3%A9--publication-ff4fa3)](#statut)
+[![Release : v0.1.0](https://img.shields.io/badge/release-v0.1.0-ff4fa3)](https://github.com/EupaDev-hq/eupadev/releases/tag/v0.1.0)
 [![DCO requis](https://img.shields.io/badge/contributions-sign--off%20DCO-7fa9b3)](CONTRIBUTING.fr.md)
 
 [Architecture](docs/fr/architecture.md) · [Gouvernance](docs/fr/governance.md) · [Feuille de route](ROADMAP.md) · [Monter le labo](infra/README.md) · [Read in English](README.md)
@@ -35,23 +35,27 @@ Engine et son greffon Compose, environ 2 Gio de RAM libre, les ports 8080,
 rien ne quitte la machine :
 
 ```sh
-git clone https://github.com/EupaDev-hq/eupadev.git
-cd eupadev
+gh release download v0.1.0 -R EupaDev-hq/eupadev   # ou les trois fichiers de la page de la release
+sha256sum -c install.sh.sha256
+cosign verify-blob --bundle install.sh.sigstore.json \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity https://github.com/EupaDev-hq/eupadev/.github/workflows/release.yml@refs/tags/v0.1.0 \
+  install.sh
 sh install.sh check
 sh install.sh discovery
 ```
 
-`check` ne change rien ; `discovery` construit l'image du moteur la première
-fois (plusieurs minutes), la démarre sur `127.0.0.1` et affiche **une seule
+Le script est signé par le workflow de release de ce dépôt (sans clé,
+Sigstore) : vérifiez-le, lisez-le, puis lancez-le. `check` ne change rien ;
+`discovery` télécharge l'image signée du moteur (vérifiée avant de démarrer),
+la démarre sur `127.0.0.1` et affiche **une seule
 fois** les mots de passe des deux comptes, `requester` et `admin` : notez-les.
 Ouvrez ensuite `http://localhost:8080/`, connectez-vous en `requester` pour
 demander un outil, puis en `admin` pour décider aux portes ; les mails des
 portes arrivent dans `http://localhost:8025/`. Tout retirer :
 `sh install.sh uninstall`.
 
-Jusqu'à la première release signée, cela tourne depuis une copie du dépôt et
-affiche « signature not checked ». À partir de la première release,
-téléchargez le script et vérifiez d'abord sa signature :
+Pas à pas, avec où trouver cosign :
 [`docs/fr/install.md`](docs/fr/install.md), qui couvre aussi la recette
 entreprise.
 
@@ -117,18 +121,18 @@ connecteurs ITSM) n'y sont pas.
 
 ## Statut
 
-**Pré-publication.** Sur les VM du labo, un cycle complet tourne de bout en
+**v0.1.0, première release signée.** Sur les VM du labo, un cycle complet tourne de bout en
 bout avec un agent scripté, sans coût d'IA : la forge Git et sa vraie CI, le
 moteur DBOS et ses gates, une image signée, une Preview avec ses contrôles,
 puis la Production. Un vrai outil (un suivi de prêts de matériel) a été mené
 par le modèle de la demande jusqu'à la Production au labo, en novembre 2026,
 avec des corrections humaines en cours de route ; ce qui a raté et ce que cela
 a coûté est écrit dans l'ADR-027 et [`docs/ai-error-log.md`](docs/ai-error-log.md).
-Rien n'a encore tourné chez un client. Le tableau de bord et les pages de gate
-ne sont pas construits : pour l'instant, les gates se décident par l'API locale
-du moteur.
-L'installation en une commande n'existe que pour le mode découverte, depuis un
-clone de ce dépôt jusqu'à la première release signée
+Rien n'a encore tourné chez un client. En mode découverte, l'admin décide aux
+gates dans le chat ; sur la plateforme, le tableau de bord et les pages de gate
+ne sont pas encore construits et les gates se décident par l'API locale du
+moteur.
+L'installation en une commande couvre le mode découverte
 ([`docs/fr/install.md`](docs/fr/install.md)) ; la plateforme elle-même, ce sont
 cinq VM décrites en code dans [`infra/`](infra/README.md). Le statut pièce par
 pièce, avec les
@@ -200,7 +204,7 @@ l'UE via Amazon Bedrock ou Google Vertex AI. Détails :
 
 ## Démarrer
 
-Jusqu'à la première release, la vraie plateforme tourne sur le labo :
+La vraie plateforme tourne sur le labo :
 cinq VM (forge, CI, orchestrateur, agents, outils) créées par Terraform,
 configurées par Ansible, lancées avec Docker Compose, et prouvées par de vrais
 tests qui nettoient derrière eux. Rien n'est configuré à la main ; si ce n'est

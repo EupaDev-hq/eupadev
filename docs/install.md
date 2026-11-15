@@ -1,17 +1,12 @@
 # Installing EupaDev
 
-> **Status (2026-11-09).** Discovery mode runs end to end **from a checkout
-> of the repository** (section 2, "Before the first release"): install,
-> sign-in of both accounts, one whole cycle driven through the API (request,
-> mock-up accepted, Gate 1, Preview accepted, Gate 2, tool in production),
-> re-run, uninstall, all played for real on one machine and by the CI job
-> `.github/workflows/install.yml` at every push. The release workflow
-> (`.github/workflows/release.yml`) is written but has never run: what is
-> still to come
-> ([ADR-028](adr/028-one-step-installation-signed-script-discovery-and-enterprise-modes.md))
-> is the first `v*` tag, which publishes the signed script (section 1) and
-> the signed engine image it names; until then the script says "signature
-> not checked" and builds the image itself. The enterprise mode stays the
+> **Status (2026-11-14).** Release `v0.1.0` is published: the signed
+> script (section 1) and the signed engine image it names, both verified by
+> the release workflow the way this page tells you to. Discovery mode runs
+> end to end, played for real on one machine and by the CI job
+> `.github/workflows/install.yml` at every push (install, sign-in of both
+> accounts, one whole cycle, re-run, uninstall). Running from a checkout
+> (section 2) stays possible for contributors. The enterprise mode stays the
 > lab recipe of [`infra/README.md`](../infra/README.md) (section 3 below).
 
 EupaDev is installed by one script, `install.sh`, published signed with
