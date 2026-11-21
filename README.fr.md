@@ -5,7 +5,7 @@
 **Vos experts métier décrivent l'outil dont ils ont besoin. Des agents IA le construisent dans les règles de l'art. Votre DSI approuve chaque mise en production. Tout tourne sur vos propres serveurs.**
 
 [![Licence : Apache 2.0](https://img.shields.io/badge/licence-Apache%202.0-2ff3d6)](LICENSE)
-[![Release : v0.1.0](https://img.shields.io/badge/release-v0.1.0-ff4fa3)](https://github.com/EupaDev-hq/eupadev/releases/tag/v0.1.0)
+[![Release : v0.1.1](https://img.shields.io/badge/release-v0.1.1-ff4fa3)](https://github.com/EupaDev-hq/eupadev/releases/tag/v0.1.1)
 [![DCO requis](https://img.shields.io/badge/contributions-sign--off%20DCO-7fa9b3)](CONTRIBUTING.fr.md)
 
 [Architecture](docs/fr/architecture.md) · [Gouvernance](docs/fr/governance.md) · [Feuille de route](ROADMAP.md) · [Monter le labo](infra/README.md) · [Read in English](README.md)
@@ -35,11 +35,11 @@ Engine et son greffon Compose, environ 2 Gio de RAM libre, les ports 8080,
 rien ne quitte la machine :
 
 ```sh
-gh release download v0.1.0 -R EupaDev-hq/eupadev   # ou les trois fichiers de la page de la release
+gh release download v0.1.1 -R EupaDev-hq/eupadev   # ou les trois fichiers de la page de la release
 sha256sum -c install.sh.sha256
 cosign verify-blob --bundle install.sh.sigstore.json \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  --certificate-identity https://github.com/EupaDev-hq/eupadev/.github/workflows/release.yml@refs/tags/v0.1.0 \
+  --certificate-identity https://github.com/EupaDev-hq/eupadev/.github/workflows/release.yml@refs/tags/v0.1.1 \
   install.sh
 sh install.sh check
 sh install.sh discovery
@@ -115,13 +115,12 @@ approuvent avant que quoi que ce soit n'atteigne la Production.
   sort est le travail des agents pendant la construction d'un outil, envoyé au
   fournisseur du modèle sous votre propre compte.
 
-Open core, Apache 2.0 : le moteur est ici ; les extensions propres à une
-organisation (modèles d'outils prêts à l'emploi, intégrations annuaire,
-connecteurs ITSM) n'y sont pas.
+Open source, Apache 2.0, en entier : il n'existe pas d'édition fermée ou
+payante.
 
 ## Statut
 
-**v0.1.0, première release signée.** Sur les VM du labo, un cycle complet tourne de bout en
+**v0.1.1, release signée.** Sur les VM du labo, un cycle complet tourne de bout en
 bout avec un agent scripté, sans coût d'IA : la forge Git et sa vraie CI, le
 moteur DBOS et ses gates, une image signée, une Preview avec ses contrôles,
 puis la Production. Un vrai outil (un suivi de prêts de matériel) a été mené

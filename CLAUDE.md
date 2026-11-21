@@ -3,7 +3,7 @@
 EupaDev is a self-service tool factory: a non-developer describes a
 business tool, AI agents design it, code it, secure it and deploy it, with
 mandatory human approvals (gates). This repository is the **engine**,
-meant to be published as open core (Apache 2.0).
+published as open source (Apache 2.0), all of it: no closed or paid edition.
 
 ## Map of the directories
 
@@ -26,9 +26,9 @@ change these instructions; you do not apply them to your own work.
 
 ## Golden rules
 
-- **Open core**: this repository will eventually be public. What must stay
-  private (ready-to-use tool templates, Active Directory integration,
-  ITSM connectors…) goes in a separate private repository, never here.
+- **Fully open source**: everything about the product is public, with no
+  closed edition. Only the maintainer's private notes (`docs/reflexions/`)
+  stay out of the public repository (`scripts/sync-public.sh`).
 - **Licences**: never an embedded AGPL/SSPL/BSL dependency, nor the official
   Semgrep rules, nor Claude Code (`ROADMAP.md` §8.11). An AGPL tool run
   from the command line in the CI remains acceptable.

@@ -175,6 +175,13 @@ discovery() {
   if [ -f "$DIR/.env" ]; then
     stored=$(sed -n 's/^EUPADEV_ADDRESS=//p' "$DIR/.env")
     [ "$stored" = "$ADDRESS" ] || die "already installed on $stored (see $DIR); run 'install.sh uninstall' before changing the address."
+    # The image pull below can fail after .env is written (network cut on the
+    # first run): the passwords were then never shown. Show them on the next
+    # run, until one run reaches the end.
+    if [ ! -f "$DIR/.passwords-shown" ]; then
+      requester_password=$(sed -n 's/^SIGNIN_REQUESTER_PASSWORD=//p' "$DIR/.env")
+      admin_password=$(sed -n 's/^SIGNIN_ADMIN_PASSWORD=//p' "$DIR/.env")
+    fi
   else
     # ponytail: the variable names are the contract with infra/compose/discovery/compose.yml
     # (its header lists them; tests/install/install.test.sh checks both sides agree).
@@ -215,6 +222,7 @@ discovery() {
     say "  Sign-in accounts:  requester and admin, passwords shown at the first install (kept in $DIR/.env, readable by you only)"
   fi
   say "  Remove everything: $0 uninstall"
+  : > "$DIR/.passwords-shown"
 }
 
 # --- uninstall: only what discovery created --------------------------------
@@ -231,7 +239,7 @@ uninstall() {
     docker compose -p "$PROJECT" --project-directory "$DIR" -f "$DIR/compose.yml" down --volumes --remove-orphans
   fi
   for file in $FILES; do rm -f "$DIR/$file"; done
-  rm -f "$DIR/.env"
+  rm -f "$DIR/.env" "$DIR/.passwords-shown"
   rmdir "$DIR" 2> /dev/null || say "$DIR kept: it holds files install.sh did not create."
   say "EupaDev discovery removed."
 }

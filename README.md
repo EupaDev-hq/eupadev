@@ -5,7 +5,7 @@
 **Your experts describe the tool they need. AI agents build it properly. Your IT department approves every release. Everything runs on your own servers.**
 
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-2ff3d6)](LICENSE)
-[![Release: v0.1.0](https://img.shields.io/badge/release-v0.1.0-ff4fa3)](https://github.com/EupaDev-hq/eupadev/releases/tag/v0.1.0)
+[![Release: v0.1.1](https://img.shields.io/badge/release-v0.1.1-ff4fa3)](https://github.com/EupaDev-hq/eupadev/releases/tag/v0.1.1)
 [![DCO required](https://img.shields.io/badge/contributions-DCO%20sign--off-7fa9b3)](CONTRIBUTING.md)
 
 [Architecture](docs/architecture.md) · [Governance](docs/governance.md) · [Roadmap](ROADMAP.md) · [Build the lab](infra/README.md) · [Lire en français](README.fr.md)
@@ -35,11 +35,11 @@ and 8025 free, Chrome or Firefox. Made-up agents, no AI key, nothing leaves
 the machine:
 
 ```sh
-gh release download v0.1.0 -R EupaDev-hq/eupadev   # or the three files from the release page
+gh release download v0.1.1 -R EupaDev-hq/eupadev   # or the three files from the release page
 sha256sum -c install.sh.sha256
 cosign verify-blob --bundle install.sh.sigstore.json \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  --certificate-identity https://github.com/EupaDev-hq/eupadev/.github/workflows/release.yml@refs/tags/v0.1.0 \
+  --certificate-identity https://github.com/EupaDev-hq/eupadev/.github/workflows/release.yml@refs/tags/v0.1.1 \
   install.sh
 sh install.sh check
 sh install.sh discovery
@@ -104,12 +104,11 @@ the result to a real CI. Two humans approve before anything reaches Production.
   while a tool is being built, sent to the model provider under your own
   account.
 
-Open core, Apache 2.0: the engine is here; organisation-specific extras
-(ready-made templates, directory integrations, ITSM connectors) are not.
+Open source, Apache 2.0, all of it: there is no closed or paid edition.
 
 ## Status
 
-**v0.1.0, first signed release.** On the lab VMs, a complete cycle runs end to end with a
+**v0.1.1, signed release.** On the lab VMs, a complete cycle runs end to end with a
 scripted agent and no AI cost: the Git forge and its real CI, the DBOS engine
 and its gates, a signed image, a Preview with its checks, then Production.
 One real tool (an equipment-loan tracker) has been taken by the model from

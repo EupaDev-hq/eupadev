@@ -100,6 +100,27 @@ fi
 expect "uninstall with nothing installed exits 0" 0 env PATH="$BIN" sh "$SCRIPT" uninstall --yes
 contains "uninstall says nothing to remove" "Nothing to remove" env PATH="$BIN" sh "$SCRIPT" uninstall --yes
 
+# A first run cut off at `compose up` (image pull failed) has written .env:
+# the passwords must still be shown by the next run that reaches the end,
+# and only until then. Stubs: docker (`up` exits with $TMP/up.exit), cosign,
+# and ss (no port in use), so this runs without Docker.
+FAKE="$TMP/fake"; mkdir -p "$FAKE"
+cat > "$FAKE/docker" <<EOF
+#!/bin/sh
+case " \$* " in *" up "*) exit "\$(cat "$TMP/up.exit")" ;; esac
+exit 0
+EOF
+printf '#!/bin/sh\nexit 0\n' > "$FAKE/cosign"
+printf '#!/bin/sh\nexit 0\n' > "$FAKE/ss"
+chmod +x "$FAKE/docker" "$FAKE/cosign" "$FAKE/ss"
+echo 1 > "$TMP/up.exit"
+expect "a first run cut off at compose up fails" 1 env PATH="$FAKE:$PATH" sh "$SCRIPT" discovery
+echo 0 > "$TMP/up.exit"
+contains "the next run shows the passwords it never showed" "write them down now" env PATH="$FAKE:$PATH" sh "$SCRIPT" discovery
+contains "the run after that does not show them again" "passwords shown at the first install" env PATH="$FAKE:$PATH" sh "$SCRIPT" discovery
+expect "uninstall removes it" 0 env PATH="$FAKE:$PATH" sh "$SCRIPT" uninstall --yes
+if [ ! -e "$EUPADEV_HOME/discovery" ]; then printf 'ok    uninstall leaves no file behind\n'; else printf 'FAIL  left behind: %s\n' "$(ls -A "$EUPADEV_HOME/discovery")"; FAILED=1; fi
+
 # The files the script copies or downloads exist at the paths it names, and
 # the Compose file mounts nothing outside its own directory (the installed
 # copy lives alone in ~/.eupadev/discovery: a `../` would mount the user's

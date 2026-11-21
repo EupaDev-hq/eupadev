@@ -1,6 +1,6 @@
 # Installing EupaDev
 
-> **Status (2026-11-14).** Release `v0.1.0` is published: the signed
+> **Status (2026-11-21).** Release `v0.1.1` is published: the signed
 > script (section 1) and the signed engine image it names, both verified by
 > the release workflow the way this page tells you to. Discovery mode runs
 > end to end, played for real on one machine and by the CI job
@@ -28,7 +28,7 @@ on purpose.
    downloaded:
 
    ```sh
-   VERSION=v0.1.0   # the release tag you downloaded
+   VERSION=v0.1.1   # the release tag you downloaded
    ```
 
 2. **Get cosign from its own release, checked by its published checksum**

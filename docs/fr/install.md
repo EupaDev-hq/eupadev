@@ -1,6 +1,6 @@
 # Installer EupaDev
 
-> **État (2026-11-14).** La release `v0.1.0` est publiée : le script signé
+> **État (2026-11-21).** La release `v0.1.1` est publiée : le script signé
 > (section 1) et l'image signée du moteur qu'il nomme, tous deux vérifiés par
 > le workflow de release comme cette page vous le demande. Le mode découverte
 > tourne de bout en bout, joué pour de vrai sur une machine et par le job CI
@@ -28,7 +28,7 @@ du projet : vérifier, lire, puis lancer. Il n'y a pas de ligne
    téléchargé :
 
    ```sh
-   VERSION=v0.1.0   # le tag de la release téléchargée
+   VERSION=v0.1.1   # le tag de la release téléchargée
    ```
 
 2. **Récupérez cosign depuis sa propre release, vérifié par sa somme de
